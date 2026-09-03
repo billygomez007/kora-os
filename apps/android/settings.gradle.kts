@@ -22,7 +22,7 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Chairside"
+rootProject.name = "Kora OS"
 
 
 include(":app")

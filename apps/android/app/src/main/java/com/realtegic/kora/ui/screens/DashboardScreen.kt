@@ -105,9 +105,9 @@ fun DashboardScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(horizontal = 12.dp),
+        contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // Quick Actions Row
         item {
@@ -320,14 +320,18 @@ fun DashboardScreen(
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                shape = RoundedCornerShape(14.dp),
-                elevation = CardDefaults.cardElevation(1.dp),
+                shape = RoundedCornerShape(12.dp),
+                elevation = CardDefaults.cardElevation(0.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     .clickable { onNavigateToQueue() }
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(12.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -356,7 +360,7 @@ fun DashboardScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -369,7 +373,7 @@ fun DashboardScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(text = "$waitingQueueCount", fontSize = 20.sp, fontWeight = FontWeight.Black, color = StatusAmber)
@@ -384,7 +388,7 @@ fun DashboardScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(text = "$inServiceQueueCount", fontSize = 20.sp, fontWeight = FontWeight.Black, color = StatusBlue)
@@ -399,7 +403,7 @@ fun DashboardScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(text = "$completedQueueCount", fontSize = 20.sp, fontWeight = FontWeight.Black, color = StatusGreen)
@@ -415,11 +419,15 @@ fun DashboardScreen(
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                shape = RoundedCornerShape(14.dp),
-                elevation = CardDefaults.cardElevation(1.dp),
+                shape = RoundedCornerShape(12.dp),
+                elevation = CardDefaults.cardElevation(0.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         text = "STAFF COMMISSION SUMMARY",
                         fontSize = 12.sp,
@@ -487,7 +495,10 @@ fun DashboardScreen(
                                     color = GoldPrimary
                                 )
                             }
-                            HorizontalDivider(color = Color(0xFFF1F5F9), thickness = 1.dp)
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                thickness = 1.dp
+                            )
                         }
                     }
                 }
@@ -508,19 +519,49 @@ fun DashboardScreen(
 
         if (transactionsList.isEmpty()) {
             item {
-                Text(
-                    text = "No transactions recorded today.",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(0.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ReceiptLong,
+                            contentDescription = null,
+                            tint = GoldPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "No transactions recorded today.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
         } else {
             items(transactionsList.take(5)) { tx ->
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     shape = RoundedCornerShape(12.dp),
-                    elevation = CardDefaults.cardElevation(1.dp),
+                    elevation = CardDefaults.cardElevation(0.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))

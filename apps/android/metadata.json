@@ -1,0 +1,7 @@
+{
+  "name": "Chairside",
+  "description": "Salon and barbershop operating system for managing walk-in queues, appointments, POS checkout, and staff payment verification with commission tracking in Ghana Cedis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

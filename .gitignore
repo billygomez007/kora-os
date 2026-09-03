@@ -1,0 +1,5 @@
+# Local Android Studio state
+.idea/
+
+# Generated local Gradle daemon configuration
+apps/android/gradle/gradle-daemon-jvm.properties

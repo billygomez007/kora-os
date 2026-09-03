@@ -22,14 +22,41 @@ Completed:
 - Kora dark navy and gold design tokens established.
 - Bottom navigation and dashboard hierarchy refined.
 - Android compilation, unit tests, debug assembly, emulator installation, and launch verified.
+- `apps/api` NestJS scaffold with strict TypeScript, environment validation, standard response/error contracts, request IDs, and health/readiness endpoints.
+- Local PostgreSQL 18.6 development environment (Docker, `kora-postgres`).
+- Prisma 7 foundation: `prisma.config.ts`, the full identity/tenancy/workforce/subscription/audit schema, the first migration (`foundation_identity_tenancy_subscriptions`), and an idempotent seed for permissions, system roles, entitlement definitions, and the Starter/Growth/Business/Enterprise plan shells (no commercial prices set).
+- `/v1/readiness` reports real database connectivity alongside API liveness.
+- Internal (non-public) tenancy services: atomic organization onboarding (organization, owner membership, primary branch, trial subscription, initial entitlement resolution, audit event), data-driven entitlement resolution, subscription access-mode resolution, and append-only audit/subscription-event recording — covered by tests proving transactional rollback, multi-organization membership, tenant isolation, and plan-driven entitlements.
 
 Current limitations:
 
-- Room is the only working data store and contains demonstration-oriented local behavior.
-- There is no production API, PostgreSQL database, authentication, multi-device synchronization, or tenant enforcement.
-- Current roles are simulated locally and are not security controls.
-- Payments and subscriptions are not connected to an authoritative backend.
+- Room is still the only working data store on Android and contains demonstration-oriented local behavior.
+- There is no authentication, session management, or staff invitation flow yet — the schema exists (`StaffInvitation`) but no service or endpoint uses it.
+- The internal tenancy services above have no HTTP controllers in front of them yet; nothing here is a public endpoint.
+- Current Android roles are simulated locally and are not security controls.
+- Payments and subscriptions are not connected to an authoritative backend, and no billing provider is integrated.
 - Android is the only implemented client.
+
+### Implementation sequence for the remaining work
+
+Kept intentionally concise — each item expands into its own phase below (Phase 3 onward) once it starts, and is not built ahead of that phase:
+
+1. Authentication, sessions, and staff invitations.
+2. Organization-scoped RBAC and branch authorization.
+3. Services, customers, and staff availability.
+4. Appointments, walk-ins, and live queues.
+5. Service sessions representing actual work performed.
+6. Transactions, line items, and checkout.
+7. Payments, provider verification, and disputes.
+8. Commissions, reconciliation, and receipts.
+9. Subscription billing-provider integration.
+10. Real-time owner dashboard and notifications.
+11. Kora Team business messaging.
+12. Public customer booking.
+13. Offline mobile synchronization.
+14. Android API integration.
+15. iOS mobile application.
+16. Production hardening, monitoring, backups, and tenant-isolation testing.
 
 ## 3. Branch and release workflow
 

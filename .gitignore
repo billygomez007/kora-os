@@ -3,3 +3,14 @@
 
 # Generated local Gradle daemon configuration
 apps/android/gradle/gradle-daemon-jvm.properties
+
+# Node and API build output
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+
+# Local environment files
+.env
+.env.*
+!.env.example

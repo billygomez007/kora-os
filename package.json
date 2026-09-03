@@ -1,0 +1,17 @@
+{
+  "name": "@kora/root",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24.19.0 <25",
+    "pnpm": ">=11.21.0 <12"
+  },
+  "scripts": {
+    "api:build": "pnpm --dir apps/api build",
+    "api:dev": "pnpm --dir apps/api start:dev",
+    "api:lint": "pnpm --dir apps/api lint",
+    "api:test": "pnpm --dir apps/api test",
+    "api:test:e2e": "pnpm --dir apps/api test:e2e"
+  }
+}

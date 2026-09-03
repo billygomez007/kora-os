@@ -16,6 +16,14 @@
     "db:down": "docker compose --env-file .env -f infrastructure/compose.yaml down",
     "db:logs": "docker compose --env-file .env -f infrastructure/compose.yaml logs --tail=100 postgres",
     "db:status": "docker compose --env-file .env -f infrastructure/compose.yaml ps",
-    "db:up": "docker compose --env-file .env -f infrastructure/compose.yaml up -d --wait"
+    "db:up": "docker compose --env-file .env -f infrastructure/compose.yaml up -d --wait",
+    "prisma:format": "pnpm --dir apps/api exec prisma format",
+    "prisma:validate": "pnpm --dir apps/api exec prisma validate",
+    "prisma:generate": "pnpm --dir apps/api exec prisma generate",
+    "prisma:migrate:dev": "pnpm --dir apps/api exec prisma migrate dev",
+    "prisma:migrate:deploy": "pnpm --dir apps/api exec prisma migrate deploy",
+    "prisma:migrate:status": "pnpm --dir apps/api exec prisma migrate status",
+    "prisma:studio": "pnpm --dir apps/api exec prisma studio",
+    "prisma:seed": "pnpm --dir apps/api exec prisma db seed"
   }
 }

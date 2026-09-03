@@ -1,0 +1,573 @@
+// Kora OS — Prisma schema
+//
+// Scope (Phase 2 — Initial production data model): identity, tenancy,
+// workforce-foundation, subscription, and audit boundaries only, per
+// docs/DATA_MODEL.md. Operational modules (services, customers,
+// appointments, transactions, payments, commissions, ...) and the
+// authentication-session layer (auth identities, sessions, devices) are
+// deliberately out of scope for this phase and are introduced later in
+// docs/ROADMAP.md.
+//
+// Modeling rules (docs/DATA_MODEL.md section 1):
+// - PostgreSQL is the authoritative source of truth.
+// - Primary keys are globally unique UUIDs.
+// - All timestamps are UTC `timestamptz`.
+// - Money is integer minor units plus a three-character ISO currency code.
+// - Tenant-owned tables carry a non-null `organization_id`.
+// - Tenant relationships use composite constraints where practical to
+//   prevent cross-organization references (see BranchAssignment,
+//   StaffProfile, MembershipRole, StaffInvitation, SubscriptionEvent).
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "js"
+}
+
+// Prisma 7 removed `url` from this block: the connection URL used by the
+// CLI (validate, migrate, studio, ...) now lives in prisma.config.ts, and
+// the running application supplies its own connection through the
+// @prisma/adapter-pg driver adapter (see src/database/prisma.service.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DELETED
+
+  @@map("user_status")
+}
+
+enum OrganizationStatus {
+  ONBOARDING
+  ACTIVE
+  SUSPENDED
+  CLOSED
+
+  @@map("organization_status")
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("branch_status")
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
+
+  @@map("membership_status")
+}
+
+enum StaffEmploymentStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+
+  @@map("staff_employment_status")
+}
+
+enum StaffInvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+  EXPIRED
+
+  @@map("staff_invitation_status")
+}
+
+/// Shared lifecycle status for plans and plan prices.
+enum PlanLifecycleStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+
+  @@map("plan_lifecycle_status")
+}
+
+enum EntitlementValueType {
+  BOOLEAN
+  INTEGER
+  STRING
+
+  @@map("entitlement_value_type")
+}
+
+enum BillingInterval {
+  MONTH
+  YEAR
+
+  @@map("billing_interval")
+}
+
+/// Subscription lifecycle state. Superset of docs/DATA_MODEL.md section 4
+/// (trialing, active, past_due, grace_period, read_only, canceled, expired)
+/// and the Phase 2 prompt list (..., suspended, ...): SUSPENDED is kept as a
+/// distinct administrative state from READ_ONLY and GRACE_PERIOD so both
+/// documented vocabularies are satisfied without contradiction.
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  GRACE_PERIOD
+  READ_ONLY
+  SUSPENDED
+  CANCELED
+  EXPIRED
+
+  @@map("subscription_status")
+}
+
+/// Effective access mode derived from subscription status
+/// (docs/ARCHITECTURE.md section 9). LIMITED is included alongside the
+/// FULL / READ_ONLY / BLOCKED modes named in the Phase 2 prompt because
+/// ARCHITECTURE.md documents it explicitly as the past-due state.
+enum SubscriptionAccessMode {
+  FULL
+  LIMITED
+  READ_ONLY
+  BLOCKED
+
+  @@map("subscription_access_mode")
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// Global Kora identity. Not an organization-specific record — see
+/// OrganizationMembership and StaffProfile for the tenant-scoped layers.
+model User {
+  id              String     @id @default(uuid()) @db.Uuid
+  emailNormalized String?    @unique @map("email_normalized")
+  phoneE164       String?    @unique @map("phone_e164")
+  displayName     String     @map("display_name")
+  passwordHash    String?    @map("password_hash")
+  status          UserStatus @default(PENDING)
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(6)
+  phoneVerifiedAt DateTime?  @map("phone_verified_at") @db.Timestamptz(6)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organizationsCreated Organization[]           @relation("OrganizationCreatedBy")
+  memberships          OrganizationMembership[]
+  auditEventsAsActor   AuditEvent[]             @relation("AuditEventActorUser")
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Organizations and branches
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id              String             @id @default(uuid()) @db.Uuid
+  name            String
+  slug            String             @unique
+  businessType    String             @map("business_type")
+  defaultCurrency String             @map("default_currency") @db.Char(3)
+  timeZone        String             @map("time_zone")
+  countryCode     String             @map("country_code") @db.Char(2)
+  status          OrganizationStatus @default(ONBOARDING)
+  createdByUserId String             @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt      DateTime?          @map("archived_at") @db.Timestamptz(6)
+
+  createdBy          User                      @relation("OrganizationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  branches           Branch[]
+  memberships        OrganizationMembership[]
+  branchAssignments  BranchAssignment[]
+  roles              Role[]
+  membershipRoles    MembershipRole[]
+  staffProfiles      StaffProfile[]
+  staffInvitations   StaffInvitation[]
+  subscription       OrganizationSubscription?
+  subscriptionEvents SubscriptionEvent[]
+  auditEvents        AuditEvent[]
+
+  @@map("organizations")
+}
+
+model Branch {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  name           String
+  code           String
+  phone          String?
+  email          String?
+  addressLine    String?      @map("address_line")
+  city           String?
+  region         String?
+  countryCode    String       @map("country_code") @db.Char(2)
+  timeZone       String       @map("time_zone")
+  currency       String       @db.Char(3)
+  status         BranchStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime?    @map("archived_at") @db.Timestamptz(6)
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branchAssignments BranchAssignment[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, id])
+  @@index([organizationId])
+  @@map("branches")
+}
+
+// ---------------------------------------------------------------------------
+// Membership, roles, and permissions
+// ---------------------------------------------------------------------------
+
+/// Connects a global User to an Organization. One user may hold independent
+/// memberships in multiple organizations.
+model OrganizationMembership {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  status         MembershipStatus @default(INVITED)
+  joinedAt       DateTime?        @map("joined_at") @db.Timestamptz(6)
+  suspendedAt    DateTime?        @map("suspended_at") @db.Timestamptz(6)
+  removedAt      DateTime?        @map("removed_at") @db.Timestamptz(6)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user               User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  staffProfile       StaffProfile?
+  branchAssignments  BranchAssignment[]
+  membershipRoles    MembershipRole[]
+  invitationsSent    StaffInvitation[]  @relation("StaffInvitationInvitedBy")
+  auditEventsAsActor AuditEvent[]       @relation("AuditEventActorMembership")
+
+  @@unique([organizationId, userId])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@map("organization_memberships")
+}
+
+/// Explicit branch scoping for a membership. Composite foreign keys tie both
+/// the membership and the branch to the same organization, so a
+/// cross-organization assignment is rejected by the database.
+model BranchAssignment {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  membershipId   String   @map("membership_id") @db.Uuid
+  branchId       String   @map("branch_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  membership   OrganizationMembership @relation(fields: [organizationId, membershipId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([membershipId, branchId])
+  @@index([organizationId, membershipId])
+  @@map("membership_branch_assignments")
+}
+
+/// Role catalog entry. `organizationId` is null for system role templates
+/// shared across every organization, and set for an organization-specific
+/// custom role. Code uniqueness (globally for system roles, per organization
+/// for custom roles) is enforced by partial unique indexes added in the
+/// initial migration, because a plain composite unique constraint would
+/// treat every NULL `organization_id` as distinct and would not stop
+/// duplicate system role codes.
+model Role {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  code           String
+  name           String
+  description    String?
+  isSystem       Boolean  @default(false) @map("is_system")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization    Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rolePermissions RolePermission[]
+  membershipRoles MembershipRole[]
+
+  // A plain composite unique constraint treats every NULL `organizationId`
+  // as distinct, so this alone does not stop two system role templates
+  // from sharing a code — it only enforces uniqueness for org-scoped roles
+  // and gives the ORM a typed compound key for org-scoped upserts. True
+  // null-safe enforcement (including for system roles) comes from the two
+  // partial unique indexes added by hand in the initial migration.
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@map("roles")
+}
+
+/// Stable, seeded permission vocabulary (docs/API_SPEC.md section 27).
+/// Permissions are platform-level, not tenant-owned.
+model Permission {
+  id          String @id @default(uuid()) @db.Uuid
+  code        String @unique
+  description String
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String   @id @default(uuid()) @db.Uuid
+  roleId       String   @map("role_id") @db.Uuid
+  permissionId String   @map("permission_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+/// A membership can hold multiple roles. When the referenced Role is an
+/// organization-specific role (non-null `organizationId`), application
+/// services must verify it matches the membership's organization — system
+/// role templates (`role.organizationId IS NULL`) are usable by any
+/// organization's membership, so this relation intentionally is not a
+/// composite tenant foreign key on the role side.
+model MembershipRole {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  membershipId   String   @map("membership_id") @db.Uuid
+  roleId         String   @map("role_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  membership   OrganizationMembership @relation(fields: [organizationId, membershipId], references: [organizationId, id], onDelete: Cascade)
+  role         Role                   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, roleId])
+  @@index([organizationId, membershipId])
+  @@map("membership_roles")
+}
+
+// ---------------------------------------------------------------------------
+// Staff and invitations
+// ---------------------------------------------------------------------------
+
+/// Employment record inside an organization. This is distinct from the
+/// global User identity — a StaffProfile only exists for a membership that
+/// represents working staff, not every organization member.
+model StaffProfile {
+  id               String                @id @default(uuid()) @db.Uuid
+  organizationId   String                @map("organization_id") @db.Uuid
+  membershipId     String                @map("membership_id") @db.Uuid
+  staffNumber      String?               @map("staff_number")
+  jobTitle         String                @map("job_title")
+  bio              String?
+  employmentStatus StaffEmploymentStatus @default(ACTIVE) @map("employment_status")
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt       DateTime?             @map("archived_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  membership   OrganizationMembership @relation(fields: [organizationId, membershipId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([organizationId, membershipId])
+  @@map("staff_profiles")
+}
+
+/// Staff invitation using a hashed, single-use acceptance token. The
+/// plaintext token is generated and returned once at creation time by the
+/// application layer and is never persisted.
+model StaffInvitation {
+  id                    String                @id @default(uuid()) @db.Uuid
+  organizationId        String                @map("organization_id") @db.Uuid
+  emailNormalized       String?               @map("email_normalized")
+  phoneE164             String?               @map("phone_e164")
+  tokenHash             String                @unique @map("token_hash")
+  invitedByMembershipId String                @map("invited_by_membership_id") @db.Uuid
+  status                StaffInvitationStatus @default(PENDING)
+  expiresAt             DateTime              @map("expires_at") @db.Timestamptz(6)
+  acceptedAt            DateTime?             @map("accepted_at") @db.Timestamptz(6)
+  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    OrganizationMembership @relation("StaffInvitationInvitedBy", fields: [organizationId, invitedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([organizationId, status])
+  @@map("staff_invitations")
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions and entitlements
+// ---------------------------------------------------------------------------
+
+/// Plan catalog entry (Starter, Growth, Business, Enterprise, ...). Codes are
+/// data-driven; commercial names and codes are seeded, prices are not
+/// invented (see PlanPrice).
+model SubscriptionPlan {
+  id          String              @id @default(uuid()) @db.Uuid
+  code        String              @unique
+  name        String
+  description String?
+  status      PlanLifecycleStatus @default(DRAFT)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  planEntitlements          PlanEntitlement[]
+  planPrices                PlanPrice[]
+  organizationSubscriptions OrganizationSubscription[]
+
+  @@map("plans")
+}
+
+/// Configurable entitlement vocabulary (e.g. `branches.max`, `staff.max`,
+/// `reports.advanced`). Kept separate from PlanEntitlement so the same
+/// entitlement code can be reused, described once, and typed consistently
+/// across every plan.
+model EntitlementDefinition {
+  id          String               @id @default(uuid()) @db.Uuid
+  code        String               @unique
+  name        String
+  valueType   EntitlementValueType @map("value_type")
+  description String?
+
+  planEntitlements PlanEntitlement[]
+
+  @@map("entitlement_definitions")
+}
+
+/// The value is stored as JSON so it can hold a boolean, integer, or string
+/// payload as declared by the referenced EntitlementDefinition.valueType.
+model PlanEntitlement {
+  id            String @id @default(uuid()) @db.Uuid
+  planId        String @map("plan_id") @db.Uuid
+  entitlementId String @map("entitlement_id") @db.Uuid
+  value         Json
+
+  plan        SubscriptionPlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  entitlement EntitlementDefinition @relation(fields: [entitlementId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, entitlementId])
+  @@map("plan_entitlements")
+}
+
+/// Currency, billing period, and price are all data-driven per plan. No
+/// commercial price is invented here — `amountMinor` stays null until
+/// product pricing is approved (see the Phase 3 seed script).
+model PlanPrice {
+  id              String              @id @default(uuid()) @db.Uuid
+  planId          String              @map("plan_id") @db.Uuid
+  currency        String              @db.Char(3)
+  amountMinor     Int?                @map("amount_minor")
+  billingInterval BillingInterval     @map("billing_interval")
+  countryCode     String?             @map("country_code") @db.Char(2)
+  effectiveFrom   DateTime?           @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil  DateTime?           @map("effective_until") @db.Timestamptz(6)
+  status          PlanLifecycleStatus @default(DRAFT)
+
+  plan                      SubscriptionPlan           @relation(fields: [planId], references: [id], onDelete: Cascade)
+  organizationSubscriptions OrganizationSubscription[]
+
+  @@index([planId])
+  @@map("plan_prices")
+}
+
+/// Belongs to the organization, never to an individual owner. Only one
+/// current subscription is permitted per organization. Provider fields stay
+/// null until a billing provider is integrated (docs/ROADMAP.md Phase 10).
+model OrganizationSubscription {
+  id                     String             @id @default(uuid()) @db.Uuid
+  organizationId         String             @map("organization_id") @db.Uuid
+  planId                 String             @map("plan_id") @db.Uuid
+  planPriceId            String?            @map("plan_price_id") @db.Uuid
+  status                 SubscriptionStatus @default(TRIALING)
+  provider               String?
+  providerCustomerId     String?            @map("provider_customer_id")
+  providerSubscriptionId String?            @map("provider_subscription_id")
+  trialStartedAt         DateTime?          @map("trial_started_at") @db.Timestamptz(6)
+  trialEndsAt            DateTime?          @map("trial_ends_at") @db.Timestamptz(6)
+  currentPeriodStartedAt DateTime?          @map("current_period_started_at") @db.Timestamptz(6)
+  currentPeriodEndsAt    DateTime?          @map("current_period_ends_at") @db.Timestamptz(6)
+  graceEndsAt            DateTime?          @map("grace_ends_at") @db.Timestamptz(6)
+  cancelAt               DateTime?          @map("cancel_at") @db.Timestamptz(6)
+  canceledAt             DateTime?          @map("canceled_at") @db.Timestamptz(6)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         SubscriptionPlan    @relation(fields: [planId], references: [id], onDelete: Restrict)
+  planPrice    PlanPrice?          @relation(fields: [planPriceId], references: [id], onDelete: SetNull)
+  events       SubscriptionEvent[]
+
+  @@unique([organizationId])
+  @@unique([organizationId, id])
+  @@index([status])
+  @@map("organization_subscriptions")
+}
+
+/// Append-only internal lifecycle history. Application services only ever
+/// insert and read these rows.
+model SubscriptionEvent {
+  id             String              @id @default(uuid()) @db.Uuid
+  organizationId String              @map("organization_id") @db.Uuid
+  subscriptionId String              @map("subscription_id") @db.Uuid
+  type           String
+  effectiveAt    DateTime            @map("effective_at") @db.Timestamptz(6)
+  previousStatus SubscriptionStatus? @map("previous_status")
+  newStatus      SubscriptionStatus  @map("new_status")
+  source         String
+  sourceEventId  String?             @map("source_event_id")
+  metadata       Json?
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription OrganizationSubscription @relation(fields: [organizationId, subscriptionId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, effectiveAt])
+  @@map("subscription_events")
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/// Append-only audit trail. Application services only ever insert and read
+/// these rows — no update or delete path is exposed (docs/SECURITY.md
+/// section 19). `organizationId` is nullable to allow platform-level actions
+/// that are not scoped to a single organization.
+model AuditEvent {
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String?  @map("organization_id") @db.Uuid
+  branchId          String?  @map("branch_id") @db.Uuid
+  actorUserId       String   @map("actor_user_id") @db.Uuid
+  actorMembershipId String?  @map("actor_membership_id") @db.Uuid
+  action            String
+  entityType        String   @map("entity_type")
+  entityId          String   @map("entity_id")
+  requestId         String   @map("request_id")
+  source            String
+  sourceDeviceId    String?  @map("source_device_id")
+  previousState     Json?    @map("previous_state")
+  newState          Json?    @map("new_state")
+  metadata          Json?
+  occurredAt        DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization    Organization?           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorUser       User                    @relation("AuditEventActorUser", fields: [actorUserId], references: [id], onDelete: Restrict)
+  actorMembership OrganizationMembership? @relation("AuditEventActorMembership", fields: [actorMembershipId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, occurredAt])
+  @@index([organizationId, entityType, entityId])
+  @@index([actorUserId])
+  @@map("audit_events")
+}

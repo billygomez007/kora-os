@@ -145,18 +145,67 @@ enum SubscriptionAccessMode {
   @@map("subscription_access_mode")
 }
 
+/// PASSWORD is the only provider implemented in this phase. The others are
+/// reserved so the AuthIdentity shape does not need to change when they are
+/// added.
+enum AuthProvider {
+  PASSWORD
+  GOOGLE
+  APPLE
+  PHONE_OTP
+  EMAIL_MAGIC_LINK
+
+  @@map("auth_provider")
+}
+
+enum SessionRevokedReason {
+  LOGOUT
+  LOGOUT_ALL
+  REUSE_DETECTED
+  EXPIRED
+  ADMIN
+
+  @@map("session_revoked_reason")
+}
+
+enum BusinessProfileVisibility {
+  PUBLIC
+  LINK_ONLY
+  PRIVATE
+
+  @@map("business_profile_visibility")
+}
+
+enum BusinessVerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+
+  @@map("business_verification_status")
+}
+
 // ---------------------------------------------------------------------------
 // Identity
 // ---------------------------------------------------------------------------
 
-/// Global Kora identity. Not an organization-specific record — see
-/// OrganizationMembership and StaffProfile for the tenant-scoped layers.
+/// Global Kora identity — the single account behind both the customer
+/// workspace (discovery, bookings, receipts) and the business workspace
+/// (organization membership). Not an organization-specific record — see
+/// OrganizationMembership and StaffProfile for the tenant-scoped layers,
+/// and CustomerProfile for the customer-workspace layer.
+///
+/// Credentials moved to AuthIdentity in the authentication phase (this
+/// model previously carried `password_hash` directly; see the
+/// `add_kora_authentication` migration) so a password is scoped to the
+/// PASSWORD auth identity rather than the global user record, leaving a
+/// clean boundary for future phone OTP, email magic-link, Apple, and
+/// Google identities without touching this table again.
 model User {
   id              String     @id @default(uuid()) @db.Uuid
   emailNormalized String?    @unique @map("email_normalized")
   phoneE164       String?    @unique @map("phone_e164")
   displayName     String     @map("display_name")
-  passwordHash    String?    @map("password_hash")
   status          UserStatus @default(PENDING)
   emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(6)
   phoneVerifiedAt DateTime?  @map("phone_verified_at") @db.Timestamptz(6)
@@ -166,8 +215,87 @@ model User {
   organizationsCreated Organization[]           @relation("OrganizationCreatedBy")
   memberships          OrganizationMembership[]
   auditEventsAsActor   AuditEvent[]             @relation("AuditEventActorUser")
+  authIdentities       AuthIdentity[]
+  sessions             Session[]
+  customerProfile      CustomerProfile?
 
   @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Authentication: provider-scoped identities, sessions, refresh tokens
+// ---------------------------------------------------------------------------
+
+/// Maps a User to one authentication provider (docs/DATA_MODEL.md section
+/// 2). For PASSWORD, `providerSubject` is the normalized email and
+/// `passwordHash`/`passwordAlgorithm` hold the credential; for a future
+/// external provider `providerSubject` is that provider's external user ID
+/// and the password fields stay null. Keeping the credential here, rather
+/// than on `users`, means adding a new provider never touches the User
+/// table.
+model AuthIdentity {
+  id                String       @id @default(uuid()) @db.Uuid
+  userId            String       @map("user_id") @db.Uuid
+  provider          AuthProvider
+  providerSubject   String       @map("provider_subject")
+  passwordHash      String?      @map("password_hash")
+  passwordAlgorithm String?      @default("argon2id") @map("password_algorithm")
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastUsedAt        DateTime?    @map("last_used_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerSubject])
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+/// A revocable device session (docs/DATA_MODEL.md section 2). Device/agent
+/// metadata is recorded for support and anomaly review only — it is never
+/// treated as proof of identity, and authorization never depends on it.
+model Session {
+  id            String                @id @default(uuid()) @db.Uuid
+  userId        String                @map("user_id") @db.Uuid
+  deviceLabel   String?               @map("device_label")
+  userAgent     String?               @map("user_agent")
+  ipHash        String?               @map("ip_hash")
+  createdAt     DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastUsedAt    DateTime              @default(now()) @map("last_used_at") @db.Timestamptz(6)
+  expiresAt     DateTime              @map("expires_at") @db.Timestamptz(6)
+  revokedAt     DateTime?             @map("revoked_at") @db.Timestamptz(6)
+  revokedReason SessionRevokedReason? @map("revoked_reason")
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId, revokedAt])
+  @@map("sessions")
+}
+
+/// One issued refresh token per row. Rotation replaces a row's use rather
+/// than mutating it: `usedAt` is set the moment a token is redeemed and a
+/// new row is created for the same session, so the whole chain for a
+/// session is that session's "token family". Presenting a token that is
+/// already used or revoked is refresh-token reuse — the caller revokes the
+/// entire owning Session (and therefore every token in its family) in
+/// response. `tokenHash` is a fast SHA-256 hash (not Argon2id): the raw
+/// token is already a high-entropy random value, not a human-guessable
+/// secret, so a slow password-hashing function is unnecessary here and
+/// would only add latency.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  sessionId String    @map("session_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  issuedAt  DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("refresh_tokens")
 }
 
 // ---------------------------------------------------------------------------
@@ -188,17 +316,21 @@ model Organization {
   updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   archivedAt      DateTime?          @map("archived_at") @db.Timestamptz(6)
 
-  createdBy          User                      @relation("OrganizationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  branches           Branch[]
-  memberships        OrganizationMembership[]
-  branchAssignments  BranchAssignment[]
-  roles              Role[]
-  membershipRoles    MembershipRole[]
-  staffProfiles      StaffProfile[]
-  staffInvitations   StaffInvitation[]
-  subscription       OrganizationSubscription?
-  subscriptionEvents SubscriptionEvent[]
-  auditEvents        AuditEvent[]
+  createdBy           User                             @relation("OrganizationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  branches            Branch[]
+  memberships         OrganizationMembership[]
+  branchAssignments   BranchAssignment[]
+  roles               Role[]
+  membershipRoles     MembershipRole[]
+  staffProfiles       StaffProfile[]
+  staffInvitations    StaffInvitation[]
+  subscription        OrganizationSubscription?
+  subscriptionEvents  SubscriptionEvent[]
+  auditEvents         AuditEvent[]
+  publicProfile       PublicBusinessProfile?
+  categoryAssignments OrganizationCategoryAssignment[]
+  customerRecords     CustomerRecord[]
+  customerFavorites   CustomerFavorite[]
 
   @@map("organizations")
 }
@@ -221,12 +353,26 @@ model Branch {
   updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
   archivedAt     DateTime?    @map("archived_at") @db.Timestamptz(6)
 
+  // Public discovery (docs task Phase 9). Deliberately separate from the
+  // operational `phone`/`email`/`address*` fields above: a business
+  // chooses what it publishes, which may differ from its internal contact
+  // details. Populated and shown only when `isDiscoverable` is true and
+  // the owning PublicBusinessProfile is published and not PRIVATE.
+  latitude         Decimal? @db.Decimal(9, 6)
+  longitude        Decimal? @db.Decimal(9, 6)
+  publicPhone      String?  @map("public_phone")
+  publicEmail      String?  @map("public_email")
+  openingHoursNote String?  @map("opening_hours_note")
+  isDiscoverable   Boolean  @default(false) @map("is_discoverable")
+
   organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branchAssignments BranchAssignment[]
+  staffInvitations  StaffInvitation[]
 
   @@unique([organizationId, code])
   @@unique([organizationId, id])
   @@index([organizationId])
+  @@index([organizationId, isDiscoverable])
   @@map("branches")
 }
 
@@ -297,9 +443,10 @@ model Role {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization    Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  rolePermissions RolePermission[]
-  membershipRoles MembershipRole[]
+  organization     Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rolePermissions  RolePermission[]
+  membershipRoles  MembershipRole[]
+  staffInvitations StaffInvitation[]
 
   // A plain composite unique constraint treats every NULL `organizationId`
   // as distinct, so this alone does not stop two system role templates
@@ -387,7 +534,18 @@ model StaffProfile {
 
 /// Staff invitation using a hashed, single-use acceptance token. The
 /// plaintext token is generated and returned once at creation time by the
-/// application layer and is never persisted.
+/// application layer and is never persisted — only `tokenHash` (SHA-256,
+/// same reasoning as RefreshToken.tokenHash: the token is already a
+/// high-entropy random value) is stored.
+///
+/// `roleId` and `branchId` make the invitation organization- AND
+/// branch-specific per the Phase 8 requirement: accepting it grants
+/// exactly this one role and (when set) scopes the new membership to this
+/// one branch via a BranchAssignment; a null `branchId` grants
+/// organization-wide access with no initial branch restriction. `roleId`
+/// is a plain (non-composite) foreign key rather than a tenant-composite
+/// one for the same reason as MembershipRole.role above: it must also
+/// accept system role templates, whose `organizationId` is null.
 model StaffInvitation {
   id                    String                @id @default(uuid()) @db.Uuid
   organizationId        String                @map("organization_id") @db.Uuid
@@ -395,6 +553,8 @@ model StaffInvitation {
   phoneE164             String?               @map("phone_e164")
   tokenHash             String                @unique @map("token_hash")
   invitedByMembershipId String                @map("invited_by_membership_id") @db.Uuid
+  roleId                String                @map("role_id") @db.Uuid
+  branchId              String?               @map("branch_id") @db.Uuid
   status                StaffInvitationStatus @default(PENDING)
   expiresAt             DateTime              @map("expires_at") @db.Timestamptz(6)
   acceptedAt            DateTime?             @map("accepted_at") @db.Timestamptz(6)
@@ -402,6 +562,8 @@ model StaffInvitation {
 
   organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   invitedBy    OrganizationMembership @relation("StaffInvitationInvitedBy", fields: [organizationId, invitedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  role         Role                   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  branch       Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, status])
   @@map("staff_invitations")
@@ -570,4 +732,143 @@ model AuditEvent {
   @@index([organizationId, entityType, entityId])
   @@index([actorUserId])
   @@map("audit_events")
+}
+
+// ---------------------------------------------------------------------------
+// Customer identity and public business discovery
+//
+// Two customer-shaped concepts, deliberately kept apart:
+// - CustomerProfile is the customer workspace of the single global User —
+//   it exists once per user, independent of any organization.
+// - CustomerRecord is one organization's private knowledge of a customer
+//   (for future booking/CRM history). It is only ever created when that
+//   customer actually interacts with that organization; nothing in this
+//   phase creates one yet, since booking/walk-in do not exist. One
+//   business can never see another business's CustomerRecord for the same
+//   person — there is no relation between CustomerRecord rows themselves.
+//
+// PublicBusinessProfile is the read side of discovery: the curated, public
+// subset of an Organization that PUBLIC/LINK_ONLY visibility exposes
+// through the discovery endpoints. It never carries subscription, staff,
+// audit, or customer data — see EntitlementsService/OnboardingService etc.
+// for that internal-only data, none of which this model can reach.
+// ---------------------------------------------------------------------------
+
+/// The customer workspace's identity: one row per User, created the first
+/// time that user acts as a customer (e.g. favoriting or, in a later
+/// phase, booking with a business). Distinct from OrganizationMembership,
+/// which is the business-workspace side of the same global User.
+model CustomerProfile {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  favorites       CustomerFavorite[]
+  customerRecords CustomerRecord[]
+
+  @@map("customer_profiles")
+}
+
+/// One organization's private record of a customer relationship
+/// (docs/DATA_MODEL.md section 6 `customers`, renamed to avoid colliding
+/// with the platform-wide CustomerProfile). `customerProfileId` is
+/// nullable because a staff-entered walk-in customer may not hold a Kora
+/// account at all. Organization-scoped and never joined across
+/// organizations — see the module header above.
+model CustomerRecord {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  customerProfileId String?   @map("customer_profile_id") @db.Uuid
+  name              String
+  phoneE164         String?   @map("phone_e164")
+  emailNormalized   String?   @map("email_normalized")
+  notes             String?
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt        DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customerProfile CustomerProfile? @relation(fields: [customerProfileId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, customerProfileId])
+  @@index([organizationId, phoneE164])
+  @@index([organizationId, emailNormalized])
+  @@map("customer_records")
+}
+
+/// A customer's saved business. Cross-organization by design (it belongs
+/// to the customer, not to any one organization), which is why it is not
+/// tenant-scoped the way CustomerRecord is.
+model CustomerFavorite {
+  id                String   @id @default(uuid()) @db.Uuid
+  customerProfileId String   @map("customer_profile_id") @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customerProfile CustomerProfile @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([customerProfileId, organizationId])
+  @@index([organizationId])
+  @@map("customer_favorites")
+}
+
+/// Seeded taxonomy for discovery filtering (e.g. "Salon & Barbershop",
+/// "Spa & Wellness"). Platform-level, not tenant-owned.
+model BusinessCategory {
+  id        String  @id @default(uuid()) @db.Uuid
+  code      String  @unique
+  name      String
+  sortOrder Int     @default(0) @map("sort_order")
+  active    Boolean @default(true)
+
+  organizationAssignments OrganizationCategoryAssignment[]
+
+  @@map("business_categories")
+}
+
+model OrganizationCategoryAssignment {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  categoryId     String   @map("category_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  category     BusinessCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, categoryId])
+  @@index([categoryId])
+  @@map("organization_category_assignments")
+}
+
+/// The curated public read model for one Organization (docs task Phase 9).
+/// One row per organization. Only PUBLIC and LINK_ONLY profiles with
+/// `publishedAt` set are ever returned by the discovery endpoints — see
+/// DiscoveryService. Nothing here references subscription, staff, audit,
+/// or CustomerRecord data.
+model PublicBusinessProfile {
+  id                 String                     @id @default(uuid()) @db.Uuid
+  organizationId     String                     @unique @map("organization_id") @db.Uuid
+  slug               String                     @unique
+  displayName        String                     @map("display_name")
+  description        String?
+  logoImageUrl       String?                    @map("logo_image_url")
+  coverImageUrl      String?                    @map("cover_image_url")
+  visibility         BusinessProfileVisibility  @default(PRIVATE)
+  verificationStatus BusinessVerificationStatus @default(UNVERIFIED) @map("verification_status")
+  searchKeywords     String?                    @map("search_keywords")
+  publishedAt        DateTime?                  @map("published_at") @db.Timestamptz(6)
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // A profile is eligible for *general search* only once published and
+  // PUBLIC; LINK_ONLY profiles are still resolvable by exact slug (see
+  // DiscoveryService) but are excluded from the search index by this
+  // composite index's intended query shape.
+  @@index([visibility, publishedAt])
+  @@map("public_business_profiles")
 }

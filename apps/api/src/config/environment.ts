@@ -3,12 +3,18 @@ const NODE_ENVIRONMENTS = ['development', 'test', 'production'] as const;
 type NodeEnvironment = (typeof NODE_ENVIRONMENTS)[number];
 
 const DATABASE_URL_PATTERN = /^postgres(ql)?:\/\/.+/;
+const DURATION_PATTERN = /^\d+[smhd]$/;
+const MIN_SIGNING_SECRET_LENGTH = 32;
 
 export interface KoraEnvironment extends Record<string, unknown> {
   NODE_ENV: NodeEnvironment;
   PORT: number;
   API_PREFIX: string;
   DATABASE_URL?: string;
+  JWT_ACCESS_SECRET?: string;
+  JWT_ACCESS_TTL: string;
+  REFRESH_TOKEN_PEPPER?: string;
+  REFRESH_TOKEN_TTL_DAYS: number;
 }
 
 export function validateEnvironment(
@@ -43,12 +49,37 @@ export function validateEnvironment(
     );
   }
 
+  const jwtAccessSecret = requireSigningSecret(
+    'JWT_ACCESS_SECRET',
+    input.JWT_ACCESS_SECRET,
+    nodeEnvironment,
+  );
+  const refreshTokenPepper = requireSigningSecret(
+    'REFRESH_TOKEN_PEPPER',
+    input.REFRESH_TOKEN_PEPPER,
+    nodeEnvironment,
+  );
+
+  const jwtAccessTtl = String(input.JWT_ACCESS_TTL ?? '15m').trim();
+  if (!DURATION_PATTERN.test(jwtAccessTtl)) {
+    throw new Error('JWT_ACCESS_TTL must look like "15m", "1h", or "30d"');
+  }
+
+  const refreshTokenTtlDays = Number(input.REFRESH_TOKEN_TTL_DAYS ?? 30);
+  if (!Number.isInteger(refreshTokenTtlDays) || refreshTokenTtlDays < 1) {
+    throw new Error('REFRESH_TOKEN_TTL_DAYS must be a positive integer');
+  }
+
   return {
     ...input,
     NODE_ENV: nodeEnvironment as NodeEnvironment,
     PORT: port,
     API_PREFIX: `/${apiPrefix}`,
     DATABASE_URL: databaseUrl,
+    JWT_ACCESS_SECRET: jwtAccessSecret,
+    JWT_ACCESS_TTL: jwtAccessTtl,
+    REFRESH_TOKEN_PEPPER: refreshTokenPepper,
+    REFRESH_TOKEN_TTL_DAYS: refreshTokenTtlDays,
   };
 }
 
@@ -58,4 +89,31 @@ function normalizeDatabaseUrl(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Both JWT_ACCESS_SECRET and REFRESH_TOKEN_PEPPER follow the same policy as
+ * DATABASE_URL: required and explicit in production (no local-.env
+ * fallback there), optional in development/test so unit tests that never
+ * boot the auth module do not need one, but never accepted below a safe
+ * minimum length when one is supplied.
+ */
+function requireSigningSecret(
+  name: string,
+  value: unknown,
+  nodeEnvironment: string,
+): string | undefined {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) {
+    if (nodeEnvironment === 'production') {
+      throw new Error(`${name} must be explicitly provided in production`);
+    }
+    return undefined;
+  }
+  if (trimmed.length < MIN_SIGNING_SECRET_LENGTH) {
+    throw new Error(
+      `${name} must be at least ${MIN_SIGNING_SECRET_LENGTH} characters`,
+    );
+  }
+  return trimmed;
 }

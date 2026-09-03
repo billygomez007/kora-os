@@ -1,17 +1,20 @@
 import { Controller, Get, Header, HttpStatus, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { Public } from '../auth/decorators/public.decorator.js';
 import { HealthService } from './health.service.js';
 
 @Controller()
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
 
+  @Public()
   @Get('health')
   @Header('Cache-Control', 'no-store')
   getLiveness() {
     return this.healthService.getLiveness();
   }
 
+  @Public()
   @Get('readiness')
   @Header('Cache-Control', 'no-store')
   async getReadiness(@Res({ passthrough: true }) response: Response) {

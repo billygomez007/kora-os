@@ -25,15 +25,10 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Store
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -61,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import com.realtegic.kora.data.model.QueueEntry
 import com.realtegic.kora.data.model.Transaction
 import com.realtegic.kora.data.model.TransactionStatus
+import com.realtegic.kora.ui.components.KoraBottomNavigation
 import com.realtegic.kora.ui.components.RoleStaffSwitcher
 import com.realtegic.kora.ui.dialogs.AddWalkInDialog
 import com.realtegic.kora.ui.dialogs.BookAppointmentDialog
@@ -73,11 +69,9 @@ import com.realtegic.kora.ui.screens.DashboardScreen
 import com.realtegic.kora.ui.screens.QueueScreen
 import com.realtegic.kora.ui.screens.ServicesStaffScreen
 import com.realtegic.kora.ui.screens.StaffConfirmationsScreen
-import com.realtegic.kora.ui.theme.GoldContainer
 import com.realtegic.kora.ui.theme.GoldPrimary
 import com.realtegic.kora.ui.theme.KoraTheme
 import com.realtegic.kora.ui.theme.SlateDark
-import com.realtegic.kora.ui.theme.StatusRed
 import com.realtegic.kora.ui.viewmodel.KoraViewModel
 import kotlinx.coroutines.launch
 
@@ -205,55 +199,13 @@ fun KoraApp(viewModel: KoraViewModel) {
             )
         },
         bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp
-            ) {
-                MainTab.values().forEach { tab ->
-                    val isSelected = currentTab == tab
-                    val badgeCount = when (tab) {
-                        MainTab.QUEUE -> waitingQueueCount
-                        MainTab.CONFIRMATIONS -> pendingCount + disputedCount
-                        else -> 0
-                    }
-
-                    NavigationBarItem(
-                        selected = isSelected,
-                        onClick = { currentTab = tab },
-                        icon = {
-                            if (badgeCount > 0) {
-                                BadgedBox(
-                                    badge = {
-                                        Badge(
-                                            containerColor = if (tab == MainTab.CONFIRMATIONS && disputedCount > 0) StatusRed else GoldPrimary,
-                                            contentColor = Color.White
-                                        ) {
-                                            Text("$badgeCount")
-                                        }
-                                    }
-                                ) {
-                                    Icon(tab.icon, contentDescription = tab.title)
-                                }
-                            } else {
-                                Icon(tab.icon, contentDescription = tab.title)
-                            }
-                        },
-                        label = {
-                            Text(
-                                text = tab.title,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = GoldPrimary,
-                            selectedTextColor = GoldPrimary,
-                            indicatorColor = GoldContainer
-                        ),
-                        modifier = Modifier.testTag("nav_tab_${tab.name.lowercase()}")
-                    )
-                }
-            }
+            KoraBottomNavigation(
+                currentTab = currentTab,
+                waitingQueueCount = waitingQueueCount,
+                pendingVerificationCount = pendingCount,
+                disputedVerificationCount = disputedCount,
+                onTabSelected = { currentTab = it }
+            )
         }
     ) { innerPadding ->
         Column(

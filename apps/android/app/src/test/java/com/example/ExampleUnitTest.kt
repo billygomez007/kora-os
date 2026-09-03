@@ -1,13 +1,15 @@
 package com.example
 
-import com.example.data.model.LineItem
 import com.example.data.model.Transaction
 import com.example.data.model.TransactionStatus
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.Locale
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
 class ExampleUnitTest {
 
     @Test
@@ -20,12 +22,21 @@ class ExampleUnitTest {
 
     @Test
     fun testLineItemsSerializationAndParsing() {
-        val items = listOf(
-            LineItem("svc_1", "Haircut", 70.0),
-            LineItem("svc_2", "Beard Trim", 35.0)
+        val transaction = Transaction(
+            id = "tx_parse_test",
+            organizationId = "org_1",
+            branchId = "br_1",
+            customerId = "cust_1",
+            customerName = "Kwame Mensah",
+            staffId = "stf_1",
+            staffName = "Michael Agyeman",
+            cashierId = "stf_owner",
+            cashierName = "Akua Mansa",
+            lineItemsJson = """[{"serviceId":"svc_1","serviceName":"Haircut","price":70.0},{"serviceId":"svc_2","serviceName":"Beard Trim","price":35.0}]""",
+            totalAmount = 105.0,
+            paymentMethod = "Cash"
         )
-        val json = Transaction.lineItemsToJson(items)
-        val parsed = Transaction.jsonToLineItems(json)
+        val parsed = transaction.parseLineItems()
 
         assertEquals(2, parsed.size)
         assertEquals("Haircut", parsed[0].serviceName)
@@ -46,7 +57,7 @@ class ExampleUnitTest {
             staffName = "Michael Agyeman",
             cashierId = "stf_owner",
             cashierName = "Akua Mansa",
-            servicesJson = Transaction.lineItemsToJson(listOf(LineItem("svc_1", "Haircut", 70.0))),
+            lineItemsJson = """[{"serviceId":"svc_1","serviceName":"Haircut","price":70.0}]""",
             totalAmount = 70.0,
             paymentMethod = "MTN MoMo",
             status = TransactionStatus.CONFIRMED.name,

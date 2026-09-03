@@ -1,4 +1,5 @@
-import { Controller, Get, Header } from '@nestjs/common';
+import { Controller, Get, Header, HttpStatus, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { HealthService } from './health.service.js';
 
 @Controller()
@@ -13,7 +14,17 @@ export class HealthController {
 
   @Get('readiness')
   @Header('Cache-Control', 'no-store')
-  getReadiness() {
-    return this.healthService.getReadiness();
+  async getReadiness(@Res({ passthrough: true }) response: Response) {
+    const readiness = await this.healthService.getReadiness();
+
+    // `passthrough: true` keeps the standard response envelope and
+    // request-ID behavior (via ApiResponseInterceptor) while still letting
+    // this handler choose a non-2xx status when a required dependency is
+    // unavailable.
+    response.status(
+      readiness.ready ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE,
+    );
+
+    return readiness;
   }
 }

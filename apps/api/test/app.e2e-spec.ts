@@ -46,14 +46,22 @@ describe('Kora API foundation (e2e)', () => {
     expect(healthResponse.body.data.service).toBe('kora-api');
     expect(healthResponse.body.meta.requestId).toEqual(expect.any(String));
 
+    // Exercises the real local PostgreSQL container: the database check
+    // must report "up" and the endpoint must return 200 while it is
+    // healthy.
     const readinessResponse = await request(app.getHttpServer())
       .get('/v1/readiness')
       .expect(200);
 
     expect(readinessResponse.body.data).toMatchObject({
+      ready: true,
       status: 'ready',
-      checks: [{ name: 'api', status: 'up' }],
+      checks: [
+        { name: 'api', status: 'up' },
+        { name: 'database', status: 'up' },
+      ],
     });
+    expect(readinessResponse.body.meta.requestId).toEqual(expect.any(String));
   });
 
   it('uses the standard error contract', async () => {

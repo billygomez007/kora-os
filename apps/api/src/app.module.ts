@@ -8,7 +8,10 @@ import { AppService } from './app.service.js';
 import { ApiExceptionFilter } from './common/http/api-exception.filter.js';
 import { validateEnvironment } from './config/environment.js';
 import { DatabaseModule } from './database/database.module.js';
+import { AuditModule } from './modules/audit/audit.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { OrganizationsModule } from './modules/organizations/organizations.module.js';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
 
 // The monorepo keeps a single local `.env` at the repository root rather
 // than one per package. Resolving it relative to this file (instead of
@@ -30,6 +33,9 @@ const repositoryRootEnvPath = path.resolve(
       validate: validateEnvironment,
     }),
     DatabaseModule,
+    AuditModule,
+    SubscriptionsModule,
+    OrganizationsModule,
     HealthModule,
   ],
   controllers: [AppController],

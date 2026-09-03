@@ -1,0 +1,295 @@
+# Kora OS Security Model
+
+Status: Foundation baseline
+
+## 1. Security objective
+
+Kora stores business operations, customer contact information, staff records, and financial activity. The security model must preserve confidentiality, integrity, availability, tenant isolation, and reliable attribution of important actions.
+
+Security is enforced by the backend and database boundaries. Mobile interface visibility is a usability feature, not an authorization control.
+
+## 2. Verification baselines
+
+Kora uses these external baselines during design, implementation, and release verification:
+
+- OWASP Application Security Verification Standard 5.0.0 for backend and API controls.
+- OWASP Mobile Application Security Verification Standard for mobile storage, cryptography, authentication, network, platform, code, resilience, and privacy controls.
+- Android platform security guidance for secure storage, permissions, networking, and application configuration.
+
+Using a baseline does not constitute certification. Release evidence must map implemented and tested controls to the applicable requirements.
+
+## 3. Protected assets
+
+- User identities, authentication factors, sessions, and recovery mechanisms.
+- Organization membership, roles, permissions, and branch assignments.
+- Customer names, contact details, notes, and history.
+- Appointments, queue entries, service records, and staff performance.
+- Transactions, payments, refunds, commissions, receipts, and reconciliation.
+- Subscription, billing, and provider references.
+- Audit events, operational logs, backups, and exported data.
+- Signing keys, API secrets, encryption keys, webhook secrets, and provider credentials.
+
+## 4. Trust boundaries
+
+- Mobile device to Kora API.
+- Kora API to PostgreSQL, Redis, object storage, and workers.
+- Kora workers to push, SMS, WhatsApp, email, payment, and billing providers.
+- Platform administrator to production control plane.
+- Public booking or invitation links to protected business resources.
+
+All data crossing a trust boundary is authenticated where appropriate, validated, bounded, and logged safely.
+
+## 5. Primary threats
+
+- Cross-organization data access.
+- Privilege escalation within an organization.
+- Stolen or replayed sessions.
+- Account enumeration and automated login abuse.
+- Forged invitations, password-reset links, or billing webhooks.
+- Duplicate or altered financial commands.
+- Unauthorized changes to service prices, commissions, or reconciliation.
+- Sensitive data exposure through logs, backups, notifications, or local storage.
+- Compromised mobile devices and tampered application packages.
+- Dependency, CI/CD, signing-key, or administrator compromise.
+- Denial of service against authentication, booking, or operational APIs.
+
+## 6. Authentication
+
+- Registration and recovery verify control of the selected email address or phone number.
+- Passwords, when supported directly, are hashed with a modern memory-hard password hashing function using reviewed parameters.
+- Password policy favors length and breached-password rejection over arbitrary composition rules.
+- Authentication responses do not reveal whether a specific account exists when that disclosure creates abuse risk.
+- Login, verification, invitation, and recovery routes use layered rate limits.
+- Verification and recovery tokens are random, single-use, purpose-bound, short-lived, and stored as hashes.
+- High-risk account changes require recent authentication or step-up verification.
+- Owners and platform administrators must support stronger authentication before production financial use.
+
+## 7. Sessions
+
+- Access tokens are short-lived and audience-bound.
+- Refresh tokens are random, rotated after use, stored only as hashes on the server, and revocable per device.
+- Refresh-token reuse revokes the affected token family and creates a security event.
+- Logout revokes the current session; logout-all revokes all user sessions.
+- Suspension or removal of a membership immediately prevents new tenant-scoped authorization.
+- Sensitive mobile credentials use operating-system protected storage and never Room, logs, analytics, or plain preferences.
+- Server clocks determine token and authorization validity.
+
+## 8. Tenant isolation
+
+- Every tenant-owned resource contains `organization_id`.
+- The active organization must match an active membership for the authenticated user.
+- Client-supplied organization and branch identifiers are selectors, never proof of permission.
+- Repositories require organization scope for tenant-owned queries.
+- Resource fetches verify tenant ownership before returning or mutating data.
+- Cross-tenant resource references are rejected before business logic executes.
+- Composite database constraints reinforce same-tenant relationships where practical.
+- Background jobs, cache keys, object-storage keys, and realtime topics include tenant scope.
+- Automated tests attempt cross-tenant reads, writes, references, exports, and subscriptions.
+
+## 9. Authorization
+
+Authorization evaluates identity, active membership, role-derived permissions, branch scope, subscription access mode, entitlement, resource relationship, and resource state.
+
+Rules include:
+
+- Default deny when no explicit permission grants access.
+- Multiple roles produce a union of allowed permissions, subject to branch and resource constraints.
+- A cashier cannot change commission rules merely because the mobile interface exposes financial screens.
+- A provider can answer only assigned payment verifications unless granted a management permission.
+- Owners cannot bypass platform-level controls such as subscription integrity or audit immutability.
+- Platform support access is separate from organization roles and is time-bounded and audited.
+
+Permission decisions are covered by policy unit tests and endpoint integration tests.
+
+## 10. Subscription enforcement
+
+- Subscription state and entitlements are calculated by the backend.
+- Mobile clients cannot set their own plan, entitlement, trial end, billing period, or access mode.
+- Limit checks execute inside the same transaction as branch or staff creation where concurrency could exceed limits.
+- Past-due and expired organizations retain controlled access according to the documented access mode.
+- Billing webhook signatures are verified before processing.
+- Provider events are deduplicated and reconciled against internal subscription history.
+- Billing payloads and credentials are restricted and retained only as long as required.
+
+## 11. API protection
+
+- Production APIs require TLS and reject unencrypted access.
+- Request bodies, query parameters, headers, file uploads, and identifiers are validated against explicit schemas.
+- Unknown fields are rejected for sensitive commands.
+- Request sizes, collection limits, date ranges, and file sizes are bounded.
+- Database queries use parameterized access through the selected data layer.
+- Errors return stable safe codes and request IDs without stack traces or database details.
+- CORS, if a future browser surface uses the API, is an explicit allowlist and is not an authentication mechanism.
+- Rate limits are stricter for authentication, public booking, invitations, exports, payments, refunds, and webhooks.
+
+## 12. Financial integrity
+
+- Money uses integer minor units and explicit currency codes.
+- Server code calculates prices, discounts, taxes, totals, commissions, and expected reconciliation values.
+- Client-submitted totals are never trusted as authoritative.
+- Payment recording, refund, void, verification, and dispute-resolution commands require stable idempotency keys.
+- The server fingerprints idempotent requests and rejects key reuse with different content.
+- Financial state changes use database transactions, validated state machines, optimistic concurrency, audit events, and transactional outbox records.
+- Confirmed financial facts are corrected with reversals or adjustments, not hidden edits.
+- Commission is finalized only after a verified outcome and reversed explicitly when necessary.
+- Uncertain network results are resolved by querying the original command or transaction before any retry with a new key.
+
+## 13. Android application security
+
+- The release application is signed only through controlled release infrastructure.
+- The existing Google Play application ID and signing continuity are protected.
+- Debug signing, debug logging, test endpoints, seed data, and inspection features are excluded from release builds.
+- Exported Android components are minimized and explicitly declared.
+- Deep links validate scheme, host, path, purpose, token, and authenticated state.
+- Runtime permissions are requested only when a user action requires them.
+- Sensitive screenshots are restricted on selected authentication and financial surfaces when justified by usability testing.
+- Clipboard use for sensitive information is avoided.
+- WebView is not introduced for core application behavior; any future use receives a dedicated threat review.
+- Backup and data-extraction rules exclude authentication and sensitive local data.
+
+## 14. Mobile local data
+
+- Room stores only the minimum data needed for responsive and offline workflows.
+- Authentication credentials and encryption keys are never stored in Room.
+- Sensitive cached fields are encrypted when the threat model requires it.
+- Cache rows retain organization ownership and are cleared on logout, membership removal, or organization access loss.
+- Switching organizations cannot display data from the previously active organization.
+- Local pending commands contain no provider secrets and expose safe retry status.
+- Local financial commands are enabled only after replay, conflict, and recovery tests pass.
+
+## 15. Network security
+
+- All production endpoints use modern TLS configuration and valid certificates.
+- Cleartext Android network traffic is disabled for release builds.
+- Development exceptions are isolated to debug configuration.
+- Certificate pinning is introduced only with a tested rotation and recovery strategy.
+- Timeouts, retry policies, and backoff are explicit.
+- Non-idempotent financial commands are never automatically retried with a new idempotency key.
+
+## 16. Backend and database security
+
+- API and worker processes use separate least-privilege runtime identities where practical.
+- Production databases are not publicly exposed.
+- Database users receive only required permissions.
+- Schema migration privileges are separate from normal runtime privileges.
+- Application access to audit events does not include update or delete permissions.
+- Redis is private, authenticated, encrypted where supported, and contains no durable source-of-truth financial state.
+- Object storage is private by default; downloads use short-lived authorized access.
+- Secrets come from managed secret storage and are rotated.
+- Development, staging, and production use separate credentials and data.
+
+## 17. Encryption and key management
+
+- Data is encrypted in transit and through managed storage encryption at rest.
+- Particularly sensitive provider tokens or payloads receive application-level protection when needed.
+- Keys are versioned and rotation procedures are tested.
+- Encryption keys are not stored beside encrypted production data in source control or mobile builds.
+- Backup encryption and restoration access follow the same control standard as production data.
+
+## 18. Notifications and external providers
+
+- Notification content is minimized; lock-screen messages do not expose unnecessary financial or customer detail.
+- Provider adapters receive only the information required for delivery.
+- Delivery callbacks and webhooks are authenticated and deduplicated.
+- Failed delivery does not roll back valid business or financial state.
+- Phone numbers and email addresses are normalized and authorized before use.
+- Provider outages use bounded retries and dead-letter handling.
+
+## 19. Audit and diagnostic logging
+
+Audit events contain actor, tenant, optional branch, action, entity, request ID, safe state metadata, source, and time. They are append-only from application code.
+
+Logs and audit metadata never contain:
+
+- Passwords or password hashes.
+- Access, refresh, verification, reset, or invitation tokens.
+- Full payment credentials or provider secrets.
+- Private encryption keys.
+- Unnecessary customer notes or message content.
+
+Access to audit history is permission-controlled. Export and administrator access create additional audit events.
+
+## 20. Privacy and lifecycle
+
+- Kora collects only information required for documented business purposes.
+- Access and retention are purpose-limited.
+- Customer and staff data export requires explicit authorization.
+- Account-deletion workflows distinguish identity deletion, organization ownership transfer, personal-data anonymization, and legally required financial retention.
+- Production retention periods are documented before launch.
+- Analytics and crash reporting exclude sensitive business and customer values by default.
+
+## 21. Administrative security
+
+- Platform administration uses separate privileged identities and strong authentication.
+- Privileged actions require explicit reasons and produce immutable audit events.
+- Support impersonation is disabled by default; if later introduced, it is consented, time-limited, visibly indicated, and audited.
+- Production access follows least privilege and periodic access review.
+- Emergency access is controlled, monitored, and reviewed after use.
+
+## 22. Supply chain and CI/CD
+
+- Dependencies and build plugins are version-controlled and scanned.
+- Pull requests run formatting, compilation, unit tests, integration tests, secret scanning, and dependency checks.
+- Protected branches require successful checks before release integration.
+- CI receives narrowly scoped short-lived credentials where supported.
+- Release artifacts are traceable to a reviewed commit.
+- Signing keys and production secrets are never printed in build logs.
+- Dependency updates are tested rather than accepted blindly.
+
+## 23. Backups and recovery
+
+- PostgreSQL uses encrypted automated backups and point-in-time recovery where supported.
+- Restore tests are performed on a schedule using a non-production target.
+- Recovery objectives are defined before production launch.
+- Object-storage and configuration recovery are included in disaster-recovery plans.
+- Audit and subscription history are included in backup verification.
+
+## 24. Security testing gates
+
+Before production launch, tests must cover:
+
+- Cross-tenant access for every sensitive resource type.
+- Missing, expired, revoked, and replayed authentication credentials.
+- Role and branch-scope denial paths.
+- Subscription and entitlement bypass attempts.
+- Duplicate payment and refund commands.
+- Invalid financial state transitions and stale versions.
+- Forged and replayed billing or notification webhooks.
+- Injection, mass assignment, malformed input, and excessive payloads.
+- Sensitive-data leakage in responses, logs, notifications, backups, and mobile storage.
+- Android exported components, deep links, backup rules, and release configuration.
+
+An independent penetration test is required before meaningful production financial volume.
+
+## 25. Incident response
+
+- Security events have severity, owner, evidence, containment, recovery, and review procedures.
+- Suspected token compromise supports immediate session and credential revocation.
+- Tenant exposure investigation uses request IDs, audit events, and infrastructure logs.
+- Evidence access is restricted and recorded.
+- Required user, partner, regulator, or authority notification is determined with qualified legal and security guidance.
+- Every material incident produces remediation actions and regression tests.
+
+## 26. Release security checklist
+
+- No secrets or production credentials in Git history or mobile artifacts.
+- Release build disables debug behavior and cleartext traffic.
+- Authentication and recovery abuse controls pass.
+- Tenant-isolation and permission test suites pass.
+- Idempotency and financial transition tests pass.
+- Subscription enforcement tests pass.
+- Database migrations and rollback or forward-fix procedure are reviewed.
+- Backup restoration is verified.
+- Logs and notifications are checked for sensitive values.
+- Dependency and artifact scans have no unaccepted critical findings.
+- Privacy policy, deletion process, support path, and incident contacts are current.
+
+## 27. Risk acceptance
+
+Security controls are not silently skipped. Any temporary exception records its owner, reason, affected assets, compensating controls, expiration date, and remediation task. Financial integrity and tenant-isolation controls cannot be waived for production convenience.
+
+## 28. References
+
+- OWASP ASVS: https://owasp.org/www-project-application-security-verification-standard/
+- OWASP MASVS: https://mas.owasp.org/MASVS/
+- Android Security: https://developer.android.com/security

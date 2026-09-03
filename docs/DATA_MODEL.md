@@ -20,51 +20,75 @@ Database: PostgreSQL
 
 ### `users`
 
-Global human identity.
+Global human identity — the single account behind both the customer
+workspace (`customer_profiles`, section 6) and the business workspace
+(`organization_memberships`, section 3). Neither workspace is the "real"
+account; both hang off this table.
 
 - `id`
 - `email_normalized` nullable and unique when present
 - `phone_e164` nullable and unique when present
 - `display_name`
-- `password_hash` nullable when an external identity provider is used
 - `status`: pending, active, suspended, deleted
 - `email_verified_at` nullable
 - `phone_verified_at` nullable
 - `created_at`, `updated_at`
 
-At least one usable identity method is required before activation.
+At least one usable identity method is required before activation
+(enforced by a `CHECK` constraint, not just application code). There is
+no `password_hash` column here — see `auth_identities` below for why.
 
 ### `auth_identities`
 
-Maps a user to an authentication provider.
+Maps a user to an authentication provider. `PASSWORD` is the only
+implemented provider; `GOOGLE`, `APPLE`, `PHONE_OTP`, and
+`EMAIL_MAGIC_LINK` are reserved enum values so adding one later never
+requires a schema change to this table or to `users`.
 
 - `id`, `user_id`
-- `provider`
-- `provider_subject`
-- `created_at`, `last_used_at`
+- `provider`: password, google, apple, phone_otp, email_magic_link
+- `provider_subject` — the normalized email for `password`; that
+  provider's external user ID for anything else
+- `password_hash` nullable (Argon2id; only set when `provider = password`)
+- `password_algorithm` nullable, defaults to `argon2id`
+- `created_at`, `updated_at`, `last_used_at` nullable
 
 Unique: `(provider, provider_subject)`.
 
 ### `sessions`
 
-Revocable device sessions.
-
-- `id`, `user_id`, `device_id`
-- `refresh_token_hash`
-- `created_at`, `last_used_at`, `expires_at`, `revoked_at`
-- `ip_hash` nullable, `user_agent` nullable
-
-### `devices`
-
-Registered application installations and push destinations.
+Revocable device sessions. `device_label`/`user_agent`/`ip_hash` are
+recorded for support and anomaly review only — never treated as proof of
+identity, and authorization never depends on them. There is no separate
+`devices` table yet (no push-notification delivery exists to register a
+destination for); if one is added later, `sessions` gains a foreign key
+to it rather than being restructured.
 
 - `id`, `user_id`
-- `platform`: android, ios
-- `installation_id`
-- `push_token_ciphertext` nullable
-- `app_version`, `last_seen_at`, `revoked_at`
+- `device_label` nullable, `user_agent` nullable, `ip_hash` nullable
+- `created_at`, `last_used_at`, `expires_at`
+- `revoked_at` nullable, `revoked_reason` nullable: logout, logout_all,
+  reuse_detected, expired, admin
 
-Unique: `(platform, installation_id)`.
+### `refresh_tokens`
+
+One row per issued refresh token; rotation creates a new row rather than
+mutating the old one, so a session's full chain of rotated tokens is
+recoverable. `token_hash` is a fast SHA-256 hash, not Argon2id — the raw
+token is already a high-entropy random value, not a human-guessable
+secret, so a slow password-hashing function would only add latency
+without adding security.
+
+- `id`, `session_id`
+- `token_hash` unique
+- `issued_at`, `expires_at`
+- `used_at` nullable — set the moment the token is redeemed (rotated)
+- `revoked_at` nullable
+
+Presenting a token that is already used or revoked is refresh-token
+reuse: the application layer responds by revoking the owning session (and
+therefore every token in its family, since they all share `session_id`)
+rather than only the reused row.
 
 ## 3. Organizations and branches
 
@@ -89,6 +113,18 @@ Unique: `(platform, installation_id)`.
 - `time_zone`, `currency`
 - `status`: active, inactive
 - `created_at`, `updated_at`, `archived_at`
+- Public discovery fields (section 8), deliberately separate from the
+  operational contact fields above — a business chooses what it
+  publishes, which may differ from its internal details: `latitude`
+  nullable, `longitude` nullable (decimal, ~11cm precision; a filter
+  input only — see `public_business_profiles` for why this is never used
+  to rank or display a "distance"), `public_phone` nullable,
+  `public_email` nullable, `opening_hours_note` nullable (freeform text,
+  not a structured schedule — full hours-of-operation modeling is
+  deferred to the booking/availability phase), `is_discoverable`
+  (defaults false; a branch only appears in discovery once both this and
+  its organization's `public_business_profiles.visibility`/`published_at`
+  allow it)
 
 Unique: `(organization_id, code)`.
 
@@ -222,12 +258,28 @@ Unique: `(organization_id, membership_id)`.
 ### `staff_invitations`
 
 - `id`, `organization_id`
-- `email_normalized` or `phone_e164`
-- `token_hash`
+- `email_normalized` or `phone_e164` (`CHECK`: at least one present)
+- `token_hash` — SHA-256 of a random token; the raw value is returned
+  once at creation and never persisted (same reasoning as
+  `refresh_tokens.token_hash`)
 - `invited_by_membership_id`
+- `role_id` — the exact role acceptance grants; a plain (non-composite)
+  foreign key to `roles.id` because it must also accept system role
+  templates, whose `organization_id` is null (same reasoning as
+  `membership_roles.role_id` in section 3)
+- `branch_id` nullable — the one branch acceptance scopes the new
+  membership to; null means organization-wide, no initial branch
+  restriction
 - `status`: pending, accepted, declined, revoked, expired
 - `expires_at`, `accepted_at` nullable
 - `created_at`
+
+Accepting is one transaction: create-or-reactivate the membership,
+ensure a `staff_profiles` row exists, assign `role_id` (and `branch_id`
+when set), then mark the invitation accepted. An invitation that is not
+`pending`, or whose `expires_at` has passed, cannot be reused — checked
+at accept time, not by a background sweep, so `status` can remain
+`pending` past `expires_at` until the next access attempt.
 
 ### `staff_services`
 
@@ -247,14 +299,18 @@ Unique: `(staff_profile_id, service_id)`.
 - `id`, `organization_id`, `staff_profile_id`
 - `starts_at`, `ends_at`, `reason`, `status`
 
-## 6. Catalog and customers
+## 6. Catalog, customers, and public discovery
 
-### `service_categories`
+`service_categories` and `services` below are still schema for a future
+phase (not yet created by any migration); `customer_profiles` through
+`public_business_profiles` are implemented now.
+
+### `service_categories` (future)
 
 - `id`, `organization_id`, `name`, `sort_order`
 - `active`, `created_at`, `updated_at`
 
-### `services`
+### `services` (future)
 
 - `id`, `organization_id`, `category_id` nullable
 - `name`, `description` nullable
@@ -263,14 +319,99 @@ Unique: `(staff_profile_id, service_id)`.
 - `deposit_required`, `deposit_minor` nullable
 - `active`, `created_at`, `updated_at`, `archived_at`
 
-### `customers`
+### `customer_profiles`
 
-- `id`, `organization_id`
+The customer workspace's identity: one row per `user_id`, created the
+first time that user acts as a customer. Distinct from
+`organization_memberships`, which is the business-workspace side of the
+same global `users` row (section 3).
+
+- `id`, `user_id` unique
+- `created_at`, `updated_at`
+
+### `customer_records`
+
+One organization's private knowledge of a customer — the tenant-scoped
+equivalent of what earlier drafts of this document called `customers`,
+renamed to avoid colliding with the platform-wide `customer_profiles`
+above. `customer_profile_id` is nullable because a staff-entered walk-in
+customer may not hold a Kora account at all. Only ever created when that
+customer actually interacts with the organization (a future booking,
+walk-in, or approved import) — nothing creates one yet, since booking and
+walk-in do not exist. One business's `customer_records` rows are never
+joined against another's; there is no relationship between them at all,
+which is what makes the isolation structural rather than just
+policy-enforced.
+
+- `id`, `organization_id`, `customer_profile_id` nullable
 - `name`, `phone_e164` nullable, `email_normalized` nullable
-- `notes` nullable, `preferred_staff_profile_id` nullable
+- `notes` nullable
 - `created_at`, `updated_at`, `archived_at`
 
-Indexes support organization-scoped phone, name, email, and recent-activity search. Phone numbers are not globally unique because each organization owns its customer relationship.
+Indexes support organization-scoped phone, email, and customer-profile
+lookup. Phone numbers are not globally unique because each organization
+owns its own customer relationship.
+
+### `customer_favorites`
+
+A customer's saved business. Cross-organization by design — it belongs
+to the customer, not to any one organization — which is why, unlike
+`customer_records`, it is not tenant-scoped.
+
+- `id`, `customer_profile_id`, `organization_id`
+- `created_at`
+
+Unique: `(customer_profile_id, organization_id)`.
+
+### `business_categories`
+
+Seeded taxonomy for discovery filtering (e.g. "Salon & Barbershop", "Spa
+& Wellness"). Platform-level, not tenant-owned.
+
+- `id`, `code` unique, `name`, `sort_order`, `active`
+
+### `organization_category_assignments`
+
+- `id`, `organization_id`, `category_id`
+- `created_at`
+
+Unique: `(organization_id, category_id)`.
+
+### `public_business_profiles`
+
+The curated public read model for one organization — one row per
+`organization_id`. Only `PUBLIC` (general search) or `LINK_ONLY`
+(exact-slug only) profiles with `published_at` set are ever returned by
+discovery, and never `PRIVATE` or unpublished ones. Nothing here
+references subscription, staff, audit, or `customer_records` data —
+structurally, not just by omission, since this table has no columns or
+relations that reach them.
+
+- `id`, `organization_id` unique
+- `slug` unique — the public-facing handle a customer bookmarks, shares,
+  or opens a deep link with; deliberately independent from
+  `organizations.slug` (an internal reference set at onboarding), since a
+  business may want a different public handle than its internal one
+- `display_name`, `description` nullable
+- `logo_image_url` nullable, `cover_image_url` nullable
+- `visibility`: public, link_only, private
+- `verification_status`: unverified, pending, verified, rejected
+- `search_keywords` nullable — additional text `text` search matches
+  against, alongside `display_name`
+- `published_at` nullable
+- `created_at`, `updated_at`
+
+Duplicate `display_name` values across organizations are expected and
+allowed — `slug` is what disambiguates two same-named businesses for a
+customer. A `pg_trgm` GIN index on `display_name` and `search_keywords`
+(added via `CREATE EXTENSION IF NOT EXISTS pg_trgm` in the
+`add_kora_authentication_rbac_and_discovery` migration) accelerates the
+`ILIKE '%text%'` pattern `text` search uses, without a separate search
+service. A "near" search filter (latitude/longitude/radius) is a
+deliberately approximate bounding box against `branches.latitude`/
+`longitude` — never a distance calculation, and never a returned
+"distance" value, so the API does not claim geospatial precision it does
+not have.
 
 ## 7. Appointments, queue, and service sessions
 

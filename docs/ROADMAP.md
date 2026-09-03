@@ -26,24 +26,29 @@ Completed:
 - Local PostgreSQL 18.6 development environment (Docker, `kora-postgres`).
 - Prisma 7 foundation: `prisma.config.ts`, the full identity/tenancy/workforce/subscription/audit schema, the first migration (`foundation_identity_tenancy_subscriptions`), and an idempotent seed for permissions, system roles, entitlement definitions, and the Starter/Growth/Business/Enterprise plan shells (no commercial prices set).
 - `/v1/readiness` reports real database connectivity alongside API liveness.
-- Internal (non-public) tenancy services: atomic organization onboarding (organization, owner membership, primary branch, trial subscription, initial entitlement resolution, audit event), data-driven entitlement resolution, subscription access-mode resolution, and append-only audit/subscription-event recording — covered by tests proving transactional rollback, multi-organization membership, tenant isolation, and plan-driven entitlements.
+- Internal tenancy services (organization onboarding, entitlement resolution, subscription access-mode resolution, append-only audit/subscription-event recording) now sit behind real authenticated, authorized HTTP endpoints — see the next three items.
+- Email-and-password authentication: Argon2id-hashed credentials scoped to a provider-neutral `AuthIdentity` (ready for phone OTP, email magic-link, Apple, and Google later without a schema change), short-lived JWT access tokens carrying no role/permission claims, rotating opaque refresh tokens with reuse detection that revokes the affected session, and per-route rate limiting. Routes: `POST /v1/auth/{register,login,refresh,logout,logout-all}`, `GET /v1/auth/{me,sessions}`, `DELETE /v1/auth/sessions/:sessionId`.
+- Organization-scoped RBAC and subscription enforcement, applied per route via `TenantAccessGuard`: active membership, the union of permissions across every role a membership holds, explicit branch assignment (or the broad `branches.manage` permission), and the organization's subscription access mode (`BLOCKED` denies everything, `READ_ONLY` denies mutations) — all resolved fresh from the database on every request, never cached or trusted from a token or request body.
+- Authenticated organization management (`POST`/`GET /v1/organizations`, `GET /v1/organizations/:organizationId`) and staff invitations (create/view/accept/reject/revoke under `/v1/organizations/:organizationId/staff-invitations` and `/v1/staff-invitations/:token`) — invitation tokens are single-use, hashed, organization- and role-specific, and optionally branch-specific.
+- Public business discovery (`GET /v1/discovery/businesses`, `/businesses/:slug`, `/businesses/:slug/branches`, `/categories`) backed by `PublicBusinessProfile`/`BusinessCategory`/branch discovery fields, plus owner/manager profile-management endpoints under `/v1/organizations/:organizationId/business-profile`. The global customer workspace (`CustomerProfile`, one per user) and the per-organization `CustomerRecord`/`CustomerFavorite` tables are modeled but not yet driven by any booking flow.
 
 Current limitations:
 
 - Room is still the only working data store on Android and contains demonstration-oriented local behavior.
-- There is no authentication, session management, or staff invitation flow yet — the schema exists (`StaffInvitation`) but no service or endpoint uses it.
-- The internal tenancy services above have no HTTP controllers in front of them yet; nothing here is a public endpoint.
-- Current Android roles are simulated locally and are not security controls.
+- Account verification (email/phone), password reset, and any external identity provider remain unimplemented — no email or SMS delivery provider is integrated yet.
+- Role/permission *management* endpoints (creating custom roles, editing a membership's roles or branches) are not implemented; every role assignment today comes from the seeded system roles via staff invitation.
+- Current Android roles are simulated locally and are not security controls, and Android does not yet call this API at all.
 - Payments and subscriptions are not connected to an authoritative backend, and no billing provider is integrated.
+- Services, appointments, walk-ins, and service sessions do not exist yet — discovery shows a business and its branches, but nothing bookable.
 - Android is the only implemented client.
 
 ### Implementation sequence for the remaining work
 
-Kept intentionally concise — each item expands into its own phase below (Phase 3 onward) once it starts, and is not built ahead of that phase:
+Kept intentionally concise — each item expands into its own phase below once it starts, and is not built ahead of that phase. Items 1–2 (authentication/sessions/staff invitations; organization-scoped RBAC, branch authorization, and subscription enforcement) and public business discovery are done — see "Current baseline" above — so the active boundary starts at item 3:
 
-1. Authentication, sessions, and staff invitations.
-2. Organization-scoped RBAC and branch authorization.
-3. Services, customers, and staff availability.
+1. ~~Authentication, sessions, and staff invitations.~~ Done.
+2. ~~Organization-scoped RBAC and branch authorization.~~ Done, including subscription-access-mode enforcement.
+3. Services, customers, and staff availability — the next boundary. `CustomerRecord`/`CustomerProfile` and role/permission management endpoints are the main carry-over pieces from items 1–2 still outstanding.
 4. Appointments, walk-ins, and live queues.
 5. Service sessions representing actual work performed.
 6. Transactions, line items, and checkout.
@@ -52,7 +57,7 @@ Kept intentionally concise — each item expands into its own phase below (Phase
 9. Subscription billing-provider integration.
 10. Real-time owner dashboard and notifications.
 11. Kora Team business messaging.
-12. Public customer booking.
+12. Public customer booking — builds directly on the discovery slugs/branch IDs already returned today.
 13. Offline mobile synchronization.
 14. Android API integration.
 15. iOS mobile application.
@@ -133,46 +138,60 @@ Exit gate:
 
 ## 7. Phase 3 — Identity and organization onboarding
 
+Status: backend deliverables done; Android deliverables not started (this
+phase's Android work is intentionally deferred until item 14 of the
+implementation sequence above — API integration — rather than built
+ahead of a client that would consume it).
+
 Deliverables:
 
-- Registration, login, refresh, logout, recovery, and verification flows.
-- Rotating revocable device sessions.
-- Owner organization creation transaction.
-- First branch, owner membership, roles, and eligible trial created atomically.
-- Staff invitation creation, acceptance, decline, revoke, and expiry.
-- Android authentication and organization-selection screens.
-- Secure Android credential storage.
+- Registration, login, refresh, logout, and rotating revocable sessions. Done.
+- ~~Recovery~~ and ~~verification~~ flows. Not done — no email/SMS provider integrated yet.
+- Owner organization creation transaction. Done.
+- First branch, owner membership, roles, and eligible trial created atomically. Done.
+- Staff invitation creation, acceptance, decline (implemented as reject), revoke, and expiry. Done.
+- Android authentication and organization-selection screens. Not started.
+- Secure Android credential storage. Not started.
 
 Critical tests:
 
-- Token replay and revoked sessions are rejected.
-- Invitation tokens are single-use, scoped, hashed, and expiring.
-- One identity can join two organizations without data leakage.
-- Failed onboarding does not leave partial tenant records.
+- Token replay and revoked sessions are rejected. Done (`test/auth.e2e-spec.ts`).
+- Invitation tokens are single-use, scoped, hashed, and expiring. Done (`test/organizations-and-invitations.e2e-spec.ts`).
+- One identity can join two organizations without data leakage. Done (`test/organizations-and-invitations.e2e-spec.ts`, plus the original onboarding coverage in `test/onboarding.e2e-spec.ts`).
+- Failed onboarding does not leave partial tenant records. Done (`test/onboarding.e2e-spec.ts`).
 
 Exit gate:
 
-- Two real emulator installations can sign in as different users and observe only their authorized organizations.
-- Local role simulation is no longer treated as security.
+- Two real emulator installations can sign in as different users and observe only their authorized organizations. Blocked on Android API integration (item 14).
+- Local role simulation is no longer treated as security. Still true locally until Android switches over; the backend itself already treats only server-resolved roles/permissions as authoritative.
 
 ## 8. Phase 4 — Staff, roles, branches, and services
 
 Deliverables:
 
-- Multiple role assignment and branch scope.
-- Staff profile, services, availability, and time-off.
-- Branch create, update, activate, and deactivate.
-- Service categories and service catalog.
-- Service-provider assignment.
-- Initial commission rule configuration.
-- Android owner and manager configuration flows.
+- Multiple role assignment and branch scope. Done — enforcement
+  (`TenantAccessGuard`) and assignment (via staff invitation acceptance)
+  both exist; authoring custom roles or editing an existing membership's
+  roles/branches after acceptance does not yet have an endpoint.
+- Staff profile, services, availability, and time-off. `StaffProfile` is
+  created automatically on invitation acceptance; services, availability,
+  and time-off are not modeled yet.
+- Branch create, update, activate, and deactivate. Branches are created
+  once, atomically, during organization onboarding; standalone branch
+  management endpoints do not exist yet. Branch *discovery* fields do
+  have a dedicated update endpoint (`PUT
+  /organizations/:organizationId/branches/:branchId/discovery`).
+- Service categories and service catalog. Not started.
+- Service-provider assignment. Not started (depends on the service catalog).
+- Initial commission rule configuration. Not started.
+- Android owner and manager configuration flows. Not started.
 
 Critical tests:
 
-- Cashiers cannot edit commission rules.
-- Branch-restricted staff cannot access another branch.
-- Staff and branch entitlement limits cannot be bypassed concurrently.
-- Historical line-item prices remain unaffected by catalog edits.
+- Cashiers cannot edit commission rules. Not yet applicable — no commission rules exist.
+- Branch-restricted staff cannot access another branch. Done (`test/organizations-and-invitations.e2e-spec.ts`), proven against a minimal test-only branch-scoped route since no production domain route is branch-scoped yet; a manager-role invitation with an explicit `branchId` demonstrates the assignment side.
+- Staff and branch entitlement limits cannot be bypassed concurrently. Entitlement resolution itself is done and tested (Phase 5, `EntitlementsService`); enforcing `staff.max`/`branches.max` against invitation acceptance and branch creation is not wired up yet.
+- Historical line-item prices remain unaffected by catalog edits. Not yet applicable — no catalog exists.
 
 Exit gate:
 
@@ -390,4 +409,18 @@ Every release candidate must pass:
 
 ## 20. Immediate next step
 
-After the six foundation documents are committed, scaffold `apps/api` with strict configuration, health and readiness endpoints, environment validation, standard errors, request IDs, tests, and local PostgreSQL and Redis dependencies. No salon feature module is implemented until that engineering foundation is green.
+Historical: after the six foundation documents were committed, `apps/api`
+was scaffolded with strict configuration, health and readiness endpoints,
+environment validation, standard errors, request IDs, tests, and a local
+PostgreSQL dependency (Redis has not been needed yet — nothing built so
+far requires bounded caching, job queues, or realtime coordination).
+
+Current: the database/tenancy foundation (this document's Phase 2),
+authentication and sessions, organization-scoped RBAC and subscription
+enforcement, staff invitations, and public business discovery are done —
+see "Current baseline" above. The next step is item 3 of the
+implementation sequence: services, customers (`CustomerRecord`), and
+staff availability — the last pieces Phase 4 above needs before
+appointments and booking (item 4) can begin. No further feature module is
+implemented until each prior one's quality gates (tests, lint, build,
+migration status) are green, per this document's delivery principle.

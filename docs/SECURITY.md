@@ -64,6 +64,16 @@ All data crossing a trust boundary is authenticated where appropriate, validated
 - High-risk account changes require recent authentication or step-up verification.
 - Owners and platform administrators must support stronger authentication before production financial use.
 
+Implemented: email-and-password registration and login (Argon2id
+hashing), auth-route rate limiting (a stricter per-route limit than the
+platform-wide default; IP-based, so it cannot distinguish a real account
+from a nonexistent one), and identical error text/shape between a wrong
+password and a non-existent email. Not yet implemented: phone/email
+verification delivery, password reset, breached-password rejection, and
+step-up verification — Kora has no email or SMS provider integrated yet
+(docs/ROADMAP.md), so registration leaves `email_verified_at` null
+rather than gating the account on a step that cannot be completed.
+
 ## 7. Sessions
 
 - Access tokens are short-lived and audience-bound.
@@ -73,6 +83,27 @@ All data crossing a trust boundary is authenticated where appropriate, validated
 - Suspension or removal of a membership immediately prevents new tenant-scoped authorization.
 - Sensitive mobile credentials use operating-system protected storage and never Room, logs, analytics, or plain preferences.
 - Server clocks determine token and authorization validity.
+
+All of the above except the mobile-storage line (no Android client
+consumes this API yet) is implemented as described. Concretely: an
+access token is a JWT carrying only a user ID and session ID (`sub`,
+`sid`) — no role, permission, or other mutable authorization claim ever
+goes into a token, so a permission change takes effect on a caller's very
+next request rather than waiting for their token to expire. A refresh
+token is a `crypto.randomBytes(32)` value; the server stores only its
+SHA-256 hash (a fast hash, deliberately not Argon2id — the token is
+already high-entropy and unguessable, so a slow password-hashing function
+would add latency without adding security; see docs/DATA_MODEL.md's
+`refresh_tokens` entry). Every refresh marks the presented token `used`
+and issues a new one for the same session; presenting an already-used or
+already-revoked token revokes that whole session — not just the reused
+token — which is the "security event" this document originally
+anticipated (implemented as an `audit_events` row, action
+`auth.refresh_reuse_detected`, rather than a separate table). Revocation
+is checked on every authenticated request (the session behind an access
+token's `sid` claim must still be present and not revoked), not only
+when a refresh is attempted, so a revoked session is denied immediately
+rather than merely failing to renew.
 
 ## 8. Tenant isolation
 
@@ -85,6 +116,23 @@ All data crossing a trust boundary is authenticated where appropriate, validated
 - Composite database constraints reinforce same-tenant relationships where practical.
 - Background jobs, cache keys, object-storage keys, and realtime topics include tenant scope.
 - Automated tests attempt cross-tenant reads, writes, references, exports, and subscriptions.
+
+Implemented via TenantContextService (resolves an active membership,
+its union of role permissions, its branch assignments, and the
+organization's subscription access mode fresh from the database on
+every call — nothing here is cached or trusted from a token) and
+TenantAccessGuard (applies that resolution per route: membership denies
+access to any organization the caller does not belong to; a missing
+required permission or an out-of-scope branch — an explicit
+`BranchAssignment`, or the broad `branches.manage` permission — denies
+the request; `BLOCKED` subscription access denies everything and
+`READ_ONLY` denies mutating requests unless a route opts in). An
+`X-Kora-Organization-Id` header or `:organizationId` route param is
+read only as a *selector*; TenantAccessGuard still re-resolves real
+membership before granting anything, so naming an organization the
+caller does not belong to is rejected with `403`. See section 29 for the
+one deliberate, curated exception to this isolation: public business
+discovery.
 
 ## 9. Authorization
 
@@ -293,3 +341,43 @@ Security controls are not silently skipped. Any temporary exception records its 
 - OWASP ASVS: https://owasp.org/www-project-application-security-verification-standard/
 - OWASP MASVS: https://mas.owasp.org/MASVS/
 - Android Security: https://developer.android.com/security
+
+## 29. Public discovery and business visibility
+
+Public business discovery (`docs/API_SPEC.md` section 29) is the one
+deliberate, narrow exception to section 8's tenant isolation: it is
+designed to expose a curated subset of organization data to anyone,
+authenticated or not. The control here is not "deny by default" as with
+every other tenant-scoped read — it is a strict allowlist of exactly
+which fields and which rows are reachable, enforced structurally:
+
+- `PublicBusinessProfileVisibility` governs discoverability, not
+  authentication: `PRIVATE` never appears in discovery regardless of
+  publication state; `LINK_ONLY` is resolvable only by exact slug (never
+  by search) — "having the link" is the access control, not an account;
+  `PUBLIC` is the only visibility that appears in general search. All
+  three still require `published_at` to be set — a business controls
+  when it goes live independently of its visibility choice.
+- The discovery read path (`DiscoveryService`) only ever selects
+  `PublicBusinessProfile`'s own columns and a `Branch`'s public-only
+  columns (`latitude`, `longitude`, `public_phone`, `public_email`,
+  `opening_hours_note`, gated by `is_discoverable`) — never
+  `organizations`' internal fields, `organization_subscriptions`, `roles`
+  /`membership_roles`, `staff_profiles`, `audit_events`, or
+  `customer_records`. There is no query path from a discovery endpoint
+  into any of those tables, so this is enforced by what the service can
+  reach, not only by what it happens to select.
+- A business's operational contact details (`branches.phone`/`email`)
+  are separate columns from its public ones
+  (`branches.public_phone`/`public_email`); publishing a profile never
+  exposes the former.
+- No rating, review, or "distance" value is fabricated. A "near" search
+  filters against an approximate bounding box and never ranks or labels
+  results by computed distance (docs/DATA_MODEL.md's
+  `public_business_profiles` entry) — a plausible-looking but inexact
+  number is a worse trust signal than none at all.
+- Publishing a profile is authorization-gated the normal way
+  (`business_profile.manage`, owner/manager by default) and validated:
+  a profile cannot be published with zero discoverable branches, so a
+  customer can never land on a published business with nowhere to
+  actually go.

@@ -44,6 +44,17 @@ If-Match: <resource-version>          required for selected concurrent updates
 
 The organization header selects from the authenticated user's memberships. It does not grant access by itself.
 
+When a route already carries `:organizationId` in its path (every
+organization-scoped route implemented so far does), that path param is
+authoritative and the header is not needed; the header exists for routes
+that are organization-scoped without the ID appearing in the path. Either
+way, the ID is only ever a *selector* — TenantAccessGuard re-resolves an
+active `OrganizationMembership` row for the authenticated user before any
+access is granted, so a header or path value naming an organization the
+caller does not belong to is rejected with `403`, not silently ignored.
+The same is true of a request body: an `organizationId` field inside a
+JSON body is never treated as authorization evidence.
+
 ## 4. Response shape
 
 Single-resource response:
@@ -120,39 +131,67 @@ Default and maximum limits are server-controlled. Filters use documented query p
 
 ## 8. Authentication endpoints
 
+One Kora identity (`User`) carries both workspaces at once — see section
+2 of `docs/DATA_MODEL.md` for how `OrganizationMembership` (business
+workspace) and `CustomerProfile` (customer workspace) both hang off the
+same `User` without either being the "real" account. `PASSWORD` is the
+only implemented provider; `AuthIdentity.provider` reserves `GOOGLE`,
+`APPLE`, `PHONE_OTP`, and `EMAIL_MAGIC_LINK` for later without any schema
+change when they arrive.
+
 ### Public
 
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/refresh`
-- `POST /auth/password/forgot`
-- `POST /auth/password/reset`
-- `POST /auth/verification/send`
-- `POST /auth/verification/confirm`
+
+Password reset and email/phone verification endpoints are not
+implemented yet — Kora has no email or SMS delivery provider integrated
+(see docs/ROADMAP.md). `User.emailVerifiedAt` stays null after
+registration until that flow exists; accounts are usable in the meantime.
 
 ### Authenticated
 
-- `POST /auth/logout`
-- `POST /auth/logout-all`
-- `GET /me`
-- `PATCH /me`
-- `GET /me/memberships`
-- `GET /me/sessions`
-- `DELETE /me/sessions/{sessionId}`
-- `PUT /me/devices/{installationId}`
-- `DELETE /me/devices/{installationId}`
+- `POST /auth/logout` — revokes the current session.
+- `POST /auth/logout-all` — revokes every session for the user.
+- `GET /auth/me`
+- `GET /auth/sessions` — every non-revoked session for the user.
+- `DELETE /auth/sessions/{sessionId}` — revoke one specific session; a
+  user may only revoke their own.
 
-Refresh tokens are rotated. A detected reuse revokes the affected session family.
+`PATCH /auth/me` and `GET /auth/me/memberships` are not implemented yet;
+`GET /organizations` (section 9) already lists the caller's organization
+memberships. Device/push registration (`PUT`/`DELETE
+/me/devices/{installationId}`) has no corresponding table yet — session
+rows record `deviceLabel`/`userAgent` for support and anomaly review only,
+never as proof of identity, and that is deliberately as far as device
+tracking goes until push notifications are built.
+
+An access token is a short-lived signed JWT carrying only a user ID and
+session ID — never roles or permissions, which are always re-resolved
+from the database on the request that needs them (see section 3 and
+docs/SECURITY.md). A refresh token is a long-lived, cryptographically
+random opaque value; the server stores only its hash. Every refresh
+rotates the token: the presented token is marked used and a new one is
+issued in the same response. Presenting an already-used (or already
+revoked) refresh token is treated as reuse and revokes the entire
+session — every token that session ever issued stops working, not just
+the reused one.
 
 ## 9. Organization onboarding
 
-- `POST /organizations`
-- `GET /organizations/{organizationId}`
-- `PATCH /organizations/{organizationId}`
-- `GET /organizations/{organizationId}/onboarding`
-- `POST /organizations/{organizationId}/onboarding/complete`
+- `POST /organizations` — atomically creates the organization, owner
+  membership, primary branch, trial subscription, and initial
+  entitlements, and writes an audit event; rolls back entirely on any
+  failure (including an unrecognized trial plan code).
+- `GET /organizations` — every organization the caller has an active
+  membership in.
+- `GET /organizations/{organizationId}` — requires an active membership
+  in that organization.
 
-Creating an organization atomically creates its owner membership, first branch, baseline roles, and eligible trial subscription.
+`PATCH /organizations/{organizationId}` and the separate onboarding
+sub-resource are not implemented; onboarding is a single atomic command,
+not a multi-step resource.
 
 ## 10. Branches
 
@@ -169,42 +208,57 @@ Creation checks the effective `branches.max` entitlement.
 
 ### Invitations and memberships
 
-- `GET /staff-invitations`
-- `POST /staff-invitations`
-- `POST /staff-invitations/{invitationId}/revoke`
-- `GET /staff-invitations/acceptance/{token}`
-- `POST /staff-invitations/acceptance/{token}/accept`
-- `POST /staff-invitations/acceptance/{token}/decline`
-- `GET /memberships`
-- `GET /memberships/{membershipId}`
-- `POST /memberships/{membershipId}/suspend`
-- `POST /memberships/{membershipId}/reactivate`
-- `DELETE /memberships/{membershipId}`
+Staff never join a business through public discovery — only through an
+invitation created by someone already holding the `staff.invite`
+permission (owner and manager by default).
 
-Invitation tokens are accepted in request bodies only where necessary and are not logged.
+- `POST /organizations/{organizationId}/staff-invitations` — requires
+  `staff.invite`; targets one role (`roleId`, required — a system role or
+  one belonging to this organization) and optionally one branch
+  (`branchId`); returns the raw token exactly once (`rawToken` in the
+  response body) — it is never retrievable again, and only its SHA-256
+  hash is stored. There is no email/SMS delivery yet, so surfacing that
+  token to the invitee is the caller's responsibility today.
+- `GET /staff-invitations/{token}` — public, token-gated rather than
+  authenticated. Returns only what an invitee needs to decide (business
+  name, role name, branch name, status, expiry) — never the invitation's
+  target email/phone or any other organization detail. An unknown token
+  returns the same 404 as any other lookup failure, so no distinction
+  leaks.
+- `POST /staff-invitations/{token}/accept` — requires authentication.
+  Atomically creates-or-reactivates the membership, ensures a
+  `StaffProfile`, assigns the invited role and (when set) branch, and
+  marks the invitation accepted. Fails with 409 if the invitation is not
+  pending or has expired, and 403 if the invitation targeted a specific
+  email that does not match the authenticated account's.
+- `POST /staff-invitations/{token}/reject` — requires authentication;
+  marks the invitation declined.
+- `POST /organizations/{organizationId}/staff-invitations/{invitationId}/revoke`
+  — requires `staff.invite`; only a still-pending invitation can be
+  revoked.
+
+Accepting, rejecting, and revoking are all audited. Membership
+suspend/reactivate/remove endpoints (`GET`/`POST`/`DELETE
+/memberships/...`) are not implemented yet.
 
 ### Roles and permissions
 
-- `GET /permissions`
-- `GET /roles`
-- `POST /roles`
-- `PATCH /roles/{roleId}`
-- `PUT /roles/{roleId}/permissions`
-- `PUT /memberships/{membershipId}/roles`
-- `PUT /memberships/{membershipId}/branches`
+Not implemented yet: `GET /permissions`, `GET`/`POST`/`PATCH /roles`,
+`PUT /roles/{roleId}/permissions`, `PUT
+/memberships/{membershipId}/roles`, `PUT
+/memberships/{membershipId}/branches`. Roles and permissions are already
+fully enforced server-side (see docs/SECURITY.md and
+TenantAccessGuard/TenantContextService) — only the management endpoints
+for authoring custom roles remain unbuilt; the seeded system roles
+(owner, manager, cashier, receptionist, service_provider, accountant)
+cover every role assignment today.
 
 ### Staff profiles
 
-- `GET /staff`
-- `GET /staff/{staffId}`
-- `PATCH /staff/{staffId}`
-- `PUT /staff/{staffId}/services`
-- `GET /staff/{staffId}/availability`
-- `PUT /staff/{staffId}/availability`
-- `GET /staff/{staffId}/time-off`
-- `POST /staff/{staffId}/time-off`
-
-Staff creation is completed through invitation acceptance and checks `staff.max` entitlement.
+Not implemented yet: `GET`/`PATCH /staff`, `PUT /staff/{staffId}/services`,
+staff availability, and time-off endpoints. `StaffProfile` rows already
+exist (created automatically on invitation acceptance) but have no
+dedicated read/update endpoints yet.
 
 ## 12. Subscriptions and entitlements
 
@@ -458,7 +512,7 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 - `organization.read`, `organization.update`
 - `branches.read`, `branches.manage`
 - `subscriptions.read`, `subscriptions.manage`
-- `staff.read`, `staff.manage`
+- `staff.read`, `staff.manage`, `staff.invite`
 - `roles.read`, `roles.manage`
 - `services.read`, `services.manage`
 - `customers.read`, `customers.manage`
@@ -472,6 +526,7 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 - `reconciliation.perform`, `reconciliation.approve`
 - `reports.basic`, `reports.advanced`
 - `audit.read`
+- `business_profile.manage`
 
 Permission codes are seeded and stable. Roles map to permissions and may later be customized by authorized organizations.
 
@@ -482,3 +537,92 @@ Permission codes are seeded and stable. Roles map to permissions and may later b
 - Consumer tests verify Android parsing against representative responses.
 - Financial contract tests repeat the same idempotency key and simulate uncertain network outcomes.
 - Backward compatibility is checked before API releases used by published mobile versions.
+
+## 29. Public business discovery
+
+Every route below is public — no `Authorization` header, no organization
+context, reachable by a customer-workspace user or an anonymous visitor
+equally. See section 30 for how discovery relates to the rest of the
+platform, and docs/DATA_MODEL.md's discovery section for the underlying
+`PublicBusinessProfile`/`Branch` fields.
+
+- `GET /discovery/businesses` — search. Query params: `text` (matched
+  against display name and search keywords), `category` (a
+  `BusinessCategory.code`), `city`, `region`, `country`,
+  `verificationStatus`, `nearLat`/`nearLng`/`radiusKm` (an approximate
+  bounding-box filter — not a distance sort, and no "distance" value is
+  ever returned; see docs/DATA_MODEL.md for why), `limit` (1–50, default
+  20), `cursor`. Only `PUBLIC`, published profiles appear here.
+- `GET /discovery/businesses/{slug}` — resolves `PUBLIC` or `LINK_ONLY`
+  published profiles by exact slug (a `LINK_ONLY` business is reachable
+  by whoever has its link, just not by browsing); `PRIVATE` or
+  unpublished profiles return `404`, identically to an unknown slug.
+- `GET /discovery/businesses/{slug}/branches` — that business's
+  discoverable branches (`Branch.isDiscoverable = true`) only.
+- `GET /discovery/categories` — the seeded category vocabulary.
+
+Collection responses use the standard cursor shape (section 4): `page`
+is a sibling of `data`, not nested inside it. The cursor is an opaque,
+`id`-ordered value — stable (a page never skips or repeats a result as
+more pages are fetched) but not a meaningful sort key on its own; do not
+parse it.
+
+Duplicate business names are allowed and expected (e.g. two unrelated
+"Empowerment Salon" businesses) — `PublicBusinessProfile.slug` is what
+is actually unique, and what a customer should bookmark, share, or open
+a deep link with. A future mobile deep link such as
+`kora://business/{slug}` (opening the app directly to that business's
+profile, with a web fallback resolved later if a companion site exists)
+is anticipated by this slug design but not implemented in this phase —
+no website is being built.
+
+`organizationId` and each branch's `branchId` in these responses are the
+same stable internal identifiers used everywhere else in the API. A
+future booking flow reads a business by slug for display, then uses
+these IDs (plus a service ID, once services exist) to actually create an
+appointment — see section 30.
+
+Authorized management (owner/manager, via the `business_profile.manage`
+permission):
+
+- `GET`/`PUT /organizations/{organizationId}/business-profile` — view or
+  upsert the profile (`slug`, `displayName`, `description`,
+  `logoImageUrl`, `coverImageUrl`, `visibility`, `searchKeywords`,
+  `categoryCodes`).
+- `POST /organizations/{organizationId}/business-profile/publish` —
+  fails with `422`-equivalent validation (`400`) unless at least one
+  branch is marked discoverable; a published profile with nowhere to
+  visit would be meaningless.
+- `POST /organizations/{organizationId}/business-profile/unpublish`
+- `PUT /organizations/{organizationId}/branches/{branchId}/discovery` —
+  the one branch-scoped route in this phase (`latitude`, `longitude`,
+  `publicPhone`, `publicEmail`, `openingHoursNote`, `isDiscoverable`).
+
+## 30. Customer workspace vs. business workspace, and the booking boundary
+
+One Kora account, two workspaces:
+
+- **Customer workspace**: discover businesses (section 29), and in a
+  later phase, book appointments, view receipts, and manage favorites.
+  Grounded in `CustomerProfile` — one row per `User`, created the first
+  time that user acts as a customer. No organization membership is
+  required to use it.
+- **Business workspace**: operate one or more organizations as an owner
+  or staff member. Grounded in `OrganizationMembership` — see section 8.
+
+The same `User.id` can appear in both roles simultaneously (an owner of
+one salon can also be a customer of another), and the two are otherwise
+unrelated: a customer's discovery activity is never visible to a
+business, and a business's internal data is never visible through
+discovery (section 29 and docs/SECURITY.md).
+
+`CustomerRecord` — one organization's private, per-organization knowledge
+of a customer, for future booking/CRM history — is modeled
+(docs/DATA_MODEL.md) but nothing creates one yet, since there is no
+booking or walk-in flow. When that flow exists, it will follow this
+reference chain: `Organization` → `Branch` (from section 29's discovery
+response, or an authenticated staff listing once branches have their own
+endpoint) → `CustomerRecord`/`CustomerProfile` → `Service` (not modeled
+yet) → the appointment itself. That chain, not any new identity concept,
+is the next phase's data-model boundary: Services → Availability →
+Booking → Walk-in/Queue → Service Session (docs/ROADMAP.md).

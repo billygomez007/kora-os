@@ -35,7 +35,25 @@ can expand beyond salons and barbershops.
 Kora remains a mobile product. Any future web surface is only a supporting
 customer-booking or administration channel.
 
-## 3. Roles
+### Customer workspace and business workspace
+
+One Kora account carries two independent workspaces:
+
+- **Customer workspace**: discover businesses (a customer can search for a
+  business such as Empowerment Salon, open its public profile, and select
+  a branch), and in a later phase, book appointments, view receipts, and
+  manage favorites. Requires no organization membership to use.
+- **Business workspace**: the roles in section 3 below — owners and staff
+  operating one or more organizations and branches.
+
+The same person can be a customer of one business and staff at another
+using the same account; the two workspaces never share data with each
+other (see docs/SECURITY.md section 29 for how discovery stays isolated
+from tenant data). Public business search is available today
+(`GET /v1/discovery/businesses` and related endpoints); booking, receipts,
+and loyalty remain future work per the "Future" list above.
+
+## 3. Roles (business workspace)
 
 - Owner: subscriptions, branches, staff, services, reports, and disputes.
 - Manager: permitted branch operations and selected financial controls.

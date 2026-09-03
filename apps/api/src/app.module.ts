@@ -14,6 +14,7 @@ import { AuthModule } from './modules/auth/auth.module.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
+import { StaffInvitationsModule } from './modules/staff-invitations/staff-invitations.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
 
 // The monorepo keeps a single local `.env` at the repository root rather
@@ -42,6 +43,7 @@ const repositoryRootEnvPath = path.resolve(
     AuditModule,
     SubscriptionsModule,
     OrganizationsModule,
+    StaffInvitationsModule,
     AuthModule,
     HealthModule,
   ],

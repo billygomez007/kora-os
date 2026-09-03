@@ -12,6 +12,7 @@ import { DatabaseModule } from './database/database.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
+import { DiscoveryModule } from './modules/discovery/discovery.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { StaffInvitationsModule } from './modules/staff-invitations/staff-invitations.module.js';
@@ -44,6 +45,7 @@ const repositoryRootEnvPath = path.resolve(
     SubscriptionsModule,
     OrganizationsModule,
     StaffInvitationsModule,
+    DiscoveryModule,
     AuthModule,
     HealthModule,
   ],

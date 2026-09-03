@@ -77,6 +77,7 @@ const PERMISSIONS: ReadonlyArray<{ code: string; description: string }> = [
   { code: 'reports.basic', description: 'View basic operational reports.' },
   { code: 'reports.advanced', description: 'View advanced reports (entitlement-gated).' },
   { code: 'audit.read', description: 'View audit event history.' },
+  { code: 'business_profile.manage', description: 'Manage and publish the public business discovery profile.' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,7 @@ const SYSTEM_ROLES: ReadonlyArray<{
       'reports.advanced',
       'audit.read',
       'subscriptions.read',
+      'business_profile.manage',
     ],
   },
   {
@@ -417,11 +419,37 @@ async function seedPlans(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Discovery categories (docs task Phase 9) — development taxonomy only, not
+// a fake production business.
+// ---------------------------------------------------------------------------
+
+const BUSINESS_CATEGORIES: ReadonlyArray<{ code: string; name: string; sortOrder: number }> = [
+  { code: 'salon_barbershop', name: 'Salon & Barbershop', sortOrder: 1 },
+  { code: 'spa_wellness', name: 'Spa & Wellness', sortOrder: 2 },
+  { code: 'nails', name: 'Nails', sortOrder: 3 },
+  { code: 'beauty_skincare', name: 'Beauty & Skincare', sortOrder: 4 },
+  { code: 'health_fitness', name: 'Health & Fitness', sortOrder: 5 },
+  { code: 'home_services', name: 'Home Services', sortOrder: 6 },
+  { code: 'other', name: 'Other', sortOrder: 99 },
+];
+
+async function seedBusinessCategories(): Promise<void> {
+  for (const category of BUSINESS_CATEGORIES) {
+    await prisma.businessCategory.upsert({
+      where: { code: category.code },
+      update: { name: category.name, sortOrder: category.sortOrder },
+      create: category,
+    });
+  }
+}
+
 async function main(): Promise<void> {
   await seedPermissions();
   await seedSystemRoles();
   await seedEntitlementDefinitions();
   await seedPlans();
+  await seedBusinessCategories();
 }
 
 main()

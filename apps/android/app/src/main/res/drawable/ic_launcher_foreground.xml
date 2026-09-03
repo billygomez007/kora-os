@@ -3,7 +3,7 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/chairside_logo"
+        android:drawable="@drawable/kora_logo"
         android:gravity="center" />
 </layer-list>
 

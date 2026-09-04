@@ -535,71 +535,83 @@ entry is never manually marked `COMPLETED`.
 
 ## 18. Checkout and transactions
 
-- `POST /checkouts/preview`
-- `POST /transactions`
-- `GET /transactions`
-- `GET /transactions/{transactionId}`
-- `POST /transactions/{transactionId}/cancel`
-- `GET /transactions/{transactionId}/timeline`
+Implemented (docs/ROADMAP.md Phase 6). See docs/ARCHITECTURE.md section 11 for why Checkout, PaymentRecord, and Transaction are separate entities rather than one mutable row.
 
-Checkout preview calculates totals without persisting financial state. Creating a transaction captures line-item descriptions, prices, discounts, taxes, provider assignments, and currency.
+- `POST /organizations/{organizationId}/service-sessions/{serviceSessionId}/checkout`
+- `GET /organizations/{organizationId}/checkouts`
+- `GET /organizations/{organizationId}/checkouts/{checkoutId}`
+- `POST /organizations/{organizationId}/checkouts/{checkoutId}/adjustments`
+- `POST /organizations/{organizationId}/checkouts/{checkoutId}/void`
+- `GET /organizations/{organizationId}/transactions`
+- `GET /organizations/{organizationId}/transactions/{transactionId}`
 
-Example transaction creation request:
+There is no endpoint that directly creates a Transaction — one is posted automatically, exactly once per Checkout, the moment confirmed payments exactly cover the total (see section 19). Checkout creation snapshots the completed ServiceSession's own item prices into `CheckoutLineItem` rows; it never recalculates from the live Service catalogue, and a checkout worth zero is rejected (`CHECKOUT_TOTAL_INVALID`) rather than silently settled — a deliberate `NO_CHARGE` workflow is deferred to a later phase. Concurrent duplicate creation for the same service session converges on the single existing Checkout rather than erroring; a later, non-concurrent duplicate call gets `CHECKOUT_ALREADY_EXISTS`.
+
+Example adjustment request:
 
 ```json
 {
-  "branchId": "branch_...",
-  "customerId": "customer_...",
-  "serviceSessionId": "session_...",
-  "items": [
-    {
-      "type": "service",
-      "sourceId": "service_...",
-      "providerStaffId": "staff_...",
-      "quantity": 1
-    }
-  ],
-  "discount": {
-    "type": "fixed",
-    "amountMinor": 0
-  }
+  "type": "DISCOUNT",
+  "amountMinor": 500,
+  "reason": "Loyalty discount"
 }
 ```
 
-The server loads authoritative catalog prices and calculates totals. Client-submitted totals are never trusted.
+Adjustments are append-only (a correction is a new compensating adjustment, never an edit) and require `checkouts.adjust`; a discount can never take the total below zero. Once any PaymentRecord has ever been created against a Checkout, its line items and adjustments lock permanently, even if that payment is later voided.
 
 ## 19. Payments and verification
 
-### Payments
+### Recording
 
-- `GET /transactions/{transactionId}/payments`
-- `POST /transactions/{transactionId}/payments`
-- `GET /payments/{paymentId}`
-- `POST /payments/{paymentId}/void`
-- `POST /payments/{paymentId}/refunds`
-- `GET /payments/{paymentId}/refunds`
+- `GET /organizations/{organizationId}/checkouts/{checkoutId}/payments`
+- `POST /organizations/{organizationId}/checkouts/{checkoutId}/payments`
 
-Creating, voiding, and refunding payments requires `Idempotency-Key`.
+Recording a payment requires `Idempotency-Key` (unlike Checkout creation, where it is optional — see section 25). `method` is CASH, MOBILE_MONEY, CARD, BANK_TRANSFER, or OTHER: recording categories only, with no payment-gateway integration behind any of them. Combined active (non-voided) applied amounts across every payment on a Checkout can never exceed its total (`CHECKOUT_BALANCE_EXCEEDED`); split/partial payments are supported by recording several. `tenderedAmountMinor` is accepted only for CASH and may exceed `appliedAmountMinor` — the response's `changeMinor` is derived, never itself revenue.
 
-### Verification
-
-- `GET /payment-verifications`
-- `GET /payment-verifications/{verificationId}`
-- `POST /payment-verifications/{verificationId}/confirm`
-- `POST /payment-verifications/{verificationId}/dispute`
-- `POST /payment-verifications/{verificationId}/resolve`
-
-Example dispute command:
+Example recording request:
 
 ```json
 {
-  "reasonCode": "AMOUNT_MISMATCH",
-  "note": "The customer paid GH₵70, not GH₵80.",
-  "version": 1
+  "method": "CASH",
+  "appliedAmountMinor": 8000,
+  "tenderedAmountMinor": 10000,
+  "currency": "GHS"
 }
 ```
 
-The authenticated provider must be the assigned verifier unless an explicit management permission applies. Resolution requires a manager or owner permission and an explanatory reason.
+Recording a payment never creates a Transaction by itself — it only ever moves the Checkout to `AWAITING_VERIFICATION`.
+
+### Verification
+
+- `GET /organizations/{organizationId}/payment-verifications/pending` — records assigned to the *authenticated* provider only, never every branch payment
+- `POST /organizations/{organizationId}/payments/{paymentId}/confirm`
+- `POST /organizations/{organizationId}/payments/{paymentId}/dispute`
+- `POST /organizations/{organizationId}/payments/{paymentId}/void`
+
+Confirming and disputing both require `payments.verify_own`, and only the ServiceSession's assigned provider may act on a given payment — never a different provider, and never the recorder confirming their own claim (`PAYMENT_SELF_CONFIRMATION_FORBIDDEN`). An owner/manager holding `payments.resolve` may instead confirm directly as a management override, but only with an explicit `reason`:
+
+```json
+{ "reason": "Provider unreachable, confirmed against till slip" }
+```
+
+Disputing requires a non-empty `reason`. Voiding a still-`RECORDED` (not yet confirmed) payment — the correction path for a data-entry mistake — requires `payments.resolve`.
+
+### Dispute resolution
+
+- `GET /organizations/{organizationId}/payment-disputes`
+- `GET /organizations/{organizationId}/payment-disputes/{disputeId}`
+- `POST /organizations/{organizationId}/payment-disputes/{disputeId}/resolve`
+
+Resolution requires `payments.resolve` and a `resolution` of `CONFIRM_PAYMENT` or `REJECT_PAYMENT`:
+
+```json
+{
+  "resolution": "REJECT_PAYMENT",
+  "resolutionNote": "Confirmed with the customer: never paid"
+}
+```
+
+A rejected payment moves to VOIDED and the Checkout's status is recalculated to the correct derived state (typically back to `OPEN`), safely allowing a replacement payment to be recorded. Resolving an already-resolved dispute returns `PAYMENT_DISPUTE_ALREADY_RESOLVED`.
 
 ## 20. Commissions
 
@@ -680,7 +692,9 @@ For an idempotent command:
 3. The server fingerprints the request.
 4. A completed duplicate returns the stored result.
 5. An in-progress duplicate returns a retryable conflict or waits within a bounded policy.
-6. The same key with a different fingerprint returns `409 IDEMPOTENCY_KEY_REUSED`.
+6. The same key with a different fingerprint returns `409 IDEMPOTENCY_CONFLICT`.
+
+Implemented for appointment booking, queue intake, and — as of docs/ROADMAP.md Phase 6 — recording a payment (`Idempotency-Key` required) and, defensively, creating a Checkout (`Idempotency-Key` not required, since `Checkout.serviceSessionId` is itself unique: a concurrent duplicate creation converges on the same existing row without needing a client-supplied key at all). The financial-domain keys are stored in one generic, operation-discriminated table (`FinancialIdempotencyKey`, docs/DATA_MODEL.md section 8) scoped by organization, membership, operation, and key — rather than one narrow table per command.
 
 ## 26. Optimistic concurrency
 
@@ -699,14 +713,32 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 - `appointments.read`, `appointments.manage`
 - `queue.read`, `queue.manage`
 - `service_sessions.read`, `service_sessions.start`, `service_sessions.perform`, `service_sessions.manage`
-- `transactions.read`, `transactions.create`, `transactions.cancel`
-- `payments.read`, `payments.record`, `payments.void`, `payments.refund`
-- `verifications.read`, `verifications.respond`, `verifications.resolve`
+- `checkouts.read`, `checkouts.create`, `checkouts.adjust`, `checkouts.void`
+- `payments.read`, `payments.record`, `payments.verify_own`, `payments.resolve`
+- `transactions.read`
 - `commissions.read_own`, `commissions.read_all`, `commissions.manage_rules`
 - `reconciliation.perform`, `reconciliation.approve`
 - `reports.basic`, `reports.advanced`
 - `audit.read`
 - `business_profile.manage`
+
+`checkouts.*`, `payments.read`/`payments.record`/`payments.verify_own`/`payments.resolve`, and `transactions.read` are implemented as of docs/ROADMAP.md Phase 6 — see section 27a below for the exact role grants. A handful of additional codes seeded ahead of their own future phase (`transactions.create`, `transactions.cancel`, `payments.void`, `payments.refund`, `verifications.*`, `commissions.*`, `reconciliation.*`) exist in the permission vocabulary but are not yet wired to any route.
+
+### 27a. Financial-domain role grants (Phase 6)
+
+| Permission | OWNER | MANAGER | CASHIER | RECEPTIONIST | SERVICE_PROVIDER |
+| --- | --- | --- | --- | --- | --- |
+| `checkouts.read` | ✓ | ✓ | ✓ | ✓ | |
+| `checkouts.create` | ✓ | ✓ | ✓ | ✓ | |
+| `checkouts.adjust` | ✓ | ✓ | | | |
+| `checkouts.void` | ✓ | ✓ | | | |
+| `payments.read` | ✓ | ✓ | ✓ | | |
+| `payments.record` | ✓ | ✓ | ✓ | | |
+| `payments.verify_own` | ✓ | ✓ | | | ✓ |
+| `payments.resolve` | ✓ | ✓ | | | |
+| `transactions.read` | ✓ | ✓ | ✓ | | |
+
+A membership's effective permissions are the union across every role it holds (e.g. a receptionist additionally granted the cashier role gets both roles' grants). `payments.verify_own` only ever authorizes acting on a record assigned to the caller's *own* StaffProfile — holding the permission grants no blanket authority over every payment (see docs/SECURITY.md section 12 and docs/ARCHITECTURE.md section 12).
 
 Permission codes are seeded and stable. Roles map to permissions and may later be customized by authorized organizations.
 

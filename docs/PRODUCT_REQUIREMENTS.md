@@ -161,9 +161,10 @@ implemented: a walk-in or a checked-in appointment becomes a
 no-show); starting service creates a `ServiceSession` with its own
 snapshot of the services actually performed, attributed to the provider
 who performed them, and completing it is the only way work is ever
-recorded as done. Checkout, payments, commissions, and receipts — what
-happens *after* a `ServiceSession` completes — remain future work
-(docs/ROADMAP.md item 6 onward).
+recorded as done. Checkout and payments — what happens *immediately
+after* a `ServiceSession` completes — are now implemented too (see the
+next two sections); commissions and receipts remain future work
+(docs/ROADMAP.md item 8).
 
 ### Transactions and payments
 
@@ -175,6 +176,21 @@ happens *after* a `ServiceSession` completes — remain future work
 - Financial commands require idempotency keys to prevent duplicates.
 - Refunds and voids create reversing records; history is not silently replaced.
 
+Implemented with a narrower, more precise shape than this list
+originally sketched: a `Checkout` (not a mutable "transaction") carries
+the multi-line-item amount due for one completed `ServiceSession`, with
+`PaymentRecord`s recorded separately against it — CASH, MOBILE_MONEY,
+CARD, BANK_TRANSFER, or OTHER, recording categories only with no
+payment-gateway integration ("online" dropped as a category, since it
+implies a gateway that does not exist). Every `*_minor` amount is an
+integer, validated for overflow before it ever reaches the database.
+Partial/split payments are supported; recording one requires an
+`Idempotency-Key`. Voiding is implemented for both a `Checkout` (before
+settlement) and a mistaken `PaymentRecord` (before confirmation) —
+*refunding* a posted `Transaction` is not, and is deferred alongside
+commissions and receipts. See docs/API_SPEC.md sections 18-19 and
+docs/DATA_MODEL.md section 8.
+
 ### Verification
 
 - Recording payment does not immediately create verified revenue when staff
@@ -184,6 +200,19 @@ happens *after* a `ServiceSession` completes — remain future work
 - Managers or owners receive disputes for resolution.
 - Manager resolution requires a reason and creates an audit event.
 - A server-side state machine validates every financial transition.
+
+Implemented: a `PaymentRecord` is a claim only (`RECORDED`) until the
+`ServiceSession`'s own assigned provider confirms or disputes it. A
+recorder who is also the assigned provider can never self-confirm their
+own claim — the one exception is a solo owner/provider, who may confirm
+via a separately audited, explicitly reasoned management override.
+"Disputed payments do not finalize commission" cannot yet be verified
+directly (commissions do not exist), but is proven at the layer below
+it: a disputed payment never contributes to, and can never trigger,
+posting a `Transaction`. Manager resolution requires both a permission
+(`payments.resolve`) and — for a rejection — a resolution note, and
+writes both a `PaymentVerificationEvent` and an `AuditEvent`. See
+docs/ARCHITECTURE.md section 12 and docs/SECURITY.md section 33.
 
 ### Commission, reconciliation, receipts, and reporting
 

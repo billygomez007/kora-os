@@ -781,62 +781,106 @@ safe operational values.
 - `cancel_disposition` nullable
 - `occurred_at`
 
-## 8. Transactions and payments
+## 8. Checkout, payments, and transactions
+
+Implemented (docs/ROADMAP.md Phase 6). Four layers, deliberately kept as separate tables rather than one mutable "transaction" row — see docs/ARCHITECTURE.md section 11 for why. All `*_minor` columns are 32-bit `Int`; the application layer enforces a much lower business ceiling before any value reaches the database (`assertSafeMoneyAmount`).
+
+### `checkouts`
+
+- `id`, `organization_id`, `branch_id`, `service_session_id`, `customer_record_id`, `assigned_staff_profile_id`
+- `reference` (human-readable, `CHK-XXXXXXXX`)
+- `status`: OPEN, AWAITING_VERIFICATION, DISPUTED, SETTLED, VOIDED
+- `currency`, `subtotal_minor`, `adjustment_total_minor` (signed net: negative for discount, positive for surcharge), `total_minor`
+- `created_by_membership_id`, `version`, `created_at`, `updated_at`
+- `settled_at`, `voided_at`, `voided_by_membership_id`, `void_reason` nullable
+
+Unique: `service_session_id` (exactly one Checkout per ServiceSession — enforced by this constraint, not only an application check), `(organization_id, service_session_id)`, `(organization_id, id)`, `reference`. CHECK constraints: `subtotal_minor >= 0`, `total_minor >= 0`, `total_minor = subtotal_minor + adjustment_total_minor`, `version > 0`, and the void columns are all-null or all-set together.
+
+### `checkout_line_items`
+
+An immutable snapshot of one `ServiceSessionItem` at checkout-creation time — `service_session_item_id` is kept only to navigate back; every financial value used by the checkout comes from the snapshot columns here, never a live join to `services`.
+
+- `id`, `organization_id`, `checkout_id`, `service_session_item_id`, `service_id`, `staff_profile_id`
+- `service_name_snapshot`, `duration_minutes_snapshot`, `price_minor_snapshot`, `currency_snapshot`, `display_order`, `created_at`
+
+### `checkout_adjustments`
+
+Append-only discount/surcharge rows against one Checkout — a correction is a new compensating adjustment, never an edit or delete of an old one. `amount_minor` is always a positive magnitude; `type` determines the sign applied to `checkouts.adjustment_total_minor`.
+
+- `id`, `organization_id`, `checkout_id`, `type`: DISCOUNT | SURCHARGE, `amount_minor`, `reason`, `created_by_membership_id`, `created_at`
+
+CHECK constraints: `amount_minor > 0`, `reason` non-blank after trimming.
+
+### `payment_records`
+
+A staff member's *claim* that money was received against one Checkout — never itself verified revenue. Amount, method, and currency are immutable after creation (no update path exists in the service layer); a mistake is corrected by voiding and recording a replacement. `confirmation_required_by_staff_profile_id` snapshots the Checkout's assigned provider at recording time.
+
+- `id`, `organization_id`, `branch_id`, `checkout_id`, `reference` (`PAY-XXXXXXXX`)
+- `method`: CASH, MOBILE_MONEY, CARD, BANK_TRANSFER, OTHER — recording categories only, no payment-gateway integration behind any of them
+- `status`: RECORDED, CONFIRMED, DISPUTED, VOIDED
+- `applied_amount_minor`, `tendered_amount_minor` nullable (CASH only — the change given back is derived at read time, `tendered_amount_minor - applied_amount_minor`, never stored), `currency`
+- `external_reference` nullable (a safe alphanumeric code only — never a card/account number or other credential), `note` nullable
+- `recorded_by_membership_id`, `confirmation_required_by_staff_profile_id`, `confirmed_by_membership_id` nullable
+- `recorded_at`, `confirmed_at`, `disputed_at`, `voided_at`, `voided_by_membership_id`, `void_reason` nullable
+- `version`, `created_at`, `updated_at`
+
+Unique: `reference`, `(organization_id, id)`. CHECK constraints: `applied_amount_minor > 0`, `tendered_amount_minor IS NULL OR tendered_amount_minor >= applied_amount_minor`, `version > 0`, void columns all-null or all-set together.
+
+### `payment_verification_events`
+
+Append-only verification lifecycle log for one PaymentRecord — the PaymentRecord equivalent of `service_session_status_history`, and likewise distinct from the global `audit_events` trail. No update or delete path is exposed.
+
+- `id`, `organization_id`, `payment_record_id`
+- `action`: RECORDED, CONFIRMED, DISPUTED, RESOLVED_CONFIRMED, RESOLVED_REJECTED, VOIDED
+- `previous_status` nullable, `new_status`, `actor_user_id` nullable, `actor_membership_id` nullable, `reason` nullable, `occurred_at`
+
+### `payment_disputes`
+
+At most one dispute per PaymentRecord (a terminal CONFIRMED or VOIDED record cannot be reopened in this phase, so a second dispute is never needed).
+
+- `id`, `organization_id`, `payment_record_id` (unique — 1:1)
+- `status`: OPEN, RESOLVED_CONFIRMED, RESOLVED_REJECTED
+- `reason`, `opened_by_membership_id`, `opened_at`
+- `resolved_by_membership_id`, `resolved_at`, `resolution` (CONFIRM_PAYMENT | REJECT_PAYMENT), `resolution_note` nullable
+
+CHECK constraint: `reason` non-blank after trimming; `resolved_*`/`resolution` are all-null while OPEN and all-set once resolved.
 
 ### `transactions`
 
-- `id`, `organization_id`, `branch_id`, `customer_id`
-- `reference`
-- `service_session_id` nullable
-- `status`: open, awaiting_payment, awaiting_verification, confirmed, disputed, canceled, partially_refunded, refunded
-- `subtotal_minor`, `discount_minor`, `tax_minor`, `total_minor`, `currency`
-- `created_by_membership_id`
-- `confirmed_at`, `canceled_at` nullable
-- `version` for optimistic concurrency
-- `created_at`, `updated_at`
+The immutable, posted commercial record — the only thing a future reporting phase may ever count as business revenue. Created exactly once per Checkout, only when confirmed PaymentRecord applied amounts exactly equal `checkouts.total_minor` (see docs/ARCHITECTURE.md section 11 for the locking strategy that makes this exactly-once under concurrency). No update or delete path is exposed through any public service.
 
-Unique: `(organization_id, reference)`.
+- `id`, `organization_id`, `branch_id`, `checkout_id` (unique), `service_session_id` (unique), `customer_record_id`, `assigned_staff_profile_id`
+- `reference` (`TXN-XXXXXXXX`)
+- `status`: POSTED — the only value in this phase; reversal/refund statuses are deliberately deferred
+- `currency`, `subtotal_minor`, `adjustment_total_minor`, `total_minor`, `posted_at`, `created_at`
+
+Unique: `checkout_id`, `service_session_id`, `(organization_id, id)`, `(organization_id, checkout_id)`, `(organization_id, service_session_id)`, `reference`. CHECK constraints: `subtotal_minor >= 0`, `total_minor >= 0`, `total_minor = subtotal_minor + adjustment_total_minor`.
 
 ### `transaction_line_items`
 
-- `id`, `organization_id`, `transaction_id`
-- `item_type`: service, product, fee, discount, tax, adjustment
-- `source_id` nullable
-- `description_snapshot`
-- `provider_staff_profile_id` nullable
-- `quantity`, `unit_amount_minor`, `line_total_minor`, `currency`
-- `sort_order`, `created_at`
+An immutable snapshot copied from `checkout_line_items` at posting time — never recomputed from mutable catalogue data.
 
-### `payments`
+- `id`, `organization_id`, `transaction_id`, `service_session_item_id`, `service_id`, `staff_profile_id`
+- `service_name_snapshot`, `duration_minutes_snapshot`, `price_minor_snapshot`, `currency_snapshot`, `display_order`, `created_at`
 
-- `id`, `organization_id`, `branch_id`, `transaction_id`
-- `reference`
-- `method`: cash, mobile_money, card, bank_transfer, online, other
-- `status`: created, recorded, failed, voided, partially_refunded, refunded
-- `amount_minor`, `currency`
-- `provider`, `provider_reference` nullable
-- `recorded_by_membership_id`
-- `recorded_at`, `created_at`, `updated_at`
+### `transaction_payment_allocations`
 
-Unique: `(organization_id, reference)`.
+Which CONFIRMED PaymentRecord(s) — and how much of each — funded one posted Transaction. Immutable once created.
 
-### `payment_verifications`
+- `id`, `organization_id`, `transaction_id`, `payment_record_id`, `applied_amount_minor`, `created_at`
 
-- `id`, `organization_id`, `payment_id`, `transaction_id`
-- `provider_staff_profile_id`
-- `status`: awaiting_provider, confirmed, disputed, manager_review, resolved_confirmed, resolved_rejected
-- `requested_at`, `responded_at`, `resolved_at` nullable
-- `dispute_reason`, `resolution_reason` nullable
-- `resolved_by_membership_id` nullable
-- `version`, `created_at`, `updated_at`
+Unique: `(transaction_id, payment_record_id)`.
 
-### `refunds`
+### `financial_idempotency_keys`
 
-- `id`, `organization_id`, `branch_id`, `payment_id`, `transaction_id`
-- `reference`, `status`, `amount_minor`, `currency`
-- `reason`, `created_by_membership_id`
-- `provider_reference` nullable
-- `created_at`, `completed_at` nullable
+Generic financial-command idempotency, covering both Checkout creation's optional replay-safety and PaymentRecord creation's required one, under one reusable shape rather than a table per command.
+
+- `id`, `organization_id`, `membership_id`, `operation`: CREATE_CHECKOUT | RECORD_PAYMENT
+- `idempotency_key`, `request_fingerprint`, `resource_type`, `resource_id`, `created_at`
+
+Unique: `(membership_id, operation, idempotency_key)`.
+
+Refunds are not modeled yet — deferred to a later phase alongside commissions, receipts, and reconciliation (section 9 below).
 
 ## 9. Commissions, receipts, and reconciliation
 

@@ -38,6 +38,7 @@ Completed:
 - The customer workspace is now self-service: `GET`/`PATCH /v1/me/customer-profile` (display name, phone, city/area, and location only when the customer explicitly provided it, with its own consent timestamp).
 - Atomic appointment booking (`Appointment`, `AppointmentItem` snapshots, `AppointmentStatusHistory`, `AppointmentIdempotencyKey`) for both the customer app (`POST`/`GET /v1/me/appointments`, `/:id`, `/:id/cancel`, `/:id/reschedule`) and staff-assisted bookings (`.../branches/:branchId/appointments{,/:id,/:id/cancel,/:id/reschedule,/:id/no-show}`, gated by `appointments.read`/`appointments.manage`). Double-booking is prevented at the database level by a PostgreSQL `EXCLUDE` constraint (`btree_gist`) on the assigned staff member and the occupied UTC time range, not only by the availability screen; a client-generated idempotency key makes repeated/retried booking requests return the original appointment rather than a duplicate. Server-resolved price, duration, staff eligibility, and subscription state are never accepted from the client.
 - Walk-in intake, appointment check-in, a live branch queue, and service sessions (`BranchQueueDay`, `QueueEntry`, `QueueEntryService`, `QueueEntryStatusHistory`, `ServiceSession`, `ServiceSessionItem`, `ServiceSessionStatusHistory`) under `/v1/organizations/:organizationId/branches/:branchId/queue/walk-ins`, `.../appointments/:appointmentId/check-in`, `.../queue`, `.../queue-entries/:id/*`, and `.../service-sessions{,/:id,/:id/items,/:id/complete,/:id/cancel}` (docs/API_SPEC.md sections 16-17), gated by `queue.read`/`queue.manage` and `service_sessions.read`/`.start`/`.perform`/`.manage`. Ticket numbers are issued atomically per branch-local business date; at most one active service session per staff member and per queue entry is enforced by two partial PostgreSQL unique indexes, not only an application check. `ServiceSessionStatusHistory` is the session's own append-only lifecycle ledger, distinct from and complementing the platform-wide `AuditEvent` trail. `service_sessions.start` lets a receptionist start service for a queue entry's already-assigned provider without granting the ability to complete, cancel, or edit that session — a least-privilege permission checked via a new `@RequireAnyPermission` guard mechanism plus a fine-grained service-layer rule. `Appointment` is a reservation, `QueueEntry` is a customer present at a branch, and `ServiceSession` is work actually performed — kept strictly separate, with no `Payment`, `Transaction`, `Receipt`, or `Commission` concept anywhere in this phase (docs/SECURITY.md sections 31-32).
+- The financial-integrity core: `Checkout` (turns one completed `ServiceSession` into an amount due, with append-only adjustments and voiding), `PaymentRecord` (a staff member's *claim* that money was received, manually recorded — CASH/MOBILE_MONEY/CARD/BANK_TRANSFER/OTHER, no payment-gateway integration), provider confirmation and dispute (`PaymentVerificationEvent`, `PaymentDispute`), owner/manager dispute resolution, and an immutable, automatically-posted `Transaction` — the only thing a future reporting phase may count as revenue. Endpoints under `.../service-sessions/:id/checkout`, `.../checkouts{,/:id,/:id/adjustments,/:id/void,/:id/payments}`, `.../payments/:id/{confirm,dispute,void}`, `.../payment-verifications/pending`, `.../payment-disputes{,/:id,/:id/resolve}`, and `.../transactions{,/:id}` (docs/API_SPEC.md sections 18-19), gated by the new `checkouts.*`/`payments.read`/`.record`/`.verify_own`/`.resolve`/`transactions.read` permissions. A recorder who is also the assigned provider can never self-confirm their own claim; a solo owner/provider's only way past that deadlock is an explicitly reasoned, separately audited management override. Exactly one `Transaction` is ever posted per `Checkout`, even under concurrent confirmations, via a `SELECT ... FOR UPDATE` lock on the `Checkout` row that every payment mutation acquires first (docs/SECURITY.md section 33, docs/ARCHITECTURE.md sections 11-12). Refunds, reversals, commissions, receipts, and reconciliation remain unimplemented — deferred to the next phase.
 
 Current limitations:
 
@@ -45,22 +46,22 @@ Current limitations:
 - No real email delivery provider is integrated yet (`EmailOtpSender` fails closed in production; development delivers through a local, credential-free Mailpit container over SMTP — see docs/SECURITY.md section 6); phone OTP and any external identity provider (Apple, Google) remain unimplemented.
 - Role/permission *management* endpoints (creating custom roles, editing a membership's roles or branches) are not implemented; every role assignment today comes from the seeded system roles via staff invitation.
 - Current Android roles are simulated locally and are not security controls, and Android does not yet call this API at all.
-- Payments and subscriptions are not connected to an authoritative backend, and no billing provider is integrated.
-- Checkout, transactions, payments, provider verification, commissions, reconciliation, and receipts do not exist yet — everything downstream of a completed `ServiceSession`. A `ServiceSession` establishes that work happened; it is never itself proof that revenue was earned (docs/SECURITY.md section 31).
-- Android is the only implemented client, and does not yet call any of the service-catalogue, availability, appointment, queue, or service-session endpoints above.
+- Subscriptions are not connected to an authoritative billing backend, and no billing provider is integrated. Customer service payments (Checkout/PaymentRecord/Transaction, now implemented) remain a completely separate domain from organization subscription billing (still unimplemented) — Kora does not hold, transfer, or settle customer money in this phase.
+- Commissions, receipts, reporting dashboards, refunds, reversals, and reconciliation do not exist yet, and a posted `Transaction` cannot currently be reversed or refunded once created.
+- Android is the only implemented client, and does not yet call any of the service-catalogue, availability, appointment, queue, service-session, checkout, payment, or transaction endpoints above.
 
 ### Implementation sequence for the remaining work
 
-Kept intentionally concise — each item expands into its own phase below once it starts, and is not built ahead of that phase. Items 1–5 (authentication/sessions/staff invitations; organization-scoped RBAC, branch authorization, and subscription enforcement; services, staff availability, and customer appointment booking; walk-ins/live queue; service sessions) and public business discovery are done — see "Current baseline" above — so the active boundary starts at item 6:
+Kept intentionally concise — each item expands into its own phase below once it starts, and is not built ahead of that phase. Items 1–7 (authentication/sessions/staff invitations; organization-scoped RBAC, branch authorization, and subscription enforcement; services, staff availability, and customer appointment booking; walk-ins/live queue; service sessions; checkout and line items; payments, provider verification, and disputes) and public business discovery are done — see "Current baseline" above — so the active boundary starts at item 8:
 
 1. ~~Authentication, sessions, and staff invitations.~~ Done.
 2. ~~Organization-scoped RBAC and branch authorization.~~ Done, including subscription-access-mode enforcement.
 3. ~~Services, staff availability, and atomic customer appointment booking.~~ Done — see "Current baseline" above. Role/permission *management* endpoints (as opposed to RBAC *enforcement*, already done in item 2) remain a carry-over gap.
 4. ~~Walk-ins and live queues.~~ Done — see "Current baseline" above.
 5. ~~Service sessions representing actual work performed — the first thing allowed to imply an appointment was fulfilled.~~ Done — see "Current baseline" above.
-6. Transactions, line items, and checkout — the next boundary.
-7. Payments, provider verification, and disputes.
-8. Commissions, reconciliation, and receipts.
+6. ~~Checkout, line items, and immutable posted transactions.~~ Done — see "Current baseline" above.
+7. ~~Payments, provider verification, and disputes.~~ Done — see "Current baseline" above.
+8. Commissions, reconciliation, and receipts — the next boundary. Also the natural home for refunds/reversals, deliberately deferred out of item 7.
 9. Subscription billing-provider integration.
 10. Real-time owner dashboard and notifications.
 11. Kora Team business messaging.
@@ -283,33 +284,37 @@ Exit gate:
 
 ## 10. Phase 6 — Financial core and verification
 
+**Status: done** (backend only — see docs/ROADMAP.md section 2 "Current baseline" and docs/SECURITY.md section 33 for the full implementation). Delivered with a narrower, more precise shape than originally sketched here: `Checkout`/`PaymentRecord`/`Transaction` as three separate entities rather than one mutable "transaction," and void (not refund) as this phase's correction mechanism — see below.
+
 Deliverables:
 
-- Authoritative checkout preview and transaction creation.
-- Multi-line transactions with price snapshots.
-- Manual cash, mobile money, card, transfer, online, and other payment recording.
-- Transaction, payment, and verification state machines.
-- Provider confirmation and dispute.
-- Manager resolution.
-- Refund and void foundations.
-- Financial idempotency and optimistic concurrency.
-- Android checkout, verification, dispute, and transaction history connected to the API.
+- ~~Authoritative checkout preview and transaction creation.~~ Delivered as `Checkout` (amount due for a completed ServiceSession, immutable line-item snapshots) and an automatically-posted `Transaction` (no direct-create endpoint at all — see docs/API_SPEC.md section 18).
+- ~~Multi-line transactions with price snapshots.~~ Delivered via `CheckoutLineItem`/`TransactionLineItem`, snapshotted from `ServiceSessionItem`.
+- ~~Manual cash, mobile money, card, transfer, online, and other payment recording.~~ Delivered as CASH/MOBILE_MONEY/CARD/BANK_TRANSFER/OTHER — recording categories only, no gateway integration behind any of them ("online" dropped as a category, since it implies a gateway).
+- ~~Transaction, payment, and verification state machines.~~ Delivered — see docs/ARCHITECTURE.md sections 11-12.
+- ~~Provider confirmation and dispute.~~ Delivered, including the self-confirmation prohibition (docs/SECURITY.md section 33).
+- ~~Manager resolution.~~ Delivered, including the solo-owner/provider management-override path.
+- Refund and void foundations. **Partially delivered**: voiding a `Checkout` (before settlement) and voiding a mistaken `PaymentRecord` (before confirmation) are both implemented; refunding a posted `Transaction` is deliberately deferred to Phase 7, alongside reversals.
+- ~~Financial idempotency and optimistic concurrency.~~ Delivered — `FinancialIdempotencyKey` plus a `SELECT ... FOR UPDATE` Checkout-row lock every payment mutation acquires first, proven exactly-once under real concurrent load.
+- Android checkout, verification, dispute, and transaction history connected to the API. **Not delivered** — explicitly out of scope for this backend-only stage; Android does not call any endpoint from this phase yet.
 
-Critical tests:
+Critical tests (`apps/api/test/checkouts.e2e-spec.ts`, `payments.e2e-spec.ts`, `payment-verifications-and-disputes.e2e-spec.ts`, `transaction-posting-and-concurrency.e2e-spec.ts`):
 
-- Cashier records payment; provider confirms; transaction confirms once.
-- Provider dispute prevents commission finalization.
-- Manager resolution requires permission and reason.
-- Repeated payment commands return the original result without duplicates.
-- Lost network responses do not produce a second payment.
-- Cross-tenant payment access is denied.
-- Refunds create explicit reversal history.
+- ~~Cashier records payment; provider confirms; transaction confirms once.~~ Proven, including under five simultaneous confirmation attempts.
+- Provider dispute prevents commission finalization. **Not applicable yet** — commissions do not exist until Phase 7; proven instead that a dispute prevents Transaction posting.
+- ~~Manager resolution requires permission and reason.~~ Proven.
+- ~~Repeated payment commands return the original result without duplicates.~~ Proven.
+- Lost network responses do not produce a second payment. Proven via the Idempotency-Key replay path.
+- ~~Cross-tenant payment access is denied.~~ Proven — `404`, never a raw database error.
+- Refunds create explicit reversal history. **Deferred to Phase 7** alongside the refund/reversal concept itself.
 
 Exit gate:
 
-- Every financial outcome is reconstructable through records, versions, state transitions, idempotency evidence, and audit events.
+- ~~Every financial outcome is reconstructable through records, versions, state transitions, idempotency evidence, and audit events.~~ Met for everything this phase actually delivers (Checkout → PaymentRecord → verification/dispute → posted Transaction); reconstructing a *refund* is Phase 7's own exit gate, since refunds do not exist yet.
 
 ## 11. Phase 7 — Commissions, receipts, reconciliation, and reports
+
+Also the home for Transaction refunds/reversals, deliberately deferred out of Phase 6 (a posted Transaction is immutable and cannot currently be reversed, refunded, or adjusted).
 
 Deliverables:
 

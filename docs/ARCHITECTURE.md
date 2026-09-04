@@ -221,29 +221,34 @@ The transaction stores captured line-item descriptions and prices so historical 
 
 ## 11. Financial consistency
 
-- Money is stored as integer minor units plus ISO currency code.
-- Payment, refund, and commission records are not represented by floating-point values.
-- Every replay-sensitive command accepts a client-generated idempotency key.
-- The server stores the key, request fingerprint, result, and expiration policy.
-- Reusing a key with a different request is rejected.
-- Financial transitions execute inside database transactions.
-- Confirmed financial facts are corrected through explicit reversals or adjustment records.
+Implemented (docs/ROADMAP.md Phase 6): four distinct entities, each proving a different fact, deliberately never collapsed into one:
 
-Payment, verification, transaction, refund, and commission statuses are separate. One status field never attempts to represent the complete financial lifecycle.
+- **Checkout** — the amount due for one completed ServiceSession. Immutable snapshots (`CheckoutLineItem`) of what was actually performed, never a live join back to the current Service catalogue.
+- **PaymentRecord** — a staff member's *claim* that money was received against a Checkout. Recording one is not itself revenue.
+- **PaymentDispute** / `PaymentVerificationEvent` — the assigned provider's confirm-or-dispute step every claim must pass, and an owner/manager's resolution of a dispute.
+- **Transaction** — the immutable, posted commercial fact. The only thing a future reporting phase may ever count as business revenue. Created exactly once per Checkout, only when confirmed `PaymentRecord` applied amounts exactly equal the Checkout total, atomically inside the same database transaction that confirms or resolves the final required payment.
+
+Money is stored as integer minor units plus a 3-letter ISO currency code throughout, with explicit overflow validation against PostgreSQL's 32-bit `Int` column ceiling (never floating point). Checkout creation and payment recording both accept a client-generated `Idempotency-Key`, scoped by organization, membership, operation, and idempotency key, storing the request fingerprint and the resulting resource; reusing a key with a different request body is rejected (`IDEMPOTENCY_CONFLICT`), and replaying the same key/body returns the original result rather than a duplicate. Every payment-domain mutation (record, confirm, dispute, void, resolve) takes a `SELECT ... FOR UPDATE` row lock on the parent Checkout as its first database action, in the same order every time — this single lock is what serializes every concurrent mutation against one Checkout and is what makes "exactly one Transaction is ever posted per Checkout, even under concurrent confirmations" true, without any additional locking primitive. Financial transitions execute inside database transactions; a failed transition leaves every row — Checkout, PaymentRecord, Transaction, and their line items/allocations — exactly as it was before the attempt.
+
+Refunds, reversals, commissions, receipts, and reconciliation are explicitly deferred to a later phase (docs/ROADMAP.md Phase 7) and do not exist yet — a Checkout may currently only be voided (before settlement) or posted as a Transaction (after settlement), never reversed once posted.
 
 ## 12. Verification state machine
 
+Implemented as `PaymentRecordStatus` (RECORDED → CONFIRMED | DISPUTED; DISPUTED → CONFIRMED | VOIDED via resolution; CONFIRMED and VOIDED are terminal):
+
 ```mermaid
 stateDiagram-v2
-    [*] --> AwaitingProvider
-    AwaitingProvider --> Confirmed: provider confirms
-    AwaitingProvider --> Disputed: provider disputes
-    Disputed --> ManagerReview
-    ManagerReview --> ResolvedConfirmed
-    ManagerReview --> ResolvedRejected
+    [*] --> RECORDED
+    RECORDED --> CONFIRMED: assigned provider confirms (payments.verify_own)
+    RECORDED --> DISPUTED: assigned provider disputes (payments.verify_own)
+    RECORDED --> VOIDED: owner/manager voids a mistaken entry (payments.resolve)
+    DISPUTED --> CONFIRMED: owner/manager resolves — CONFIRM_PAYMENT (payments.resolve)
+    DISPUTED --> VOIDED: owner/manager resolves — REJECT_PAYMENT (payments.resolve)
+    CONFIRMED --> [*]
+    VOIDED --> [*]
 ```
 
-Every accepted transition records actor, time, reason where required, previous state, new state, and audit event. Commission is finalized only after a confirmed outcome.
+Every accepted transition writes an append-only `PaymentVerificationEvent` (previous status, new status, actor, reason where applicable) and an `AuditEvent`, both inside the same database transaction as the state change itself. Separation of duties is enforced in code, not only by permission: a recorder who is also the assigned provider cannot confirm their own claim (`PAYMENT_SELF_CONFIRMATION_FORBIDDEN`) — the one exception is a solo owner/provider, who may confirm via `payments.resolve` as an explicitly reasoned, separately audited (`payment.management_override`) management override, since no independent third party exists to confirm on their behalf. Commission finalization (a future phase) is intended to require a confirmed outcome, mirroring this same principle.
 
 ## 13. Events and background work
 

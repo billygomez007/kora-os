@@ -228,14 +228,13 @@ Permission decisions are covered by policy unit tests and endpoint integration t
 
 ## 12. Financial integrity
 
-- Money uses integer minor units and explicit currency codes.
-- Server code calculates prices, discounts, taxes, totals, commissions, and expected reconciliation values.
-- Client-submitted totals are never trusted as authoritative.
-- Payment recording, refund, void, verification, and dispute-resolution commands require stable idempotency keys.
-- The server fingerprints idempotent requests and rejects key reuse with different content.
-- Financial state changes use database transactions, validated state machines, optimistic concurrency, audit events, and transactional outbox records.
-- Confirmed financial facts are corrected with reversals or adjustments, not hidden edits.
-- Commission is finalized only after a verified outcome and reversed explicitly when necessary.
+- Money uses integer minor units and explicit currency codes, with explicit overflow validation against the ceiling of a 32-bit column before any value is written (`assertSafeMoneyAmount`, `apps/api/src/common/money/`).
+- Server code calculates checkout totals, adjustments, and (a future phase) commissions and expected reconciliation values. Client-submitted totals are never trusted as authoritative.
+- Recording a payment requires a stable `Idempotency-Key`; Checkout creation accepts the same guarantee for free from a database-level unique constraint instead (see section 33).
+- The server fingerprints idempotent requests and rejects key reuse with different content (`IDEMPOTENCY_CONFLICT`).
+- Financial state changes use database transactions, validated state machines, optimistic concurrency, a `SELECT ... FOR UPDATE` row lock on the parent Checkout, and audit events — see section 33 for the full implementation.
+- A Checkout may be voided before settlement; a posted Transaction is immutable and cannot yet be reversed, refunded, or adjusted — those are explicitly deferred to a later phase, alongside commissions and reconciliation.
+- Commission finalization (a future phase) is intended to require a confirmed outcome, mirroring the same separation-of-duties principle section 33 establishes for payment confirmation.
 - Uncertain network results are resolved by querying the original command or transaction before any retry with a new key.
 
 ## 13. Android application security
@@ -836,3 +835,158 @@ permission surface specifically: starting service for a queue entry in
 another organization returns `404` regardless of which of the three
 permissions the caller holds, never confirming the entry's existence
 to a caller who cannot reach it.
+
+## 33. Checkout, payment recording, verification, and transaction posting
+
+**Four entities, each proving a different fact, never collapsed into
+one.** `Checkout` is the amount due for a completed `ServiceSession` —
+immutable line-item snapshots, recomputed from nothing once created.
+`PaymentRecord` is a staff member's *claim* that money was received —
+recording one is not itself revenue. `PaymentDispute`/
+`PaymentVerificationEvent` are the assigned provider's confirm-or-
+dispute step every claim must pass, and an owner/manager's resolution
+of a dispute. `Transaction` is the immutable, posted commercial fact —
+the only thing a future reporting phase may ever count as business
+revenue, created exactly once per Checkout and never through any
+public create/update/delete route. See docs/DATA_MODEL.md section 8
+for the full schema and docs/ARCHITECTURE.md sections 11-12 for the
+state machines.
+
+**Separation of duties is enforced in code, in
+`assertConfirmAuthorized`** (`apps/api/src/modules/payments/payment-
+confirmation-authorization.util.ts`, pure and independently unit-
+tested): the assigned provider, holding `payments.verify_own`, may
+confirm a payment recorded by someone else; a recorder who is also the
+assigned provider is always blocked from self-confirming
+(`PAYMENT_SELF_CONFIRMATION_FORBIDDEN`) — converting your own claim
+into verified truth with no independent check is a conflict of
+interest regardless of role. The one escape hatch is a solo owner/
+provider: an owner/manager holding `payments.resolve` may confirm
+directly as a **management override**, but only given an explicit,
+non-empty `reason`, and every such confirmation writes a distinct,
+separately queryable `payment.management_override` audit event in
+addition to the ordinary `payment.confirmed` one — so a management
+override is always visible as such, never indistinguishable from an
+ordinary provider confirmation after the fact. A provider without
+`payments.resolve` who is not the assigned provider for a given record
+is rejected outright (`PAYMENT_CONFIRMATION_FORBIDDEN`) — holding
+`payments.verify_own` grants no blanket authority over every payment,
+only over records assigned to the caller's own `StaffProfile`,
+resolved fresh from the database on every call exactly as
+`service_sessions.perform` already does (section 32). Disputing
+follows the same assigned-provider-only rule, with no management-
+override path — a manager who wants to intervene resolves the
+resulting dispute instead (`payments.resolve`), which is the only
+route that can move a `DISPUTED` payment onward.
+
+**A `GET .../payment-verifications/pending` endpoint is scoped to the
+authenticated provider's own `StaffProfile` only** — never every
+branch payment, regardless of how broad the caller's other permissions
+are. A membership with no `StaffProfile` at all (a pure manager, say)
+simply gets an empty list rather than an error.
+
+**Exactly-once Transaction posting under concurrency rests on a single
+lock, not on application-level coordination.** Every payment-domain
+mutation — record, confirm, dispute, void, resolve — takes a
+`SELECT ... FOR UPDATE` row lock on the parent `Checkout` as the very
+first database action inside its own transaction, in the same order
+every time (`CheckoutSettlementService.lockCheckout`, `apps/api/src/
+modules/payments/checkout-settlement.service.ts`). Because every code
+path acquires the identical single resource in the identical order,
+two concurrent mutations against the same Checkout always serialize
+rather than deadlock, and each one re-validates the record it is about
+to change *after* acquiring the lock — a payment already moved on by
+a winning concurrent request is caught here (`PAYMENT_STATE_INVALID`),
+not by an earlier, now-stale read. The centralized status-recalculation
+rule (`deriveCheckoutSettlement`, pure and unit-tested,
+`apps/api/src/modules/checkouts/checkout-settlement.util.ts`) runs
+against this same locked, fresh snapshot after every mutation: an
+unresolved dispute anywhere makes the checkout `DISPUTED`; otherwise a
+payment still awaiting confirmation makes it `AWAITING_VERIFICATION`;
+otherwise confirmed payments below the total leave it `OPEN`; only
+when confirmed applied payments exactly equal the total does
+`TransactionPostingService.postForCheckout` run, inside that same
+transaction, copying `CheckoutLineItem` snapshots into
+`TransactionLineItem` rows, allocating each confirmed payment, and
+marking the Checkout `SETTLED` — all four writes succeed together or
+none of them do. Proven under real concurrent load
+(`test/transaction-posting-and-concurrency.e2e-spec.ts`): five
+simultaneous confirmation attempts on the one payment that completes a
+checkout's balance produce exactly one successful confirmation, four
+clean `409` conflicts, and exactly one posted Transaction; a confirm
+and a dispute racing on the same payment resolve to exactly one valid
+outcome with the Checkout's derived state always consistent with it. A
+database-level uniqueness conflict on a Transaction's `checkoutId` or
+`reference` (the defense-in-depth safety net behind the lock, never
+the primary mechanism) resolves to idempotent success or a stable
+domain conflict — never a raw Prisma or PostgreSQL error reaching the
+client.
+
+**Idempotency is required for payment recording and, for a different
+reason, unnecessary-but-still-safe for Checkout creation.** Recording a
+payment without an `Idempotency-Key` header is rejected outright
+(`400`); the key, request fingerprint, and resulting `PaymentRecord`
+id are stored in `FinancialIdempotencyKey`, scoped by organization,
+membership, operation, and key (one generic table covering both
+Checkout creation and payment recording, rather than one per command —
+docs/DATA_MODEL.md section 8). A replayed request with the same key
+and body returns the original payment; the same key with a different
+body returns `409 IDEMPOTENCY_CONFLICT`. Checkout creation needs no
+client-supplied key at all, because `Checkout.serviceSessionId` is
+itself unique at the database level: a request that lands after an
+earlier one has already committed gets a clear `CHECKOUT_ALREADY_
+EXISTS` conflict, while a request racing that closely (the reactive
+unique-constraint catch, not the earlier pre-check) is instead hand
+back the winner's Checkout transparently, matching how the caller
+actually experiences a double-submit.
+
+**Stable, non-leaking error codes** cover every state-machine
+precondition in this domain: `SERVICE_SESSION_NOT_COMPLETED`,
+`CHECKOUT_ALREADY_EXISTS`, `CHECKOUT_STATE_INVALID`, `CHECKOUT_
+ALREADY_SETTLED`, `CHECKOUT_TOTAL_INVALID`, `CHECKOUT_BALANCE_
+EXCEEDED`, `PAYMENT_STATE_INVALID`, `PAYMENT_CONFIRMATION_FORBIDDEN`,
+`PAYMENT_SELF_CONFIRMATION_FORBIDDEN`, `PAYMENT_DISPUTE_REQUIRED`,
+`PAYMENT_DISPUTE_ALREADY_RESOLVED`, `IDEMPOTENCY_CONFLICT`,
+`TRANSACTION_ALREADY_POSTED`. `ApiExceptionFilter` (section 21)
+guarantees none of these — or any unhandled internal error — ever
+exposes a raw driver message, SQLSTATE, or stack trace to a client.
+
+**Amount, method, and currency are immutable on a `PaymentRecord` from
+the moment it is created** — no update route exists for them at all;
+a mistake is corrected by voiding (while still `RECORDED`, requiring
+`payments.resolve`) and recording a fresh replacement, never by
+editing the original. A CASH payment's `tenderedAmountMinor` may
+legitimately exceed `appliedAmountMinor`; the difference (`changeMinor`
+in the API response) is derived at read time and never stored or
+counted toward the checkout balance. `externalReference` is validated
+to a safe alphanumeric code shape — no field anywhere in the schema is
+shaped to hold a card number, bank account number, PIN, or other
+payment credential, matching the "recording categories only, no
+gateway integration" rule for `method` itself (docs/ARCHITECTURE.md
+section 11).
+
+**`READ_ONLY` and `BLOCKED` subscription behavior follows the same
+unconditional `TenantAccessGuard` mechanism as every other domain**
+(section 10): every mutating route in this stage — checkout creation,
+adjustments, voiding, payment recording, confirm/dispute/void,
+dispute resolution — is a non-`GET` method with no
+`@AllowReadOnlyAccess` override, so `READ_ONLY` blocks all of them by
+HTTP method alone; reads remain permitted.
+
+**Cross-tenant and cross-branch safety follow the established
+mechanism** (composite `(organizationId, id)` foreign keys throughout,
+`assertMembershipHasBranchAccess` on every id-scoped route) and are
+re-verified for this domain specifically: a payment or transaction id
+from another organization returns `404` regardless of which
+permission the caller holds, never confirming its existence.
+
+**Explicitly out of scope for this stage, and not implemented:**
+commissions, receipts, reporting dashboards, refunds, reconciliation,
+payment-gateway integration, subscription billing, staff earnings,
+invoices, transaction reversals, chargebacks, tax calculation,
+accounting journal entries. Customer service payments and organization
+subscription payments remain completely separate domains — this
+domain never touches `OrganizationSubscription`/`PlanPrice`, and Kora
+does not hold, transfer, or settle customer money in this phase; every
+payment method here is a manually recorded staff attestation, not a
+processed transaction.

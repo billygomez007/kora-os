@@ -151,9 +151,51 @@ three via `@RequireAnyPermission`, with the specific rule each one
 carries applied in `ServiceSessionsService`. A completed `ServiceSession`
 is not a `Payment`, `Transaction`, `Receipt`, or `Commission` —
 `serviceTotalMinor` is the value of performed services, not proof
-money was received; none of those concepts exist in this codebase yet.
-See `docs/ARCHITECTURE.md` section 6 and `docs/SECURITY.md` sections
-31-32 for the full model.
+money was received; `Receipt` and `Commission` do not exist in this
+codebase yet, but `Checkout`, `PaymentRecord`, and `Transaction` do —
+see the next paragraph. See `docs/ARCHITECTURE.md` section 6 and
+`docs/SECURITY.md` sections 31-32 for the full service-session model.
+
+## Checkout, payments, and transactions in one paragraph
+
+`POST .../service-sessions/:id/checkout` turns one *completed*
+`ServiceSession` into exactly one `Checkout` (`checkouts.create`) —
+immutable line-item snapshots and a server-computed total, never
+recalculated from the live `Service` catalogue; a zero-value checkout
+is rejected rather than silently settled, since no `NO_CHARGE`
+workflow exists yet. Owners/managers may append discount/surcharge
+`CheckoutAdjustment`s (`checkouts.adjust`, append-only — a correction
+is a new compensating adjustment, never an edit) or void the checkout
+(`checkouts.void`) before it settles. `POST .../checkouts/:id/payments`
+(`payments.record`, `Idempotency-Key` required) records a
+`PaymentRecord` — a staff member's *claim* that money was received,
+manually entered as CASH/MOBILE_MONEY/CARD/BANK_TRANSFER/OTHER with no
+payment-gateway integration behind any of them — never itself revenue,
+and never able to push the checkout's combined active applied amount
+past its total. The ServiceSession's own assigned provider must then
+confirm or dispute each claim (`payments.verify_own`,
+`POST .../payments/:id/{confirm,dispute}`) — a recorder who is also
+the assigned provider can never self-confirm their own claim; the one
+exception is a solo owner/provider, who may confirm via
+`payments.resolve` as an explicitly reasoned, separately audited
+management override. An owner/manager resolves a dispute
+(`payments.resolve`, `POST .../payment-disputes/:id/resolve`) by
+confirming or rejecting the disputed payment, returning the checkout
+to its correct derived state either way. The moment confirmed applied
+payments exactly equal the checkout's total, an immutable `Transaction`
+is posted automatically and atomically — there is no endpoint that
+creates one directly — inside the same database transaction that
+confirms or resolves the final required payment, behind a
+`SELECT ... FOR UPDATE` lock on the `Checkout` row that every payment
+mutation acquires first, which is what makes exactly one `Transaction`
+ever get posted per `Checkout` true even under concurrent confirmations
+(proven in `test/transaction-posting-and-concurrency.e2e-spec.ts`). A
+posted `Transaction` is the only thing a future reporting phase may
+ever count as business revenue; it cannot be edited, deleted, reversed,
+or refunded through any public route yet. Commissions, receipts,
+reporting, refunds, reconciliation, and payment-gateway integration
+remain deliberately unimplemented. See `docs/ARCHITECTURE.md` sections
+11-12 and `docs/SECURITY.md` section 33 for the full model.
 
 ## Useful root-level scripts
 

@@ -442,6 +442,17 @@ model Organization {
   receiptLineItems        ReceiptLineItem[]
   receiptPaymentSummaries ReceiptPaymentSummary[]
 
+  branchCashPolicies BranchCashPolicy[]
+  cashRegisters      CashRegister[]
+  cashSessions       CashSession[]
+  cashLedgerEntries  CashLedgerEntry[]
+  cashSessionReviews CashSessionReview[]
+
+  transactionCorrections             TransactionCorrection[]
+  transactionCorrectionItems         TransactionCorrectionItem[]
+  transactionCorrectionPayments      TransactionCorrectionPayment[]
+  transactionCorrectionStatusHistory TransactionCorrectionStatusHistory[]
+
   @@map("organizations")
 }
 
@@ -500,6 +511,13 @@ model Branch {
   branchReceiptSequences BranchReceiptSequence[]
   receipts               Receipt[]
 
+  cashPolicy        BranchCashPolicy?
+  cashRegisters     CashRegister[]
+  cashSessions      CashSession[]
+  cashLedgerEntries CashLedgerEntry[]
+
+  transactionCorrections TransactionCorrection[]
+
   @@unique([organizationId, code])
   @@unique([organizationId, id])
   @@index([organizationId])
@@ -547,6 +565,21 @@ model OrganizationMembership {
   commissionRulesCreated     CommissionRule[] @relation("CommissionRuleCreatedBy")
   commissionRulesDeactivated CommissionRule[] @relation("CommissionRuleDeactivatedBy")
   receiptsIssued             Receipt[]        @relation("ReceiptIssuedBy")
+
+  cashPolicyUpdates           BranchCashPolicy[]  @relation("BranchCashPolicyUpdatedBy")
+  cashRegistersCreated        CashRegister[]      @relation("CashRegisterCreatedBy")
+  cashRegistersArchived       CashRegister[]      @relation("CashRegisterArchivedBy")
+  cashSessionsOpened          CashSession[]       @relation("CashSessionOpenedBy")
+  cashSessionsClosed          CashSession[]       @relation("CashSessionClosedBy")
+  cashLedgerEntriesActed      CashLedgerEntry[]   @relation("CashLedgerEntryActor")
+  cashSessionReviewsPerformed CashSessionReview[] @relation("CashSessionReviewedBy")
+
+  transactionCorrectionsRequested         TransactionCorrection[]              @relation("TransactionCorrectionRequestedBy")
+  transactionCorrectionsApproved          TransactionCorrection[]              @relation("TransactionCorrectionApprovedBy")
+  transactionCorrectionsRejected          TransactionCorrection[]              @relation("TransactionCorrectionRejectedBy")
+  transactionCorrectionsCancelled         TransactionCorrection[]              @relation("TransactionCorrectionCancelledBy")
+  transactionCorrectionsExecuted          TransactionCorrection[]              @relation("TransactionCorrectionExecutedBy")
+  transactionCorrectionStatusHistoryActed TransactionCorrectionStatusHistory[] @relation("TransactionCorrectionStatusHistoryActor")
 
   @@unique([organizationId, userId])
   @@unique([organizationId, id])
@@ -2027,6 +2060,8 @@ enum TransactionStatus {
 enum FinancialIdempotencyOperation {
   CREATE_CHECKOUT
   RECORD_PAYMENT
+  REQUEST_CORRECTION
+  EXECUTE_CORRECTION
 
   @@map("financial_idempotency_operation")
 }
@@ -2192,6 +2227,8 @@ model PaymentRecord {
   verificationEvents PaymentVerificationEvent[]
   dispute            PaymentDispute?
   allocations        TransactionPaymentAllocation[]
+  cashLedgerEntry    CashLedgerEntry?
+  correctionPayments TransactionCorrectionPayment[]
 
   @@unique([organizationId, id])
   @@index([organizationId, checkoutId, status])
@@ -2263,16 +2300,29 @@ model PaymentDispute {
 /// path is exposed through any public service. A single `POSTED` status
 /// exists in this phase; reversal/refund concepts are deliberately
 /// deferred.
+/// `kind` distinguishes the original sale from a corrective transaction
+/// (docs task Phase 3). Every `*Minor` column is always a non-negative
+/// magnitude regardless of kind — SALE is a positive contribution to
+/// revenue, REFUND/REVERSAL are negative contributions, but that sign is
+/// derived at the reporting layer (`transactionKindSign`,
+/// apps/api/src/modules/reports/) from `kind`, never stored as a negative
+/// database value. `checkoutId`/`serviceSessionId` are null for a
+/// REFUND/REVERSAL — a correction has no checkout or service session of
+/// its own, only a `correctedTransactionId` pointing back to the
+/// original SALE. Existing rows were safely backfilled to `kind = SALE`
+/// by this column's own migration default.
 model Transaction {
   id                     String            @id @default(uuid()) @db.Uuid
   organizationId         String            @map("organization_id") @db.Uuid
   branchId               String            @map("branch_id") @db.Uuid
-  checkoutId             String            @unique @map("checkout_id") @db.Uuid
-  serviceSessionId       String            @unique @map("service_session_id") @db.Uuid
+  checkoutId             String?           @unique @map("checkout_id") @db.Uuid
+  serviceSessionId       String?           @unique @map("service_session_id") @db.Uuid
   customerRecordId       String            @map("customer_record_id") @db.Uuid
   assignedStaffProfileId String            @map("assigned_staff_profile_id") @db.Uuid
   reference              String            @unique
   status                 TransactionStatus @default(POSTED)
+  kind                   TransactionKind   @default(SALE)
+  correctedTransactionId String?           @map("corrected_transaction_id") @db.Uuid
   currency               String            @db.Char(3)
   subtotalMinor          Int               @map("subtotal_minor")
   adjustmentTotalMinor   Int               @map("adjustment_total_minor")
@@ -2280,24 +2330,31 @@ model Transaction {
   postedAt               DateTime          @default(now()) @map("posted_at") @db.Timestamptz(6)
   createdAt              DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  organization         Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch               Branch         @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
-  checkout             Checkout       @relation(fields: [organizationId, checkoutId], references: [organizationId, id], onDelete: Restrict)
-  serviceSession       ServiceSession @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
-  customerRecord       CustomerRecord @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
-  assignedStaffProfile StaffProfile   @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  organization         Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch          @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  checkout             Checkout?       @relation(fields: [organizationId, checkoutId], references: [organizationId, id], onDelete: Restrict)
+  serviceSession       ServiceSession? @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord  @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile    @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  correctedTransaction Transaction?    @relation("TransactionCorrectionOf", fields: [organizationId, correctedTransactionId], references: [organizationId, id], onDelete: Restrict)
+  corrections          Transaction[]   @relation("TransactionCorrectionOf")
 
   items       TransactionLineItem[]
   allocations TransactionPaymentAllocation[]
 
-  commissionAccruals CommissionAccrual[]
-  receipt            Receipt?
+  commissionAccruals            CommissionAccrual[]
+  receipt                       Receipt?
+  cashLedgerEntriesAsCorrection CashLedgerEntry[]
+  correction                    TransactionCorrection?  @relation("TransactionCorrectionExecuted")
+  correctionsAsOriginal         TransactionCorrection[] @relation("TransactionCorrectionOriginal")
 
   @@unique([organizationId, id])
   @@unique([organizationId, checkoutId])
   @@unique([organizationId, serviceSessionId])
   @@index([organizationId, branchId, postedAt])
   @@index([organizationId, assignedStaffProfileId, postedAt])
+  @@index([organizationId, correctedTransactionId])
+  @@index([organizationId, kind, postedAt])
   @@map("transactions")
 }
 
@@ -2326,6 +2383,7 @@ model TransactionLineItem {
 
   commissionAccrual CommissionAccrual?
   receiptLineItem   ReceiptLineItem?
+  correctionItems   TransactionCorrectionItem[]
 
   // Needed so CommissionAccrual/ReceiptLineItem can hold a composite
   // tenant-safe FK to a specific line item by id, the same pattern every
@@ -2490,6 +2548,14 @@ model CommissionRule {
 /// — never editable, never recalculated later even if the matched
 /// CommissionRule is subsequently superseded or deactivated, since every
 /// value a real calculation depended on is snapshotted onto this row.
+/// `kind` distinguishes a normal earned accrual from a corrective
+/// adjustment (docs task Phase 4). REFUNDED/REVERSED rows always carry
+/// `originalAccrualId` (the EARNED row being adjusted) and are resolved
+/// only from that original row's own immutable snapshot — never from
+/// the current CommissionRule, which may have since changed or been
+/// deactivated. `calculatedAmountMinor` remains a non-negative magnitude
+/// for every kind; direction is derived at the reporting layer from
+/// `kind`, exactly like Transaction.kind.
 model CommissionAccrual {
   id                       String                     @id @default(uuid()) @db.Uuid
   organizationId           String                     @map("organization_id") @db.Uuid
@@ -2497,6 +2563,8 @@ model CommissionAccrual {
   transactionLineItemId    String                     @map("transaction_line_item_id") @db.Uuid
   staffProfileId           String                     @map("staff_profile_id") @db.Uuid
   commissionRuleId         String?                    @map("commission_rule_id") @db.Uuid
+  kind                     CommissionAccrualKind      @default(EARNED)
+  originalAccrualId        String?                    @map("original_accrual_id") @db.Uuid
   source                   CommissionAccrualSource
   ruleTypeSnapshot         CommissionRuleType?        @map("rule_type_snapshot")
   rateBasisPointsSnapshot  Int?                       @map("rate_basis_points_snapshot")
@@ -2513,12 +2581,15 @@ model CommissionAccrual {
   transactionLineItem TransactionLineItem @relation(fields: [organizationId, transactionLineItemId], references: [organizationId, id], onDelete: Restrict)
   staffProfile        StaffProfile        @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
   commissionRule      CommissionRule?     @relation(fields: [organizationId, commissionRuleId], references: [organizationId, id], onDelete: Restrict)
+  originalAccrual     CommissionAccrual?  @relation("CommissionAccrualCorrectionOf", fields: [organizationId, originalAccrualId], references: [organizationId, id], onDelete: Restrict)
+  correctiveAccruals  CommissionAccrual[] @relation("CommissionAccrualCorrectionOf")
 
   @@unique([transactionLineItemId, staffProfileId])
   @@unique([organizationId, transactionLineItemId])
   @@unique([organizationId, id])
   @@index([organizationId, staffProfileId, calculatedAt])
   @@index([organizationId, transactionId])
+  @@index([organizationId, originalAccrualId])
   @@map("commission_accruals")
 }
 
@@ -2550,27 +2621,37 @@ model BranchReceiptSequence {
 /// database transaction as Transaction posting and commission accrual —
 /// TransactionPostingService), never a later live read of mutable Branch/
 /// CustomerRecord/PaymentRecord rows.
+/// `kind` distinguishes the original sale receipt from a corrective
+/// document (docs task Phase 5) — REFUND_RECEIPT/REVERSAL_RECORD are
+/// deliberately not called a statutory credit note or tax document.
+/// `originalReceiptId` links a corrective receipt back to the sale
+/// receipt it corrects (null for a SALE_RECEIPT); `remainingRefundable
+/// MinorSnapshot` is only ever set on a REFUND_RECEIPT.
 model Receipt {
-  id                           String   @id @default(uuid()) @db.Uuid
-  organizationId               String   @map("organization_id") @db.Uuid
-  branchId                     String   @map("branch_id") @db.Uuid
-  branchReceiptSequenceId      String   @map("branch_receipt_sequence_id") @db.Uuid
-  transactionId                String   @unique @map("transaction_id") @db.Uuid
-  customerRecordId             String   @map("customer_record_id") @db.Uuid
-  receiptNumber                String   @map("receipt_number")
-  sequenceNumber               Int      @map("sequence_number")
-  businessNameSnapshot         String   @map("business_name_snapshot")
-  branchNameSnapshot           String   @map("branch_name_snapshot")
-  branchPhoneSnapshot          String?  @map("branch_phone_snapshot")
-  branchAddressSnapshot        String?  @map("branch_address_snapshot")
-  customerNameSnapshot         String   @map("customer_name_snapshot")
-  currency                     String   @db.Char(3)
-  subtotalMinorSnapshot        Int      @map("subtotal_minor_snapshot")
-  adjustmentTotalMinorSnapshot Int      @map("adjustment_total_minor_snapshot")
-  totalMinorSnapshot           Int      @map("total_minor_snapshot")
-  issuedAt                     DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
-  issuedByMembershipId         String   @map("issued_by_membership_id") @db.Uuid
-  createdAt                    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                               String      @id @default(uuid()) @db.Uuid
+  organizationId                   String      @map("organization_id") @db.Uuid
+  branchId                         String      @map("branch_id") @db.Uuid
+  branchReceiptSequenceId          String      @map("branch_receipt_sequence_id") @db.Uuid
+  transactionId                    String      @unique @map("transaction_id") @db.Uuid
+  customerRecordId                 String      @map("customer_record_id") @db.Uuid
+  receiptNumber                    String      @map("receipt_number")
+  sequenceNumber                   Int         @map("sequence_number")
+  kind                             ReceiptKind @default(SALE_RECEIPT)
+  originalReceiptId                String?     @map("original_receipt_id") @db.Uuid
+  correctionReason                 String?     @map("correction_reason")
+  remainingRefundableMinorSnapshot Int?        @map("remaining_refundable_minor_snapshot")
+  businessNameSnapshot             String      @map("business_name_snapshot")
+  branchNameSnapshot               String      @map("branch_name_snapshot")
+  branchPhoneSnapshot              String?     @map("branch_phone_snapshot")
+  branchAddressSnapshot            String?     @map("branch_address_snapshot")
+  customerNameSnapshot             String      @map("customer_name_snapshot")
+  currency                         String      @db.Char(3)
+  subtotalMinorSnapshot            Int         @map("subtotal_minor_snapshot")
+  adjustmentTotalMinorSnapshot     Int         @map("adjustment_total_minor_snapshot")
+  totalMinorSnapshot               Int         @map("total_minor_snapshot")
+  issuedAt                         DateTime    @default(now()) @map("issued_at") @db.Timestamptz(6)
+  issuedByMembershipId             String      @map("issued_by_membership_id") @db.Uuid
+  createdAt                        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
 
   organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch                Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
@@ -2578,6 +2659,8 @@ model Receipt {
   transaction           Transaction            @relation(fields: [organizationId, transactionId], references: [organizationId, id], onDelete: Restrict)
   customerRecord        CustomerRecord         @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
   issuedByMembership    OrganizationMembership @relation("ReceiptIssuedBy", fields: [organizationId, issuedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  originalReceipt       Receipt?               @relation("ReceiptCorrectionOf", fields: [organizationId, originalReceiptId], references: [organizationId, id], onDelete: Restrict)
+  correctiveReceipts    Receipt[]              @relation("ReceiptCorrectionOf")
 
   lineItems        ReceiptLineItem[]
   paymentSummaries ReceiptPaymentSummary[]
@@ -2594,6 +2677,7 @@ model Receipt {
   @@unique([organizationId, receiptNumber])
   @@index([organizationId, branchId, issuedAt])
   @@index([organizationId, customerRecordId])
+  @@index([organizationId, originalReceiptId])
   @@map("receipts")
 }
 
@@ -2646,4 +2730,400 @@ model ReceiptPaymentSummary {
 
   @@index([receiptId])
   @@map("receipt_payment_summaries")
+}
+
+// ---------------------------------------------------------------------------
+// Branch cash controls (docs task: "Cash Controls and Reconciliation"). A
+// CashSession's expected/counted/variance figures are a physical-custody
+// calculation — proof of what is (or should be) in a drawer — and are never
+// treated as revenue anywhere in this codebase; only a POSTED Transaction
+// is revenue (docs/ARCHITECTURE.md). See CashSessionService (modules/cash)
+// for the locking strategy that keeps a session's ledger and its close
+// snapshot consistent under concurrency.
+// ---------------------------------------------------------------------------
+
+enum CashPolicyMode {
+  OPTIONAL
+  REQUIRED
+
+  @@map("cash_policy_mode")
+}
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+  REVIEWED
+
+  @@map("cash_session_status")
+}
+
+/// Positive magnitude only — direction is derived from `type`
+/// (CashLedgerEntryDirection, apps/api/src/modules/cash/cash-ledger-
+/// direction.util.ts), the same "type determines sign" convention
+/// CheckoutAdjustment already established.
+enum CashLedgerEntryType {
+  OPENING_FLOAT
+  PAYMENT_RECEIVED
+  CASH_IN
+  CASH_OUT
+  SAFE_DROP
+  REFUND_PAID
+
+  @@map("cash_ledger_entry_type")
+}
+
+enum CashSessionReviewOutcome {
+  MATCHED
+  ACCEPTED_VARIANCE
+  INVESTIGATION_REQUIRED
+
+  @@map("cash_session_review_outcome")
+}
+
+/// One policy row per branch (`branchId` unique), defaulting to OPTIONAL
+/// so an existing branch with no policy row at all behaves exactly as
+/// before this stage (CashSessionsService.resolveMode treats "no row" the
+/// same as OPTIONAL). Only when REQUIRED does recording a CASH
+/// PaymentRecord require a valid open CashSession.
+model BranchCashPolicy {
+  id                    String         @id @default(uuid()) @db.Uuid
+  organizationId        String         @map("organization_id") @db.Uuid
+  branchId              String         @unique @map("branch_id") @db.Uuid
+  mode                  CashPolicyMode @default(OPTIONAL)
+  updatedByMembershipId String         @map("updated_by_membership_id") @db.Uuid
+  createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization        Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch              Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  updatedByMembership OrganizationMembership @relation("BranchCashPolicyUpdatedBy", fields: [organizationId, updatedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, branchId])
+  @@map("branch_cash_policies")
+}
+
+/// A physical drawer/till. `code` is unique per branch, matching how
+/// `Branch.code` itself is unique per organization rather than globally.
+model CashRegister {
+  id                     String    @id @default(uuid()) @db.Uuid
+  organizationId         String    @map("organization_id") @db.Uuid
+  branchId               String    @map("branch_id") @db.Uuid
+  code                   String
+  name                   String
+  createdByMembershipId  String    @map("created_by_membership_id") @db.Uuid
+  archivedAt             DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedByMembershipId String?   @map("archived_by_membership_id") @db.Uuid
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  createdByMembership  OrganizationMembership  @relation("CashRegisterCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  archivedByMembership OrganizationMembership? @relation("CashRegisterArchivedBy", fields: [organizationId, archivedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  sessions      CashSession[]
+  ledgerEntries CashLedgerEntry[]
+
+  @@unique([organizationId, branchId, code])
+  @@unique([organizationId, id])
+  @@index([organizationId, branchId, archivedAt])
+  @@map("cash_registers")
+}
+
+/// One cashier's custody of one physical register for one currency,
+/// opened with a float and closed with a counted amount. `expectedClosing
+/// CashMinor`/`countedCashMinor`/`varianceMinor` are set exactly once, at
+/// close time, computed from — and only from — this session's own
+/// immutable CashLedgerEntry rows (CashSessionService.close); reviewing
+/// afterward never rewrites them. Only one OPEN session may exist per
+/// (register, currency) at a time — a hand-written partial UNIQUE index
+/// in this migration, since Prisma's schema DSL has no declarative
+/// partial-index support (see the migration.sql header comment).
+model CashSession {
+  id                       String            @id @default(uuid()) @db.Uuid
+  organizationId           String            @map("organization_id") @db.Uuid
+  branchId                 String            @map("branch_id") @db.Uuid
+  registerId               String            @map("register_id") @db.Uuid
+  currency                 String            @db.Char(3)
+  openedByMembershipId     String            @map("opened_by_membership_id") @db.Uuid
+  openingFloatMinor        Int               @map("opening_float_minor")
+  openedAt                 DateTime          @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt                 DateTime?         @map("closed_at") @db.Timestamptz(6)
+  closedByMembershipId     String?           @map("closed_by_membership_id") @db.Uuid
+  expectedClosingCashMinor Int?              @map("expected_closing_cash_minor")
+  countedCashMinor         Int?              @map("counted_cash_minor")
+  varianceMinor            Int?              @map("variance_minor")
+  status                   CashSessionStatus @default(OPEN)
+  version                  Int               @default(1)
+  createdAt                DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch             Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  register           CashRegister            @relation(fields: [organizationId, registerId], references: [organizationId, id], onDelete: Restrict)
+  openedByMembership OrganizationMembership  @relation("CashSessionOpenedBy", fields: [organizationId, openedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  closedByMembership OrganizationMembership? @relation("CashSessionClosedBy", fields: [organizationId, closedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  ledgerEntries CashLedgerEntry[]
+  review        CashSessionReview?
+
+  @@unique([organizationId, id])
+  @@index([organizationId, branchId, status])
+  @@index([organizationId, registerId, status])
+  @@index([organizationId, openedByMembershipId, status])
+  @@map("cash_sessions")
+}
+
+/// Append-only physical cash movement. `amountMinor` is always a positive
+/// magnitude; `type` alone determines whether it adds to or removes from
+/// the drawer (CashLedgerEntryDirection). No update or delete path is
+/// exposed through application services; a PostgreSQL trigger
+/// (`cash_ledger_entries_require_open_session`, this migration) also
+/// rejects any insert whose session is not OPEN, as a hard backstop
+/// behind the application-level row lock CashSessionService takes on the
+/// session before ever writing here.
+model CashLedgerEntry {
+  id                      String              @id @default(uuid()) @db.Uuid
+  organizationId          String              @map("organization_id") @db.Uuid
+  branchId                String              @map("branch_id") @db.Uuid
+  registerId              String              @map("register_id") @db.Uuid
+  cashSessionId           String              @map("cash_session_id") @db.Uuid
+  currency                String              @db.Char(3)
+  type                    CashLedgerEntryType
+  amountMinor             Int                 @map("amount_minor")
+  paymentRecordId         String?             @unique @map("payment_record_id") @db.Uuid
+  correctiveTransactionId String?             @map("corrective_transaction_id") @db.Uuid
+  reason                  String?
+  actorMembershipId       String              @map("actor_membership_id") @db.Uuid
+  occurredAt              DateTime            @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  register              CashRegister           @relation(fields: [organizationId, registerId], references: [organizationId, id], onDelete: Restrict)
+  cashSession           CashSession            @relation(fields: [organizationId, cashSessionId], references: [organizationId, id], onDelete: Restrict)
+  paymentRecord         PaymentRecord?         @relation(fields: [organizationId, paymentRecordId], references: [organizationId, id], onDelete: Restrict)
+  correctiveTransaction Transaction?           @relation(fields: [organizationId, correctiveTransactionId], references: [organizationId, id], onDelete: Restrict)
+  actorMembership       OrganizationMembership @relation("CashLedgerEntryActor", fields: [organizationId, actorMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, paymentRecordId])
+  @@index([organizationId, cashSessionId, occurredAt])
+  @@index([organizationId, correctiveTransactionId])
+  @@map("cash_ledger_entries")
+}
+
+/// Append-only review of one CLOSED session's already-frozen expected/
+/// counted/variance snapshot — reviewing only ever adds this row and
+/// moves the session CLOSED -> REVIEWED; it never touches the snapshot
+/// itself. One review per session (the session's own status transition
+/// is one-way and terminal at REVIEWED, matching the single `.../review`
+/// endpoint this phase adds — docs/API_SPEC.md).
+model CashSessionReview {
+  id                     String                   @id @default(uuid()) @db.Uuid
+  organizationId         String                   @map("organization_id") @db.Uuid
+  cashSessionId          String                   @unique @map("cash_session_id") @db.Uuid
+  outcome                CashSessionReviewOutcome
+  reason                 String
+  reviewedByMembershipId String                   @map("reviewed_by_membership_id") @db.Uuid
+  reviewedAt             DateTime                 @default(now()) @map("reviewed_at") @db.Timestamptz(6)
+  createdAt              DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization         Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  cashSession          CashSession            @relation(fields: [organizationId, cashSessionId], references: [organizationId, id], onDelete: Restrict)
+  reviewedByMembership OrganizationMembership @relation("CashSessionReviewedBy", fields: [organizationId, reviewedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, cashSessionId])
+  @@map("cash_session_reviews")
+}
+
+// ---------------------------------------------------------------------------
+// Refund / reversal correction workflow (docs task: "Refund/Correction
+// Approval -> Immutable Refund or Reversal Transaction -> Commission
+// Adjustment -> Corrected Receipt and Reporting"). The original SALE
+// Transaction is never mutated or deleted — a correction always produces a
+// brand-new, separately posted Transaction (kind REFUND or REVERSAL) that
+// references it. See TransactionCorrectionsService (modules/corrections)
+// for the full state machine and atomic execution.
+// ---------------------------------------------------------------------------
+
+enum TransactionKind {
+  SALE
+  REFUND
+  REVERSAL
+
+  @@map("transaction_kind")
+}
+
+enum CommissionAccrualKind {
+  EARNED
+  REFUNDED
+  REVERSED
+
+  @@map("commission_accrual_kind")
+}
+
+/// Not a statutory tax invoice or statutory credit note — a plain
+/// service document (docs task Phase 5).
+enum ReceiptKind {
+  SALE_RECEIPT
+  REFUND_RECEIPT
+  REVERSAL_RECORD
+
+  @@map("receipt_kind")
+}
+
+enum TransactionCorrectionType {
+  REFUND
+  REVERSAL
+
+  @@map("transaction_correction_type")
+}
+
+/// REQUESTED -> APPROVED -> EXECUTED is the only path that ever posts a
+/// corrective Transaction. REQUESTED -> REJECTED, REQUESTED -> CANCELLED,
+/// and APPROVED -> CANCELLED are all terminal with no corrective
+/// Transaction. Every terminal state (REJECTED, CANCELLED, EXECUTED) is
+/// final — none ever reopens (docs task Phase 3).
+enum TransactionCorrectionStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXECUTED
+
+  @@map("transaction_correction_status")
+}
+
+/// One correction request/decision/execution record against one original
+/// SALE Transaction. A REFUND may have several TransactionCorrections
+/// executed against the same original (cumulative amounts capped at the
+/// remaining refundable balance, recalculated from immutable records at
+/// execution time); a REVERSAL may only ever have one, and only when no
+/// prior correction has been executed against that sale at all.
+/// `correctiveTransactionId` is set only at EXECUTED, pointing to the
+/// immutable REFUND/REVERSAL Transaction this correction produced.
+model TransactionCorrection {
+  id                      String                      @id @default(uuid()) @db.Uuid
+  organizationId          String                      @map("organization_id") @db.Uuid
+  branchId                String                      @map("branch_id") @db.Uuid
+  originalTransactionId   String                      @map("original_transaction_id") @db.Uuid
+  correctionType          TransactionCorrectionType   @map("correction_type")
+  status                  TransactionCorrectionStatus @default(REQUESTED)
+  reason                  String
+  currency                String                      @db.Char(3)
+  returnMethod            PaymentMethod               @map("return_method")
+  totalRequestedMinor     Int                         @map("total_requested_minor")
+  requestedByMembershipId String                      @map("requested_by_membership_id") @db.Uuid
+  requestedAt             DateTime                    @default(now()) @map("requested_at") @db.Timestamptz(6)
+  approvedByMembershipId  String?                     @map("approved_by_membership_id") @db.Uuid
+  approvedAt              DateTime?                   @map("approved_at") @db.Timestamptz(6)
+  rejectedByMembershipId  String?                     @map("rejected_by_membership_id") @db.Uuid
+  rejectedAt              DateTime?                   @map("rejected_at") @db.Timestamptz(6)
+  rejectionReason         String?                     @map("rejection_reason")
+  cancelledByMembershipId String?                     @map("cancelled_by_membership_id") @db.Uuid
+  cancelledAt             DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
+  cancellationReason      String?                     @map("cancellation_reason")
+  executedByMembershipId  String?                     @map("executed_by_membership_id") @db.Uuid
+  executedAt              DateTime?                   @map("executed_at") @db.Timestamptz(6)
+  correctiveTransactionId String?                     @unique @map("corrective_transaction_id") @db.Uuid
+  soloOwnerOverride       Boolean                     @default(false) @map("solo_owner_override")
+  soloOwnerOverrideReason String?                     @map("solo_owner_override_reason")
+  version                 Int                         @default(1)
+  createdAt               DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization          Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  originalTransaction   Transaction             @relation("TransactionCorrectionOriginal", fields: [organizationId, originalTransactionId], references: [organizationId, id], onDelete: Restrict)
+  correctiveTransaction Transaction?            @relation("TransactionCorrectionExecuted", fields: [organizationId, correctiveTransactionId], references: [organizationId, id], onDelete: Restrict)
+  requestedByMembership OrganizationMembership  @relation("TransactionCorrectionRequestedBy", fields: [organizationId, requestedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  approvedByMembership  OrganizationMembership? @relation("TransactionCorrectionApprovedBy", fields: [organizationId, approvedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  rejectedByMembership  OrganizationMembership? @relation("TransactionCorrectionRejectedBy", fields: [organizationId, rejectedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  cancelledByMembership OrganizationMembership? @relation("TransactionCorrectionCancelledBy", fields: [organizationId, cancelledByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  executedByMembership  OrganizationMembership? @relation("TransactionCorrectionExecutedBy", fields: [organizationId, executedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  items         TransactionCorrectionItem[]
+  payments      TransactionCorrectionPayment[]
+  statusHistory TransactionCorrectionStatusHistory[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, correctiveTransactionId])
+  @@index([organizationId, originalTransactionId, status])
+  @@index([organizationId, branchId, status])
+  @@index([organizationId, requestedByMembershipId])
+  @@map("transaction_corrections")
+}
+
+/// Which original TransactionLineItem, and how much of it, this
+/// correction requests back. For a REVERSAL, one row is generated per
+/// original line item at its full original amount; for a REFUND, the
+/// requester names the exact lines and minor-unit amounts — never
+/// trusted totals (docs task Phase 3).
+model TransactionCorrectionItem {
+  id                            String   @id @default(uuid()) @db.Uuid
+  organizationId                String   @map("organization_id") @db.Uuid
+  correctionId                  String   @map("correction_id") @db.Uuid
+  originalTransactionLineItemId String   @map("original_transaction_line_item_id") @db.Uuid
+  requestedAmountMinor          Int      @map("requested_amount_minor")
+  createdAt                     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization                Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  correction                  TransactionCorrection @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+  originalTransactionLineItem TransactionLineItem   @relation(fields: [organizationId, originalTransactionLineItemId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([correctionId, originalTransactionLineItemId])
+  @@index([organizationId, originalTransactionLineItemId])
+  @@map("transaction_correction_items")
+}
+
+/// The declared return-method breakdown for one correction, written at
+/// EXECUTED time from the immutable execution snapshot — never a later
+/// live read. `originalPaymentRecordId` is informational only (which
+/// original claim, if any, this return corresponds to); the return
+/// itself may legitimately use a different method than the original
+/// payment. `safeReferenceSnapshot` is a safe code only, matching
+/// PaymentRecord.externalReference's own convention — never a card/
+/// bank/mobile-money credential (docs task Phase 3: "mask or hash
+/// sensitive external references").
+model TransactionCorrectionPayment {
+  id                      String        @id @default(uuid()) @db.Uuid
+  organizationId          String        @map("organization_id") @db.Uuid
+  correctionId            String        @map("correction_id") @db.Uuid
+  method                  PaymentMethod
+  amountMinor             Int           @map("amount_minor")
+  safeReferenceSnapshot   String?       @map("safe_reference_snapshot")
+  originalPaymentRecordId String?       @map("original_payment_record_id") @db.Uuid
+  createdAt               DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization          Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  correction            TransactionCorrection @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+  originalPaymentRecord PaymentRecord?        @relation(fields: [organizationId, originalPaymentRecordId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([correctionId])
+  @@index([organizationId, originalPaymentRecordId])
+  @@map("transaction_correction_payments")
+}
+
+/// Append-only state-transition log for one TransactionCorrection — the
+/// same role QueueEntryStatusHistory/ServiceSessionStatusHistory/
+/// PaymentVerificationEvent already play for their own aggregates,
+/// distinct from the platform-wide AuditEvent trail.
+model TransactionCorrectionStatusHistory {
+  id                String                       @id @default(uuid()) @db.Uuid
+  organizationId    String                       @map("organization_id") @db.Uuid
+  correctionId      String                       @map("correction_id") @db.Uuid
+  previousStatus    TransactionCorrectionStatus? @map("previous_status")
+  newStatus         TransactionCorrectionStatus  @map("new_status")
+  actorUserId       String?                      @map("actor_user_id") @db.Uuid
+  actorMembershipId String?                      @map("actor_membership_id") @db.Uuid
+  reason            String?
+  occurredAt        DateTime                     @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  correction      TransactionCorrection   @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+  actorMembership OrganizationMembership? @relation("TransactionCorrectionStatusHistoryActor", fields: [organizationId, actorMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([correctionId, occurredAt])
+  @@index([organizationId, occurredAt])
+  @@map("transaction_correction_status_history")
 }

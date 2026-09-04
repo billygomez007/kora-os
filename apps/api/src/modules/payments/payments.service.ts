@@ -7,6 +7,7 @@ import { generateReference } from '../../common/identity/generate-reference.util
 import { assertSafeMoneyAmount, sumMinorAmounts } from '../../common/money/assert-safe-money-amount.util.js';
 import { PrismaService } from '../../database/prisma.service.js';
 import {
+  CashPolicyMode,
   CheckoutStatus,
   FinancialIdempotencyOperation,
   PaymentMethod,
@@ -15,6 +16,7 @@ import {
 } from '../../generated/prisma/client.js';
 import type { PaymentRecord } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
+import { CashSessionsService } from '../cash/cash-sessions.service.js';
 import { CheckoutSettlementService } from './checkout-settlement.service.js';
 import type { RecordPaymentDto } from './dto/record-payment.dto.js';
 import type { VoidPaymentDto } from './dto/void-payment.dto.js';
@@ -43,6 +45,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     private readonly checkoutSettlement: CheckoutSettlementService,
+    private readonly cashSessionsService: CashSessionsService,
   ) {}
 
   async listForCheckout(tenant: TenantContext, checkoutId: string): Promise<PaymentRecordView[]> {
@@ -92,6 +95,17 @@ export class PaymentsService {
       if (dto.tenderedAmountMinor < dto.appliedAmountMinor) {
         throw new BadRequestException('tenderedAmountMinor cannot be less than appliedAmountMinor');
       }
+    }
+
+    if (dto.method === PaymentMethod.CASH) {
+      const cashPolicyMode = await this.cashSessionsService.resolveCashPolicyMode(tenant.organizationId, checkout.branchId);
+      if (cashPolicyMode === CashPolicyMode.REQUIRED && !dto.cashSessionId) {
+        throw new BadRequestException(
+          "This branch's cash policy is REQUIRED — a cashSessionId is required to record a CASH payment.",
+        );
+      }
+    } else if (dto.cashSessionId) {
+      throw new BadRequestException('cashSessionId is only meaningful for a CASH payment');
     }
 
     const requestFingerprint = computeRecordPaymentFingerprint(checkoutId, dto);
@@ -161,6 +175,21 @@ export class PaymentsService {
               actorMembershipId: tenant.membershipId,
             },
           });
+
+          // A CASH payment with a supplied session gets exactly one
+          // PAYMENT_RECEIVED CashLedgerEntry, atomically alongside the
+          // PaymentRecord itself — the Checkout lock is already held
+          // above, and recordPaymentReceivedEntry takes the CashSession
+          // lock second, preserving one global lock order everywhere in
+          // the codebase (docs task Phase 1/2).
+          if (dto.cashSessionId) {
+            await this.cashSessionsService.recordPaymentReceivedEntry(tx, tenant, dto.cashSessionId, {
+              branchId: lockedCheckout.branchId,
+              currency: dto.currency,
+              paymentRecordId: record.id,
+              appliedAmountMinor: dto.appliedAmountMinor,
+            });
+          }
 
           await tx.financialIdempotencyKey.create({
             data: {
@@ -342,6 +371,7 @@ function computeRecordPaymentFingerprint(checkoutId: string, dto: RecordPaymentD
     currency: dto.currency,
     externalReference: dto.externalReference ?? null,
     note: dto.note ?? null,
+    cashSessionId: dto.cashSessionId ?? null,
   });
   return createHash('sha256').update(canonical).digest('hex');
 }

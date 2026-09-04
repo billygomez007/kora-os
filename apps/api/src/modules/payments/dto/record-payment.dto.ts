@@ -1,4 +1,4 @@
-import { IsEnum, IsInt, IsOptional, IsString, Length, Matches, Max, MaxLength, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, MaxLength, Min } from 'class-validator';
 import { MAX_MINOR_AMOUNT } from '../../../common/money/assert-safe-money-amount.util.js';
 import { PaymentMethod } from '../../../generated/prisma/client.js';
 
@@ -40,4 +40,13 @@ export class RecordPaymentDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+
+  /** Only meaningful for CASH — associates this claim with the
+   * cashier's open drawer session so exactly one PAYMENT_RECEIVED
+   * CashLedgerEntry is written atomically alongside it. Required
+   * when the branch's BranchCashPolicy is REQUIRED; rejected outright
+   * for any non-CASH method (PaymentsService). */
+  @IsOptional()
+  @IsUUID()
+  cashSessionId?: string;
 }

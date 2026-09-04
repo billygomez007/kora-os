@@ -15,8 +15,10 @@ import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
 import { AvailabilityModule } from './modules/availability/availability.module.js';
+import { CashModule } from './modules/cash/cash.module.js';
 import { CheckoutsModule } from './modules/checkouts/checkouts.module.js';
 import { CommissionsModule } from './modules/commissions/commissions.module.js';
+import { CorrectionsModule } from './modules/corrections/corrections.module.js';
 import { CustomerProfileModule } from './modules/customer-profile/customer-profile.module.js';
 import { DiscoveryModule } from './modules/discovery/discovery.module.js';
 import { HealthModule } from './modules/health/health.module.js';
@@ -72,7 +74,9 @@ const repositoryRootEnvPath = path.resolve(
     CommissionsModule,
     ReceiptsModule,
     TransactionsModule,
+    CashModule,
     PaymentsModule,
+    CorrectionsModule,
     ReportsModule,
     AuthModule,
     HealthModule,

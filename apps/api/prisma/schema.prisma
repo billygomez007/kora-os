@@ -435,6 +435,13 @@ model Organization {
   transactionPaymentAllocations TransactionPaymentAllocation[]
   financialIdempotencyKeys      FinancialIdempotencyKey[]
 
+  commissionRules         CommissionRule[]
+  commissionAccruals      CommissionAccrual[]
+  branchReceiptSequences  BranchReceiptSequence[]
+  receipts                Receipt[]
+  receiptLineItems        ReceiptLineItem[]
+  receiptPaymentSummaries ReceiptPaymentSummary[]
+
   @@map("organizations")
 }
 
@@ -489,6 +496,10 @@ model Branch {
   paymentRecords PaymentRecord[]
   transactions   Transaction[]
 
+  commissionRulesScoped  CommissionRule[]
+  branchReceiptSequences BranchReceiptSequence[]
+  receipts               Receipt[]
+
   @@unique([organizationId, code])
   @@unique([organizationId, id])
   @@index([organizationId])
@@ -532,6 +543,10 @@ model OrganizationMembership {
   paymentRecordsVoided    PaymentRecord[]  @relation("PaymentVoidedBy")
   paymentDisputesOpened   PaymentDispute[] @relation("PaymentDisputeOpenedBy")
   paymentDisputesResolved PaymentDispute[] @relation("PaymentDisputeResolvedBy")
+
+  commissionRulesCreated     CommissionRule[] @relation("CommissionRuleCreatedBy")
+  commissionRulesDeactivated CommissionRule[] @relation("CommissionRuleDeactivatedBy")
+  receiptsIssued             Receipt[]        @relation("ReceiptIssuedBy")
 
   @@unique([organizationId, userId])
   @@unique([organizationId, id])
@@ -674,6 +689,9 @@ model StaffProfile {
   paymentRecordsConfirmationOwed PaymentRecord[]
   transactionsAssigned           Transaction[]
   transactionLineItems           TransactionLineItem[]
+
+  commissionRulesScoped CommissionRule[]
+  commissionAccruals    CommissionAccrual[]
 
   @@unique([organizationId, membershipId])
   // Lets StaffServiceAssignment and Appointment hold a composite tenant
@@ -967,6 +985,7 @@ model CustomerRecord {
   serviceSessions ServiceSession[]
   checkouts       Checkout[]
   transactions    Transaction[]
+  receipts        Receipt[]
 
   @@unique([organizationId, id])
   @@index([organizationId, customerProfileId])
@@ -1169,6 +1188,8 @@ model Service {
   serviceSessionItems  ServiceSessionItem[]
   checkoutLineItems    CheckoutLineItem[]
   transactionLineItems TransactionLineItem[]
+
+  commissionRulesScoped CommissionRule[]
 
   @@unique([organizationId, id])
   @@index([organizationId, archivedAt])
@@ -2269,6 +2290,9 @@ model Transaction {
   items       TransactionLineItem[]
   allocations TransactionPaymentAllocation[]
 
+  commissionAccruals CommissionAccrual[]
+  receipt            Receipt?
+
   @@unique([organizationId, id])
   @@unique([organizationId, checkoutId])
   @@unique([organizationId, serviceSessionId])
@@ -2300,6 +2324,14 @@ model TransactionLineItem {
   service            Service            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
   staffProfile       StaffProfile       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
 
+  commissionAccrual CommissionAccrual?
+  receiptLineItem   ReceiptLineItem?
+
+  // Needed so CommissionAccrual/ReceiptLineItem can hold a composite
+  // tenant-safe FK to a specific line item by id, the same pattern every
+  // other financial-domain "child references a specific row" relation in
+  // this schema already uses.
+  @@unique([organizationId, id])
   @@index([transactionId, displayOrder])
   @@map("transaction_line_items")
 }
@@ -2346,4 +2378,272 @@ model FinancialIdempotencyKey {
 
   @@unique([membershipId, operation, idempotencyKey])
   @@map("financial_idempotency_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Commissions, receipts, and reporting (docs task: "Posted Transaction ->
+// Commission calculation -> Service receipt -> Staff earnings -> Owner/
+// manager reporting"). Commissions and receipts are both derived
+// exclusively from an immutable, already-POSTED Transaction — never from a
+// PaymentRecord (a claim only) and never re-derived from current Service
+// prices. See CommissionAccrualService/ReceiptService (modules/commissions,
+// modules/receipts) for the calculation and the atomic posting integration.
+// ---------------------------------------------------------------------------
+
+enum CommissionRuleType {
+  PERCENTAGE
+  FIXED
+  NONE
+
+  @@map("commission_rule_type")
+}
+
+/// GROSS_LINE: commission on a TransactionLineItem's own snapshotted
+/// price, unaffected by checkout-level adjustments. NET_LINE_AFTER_
+/// ADJUSTMENTS: commission on that price after the Transaction's overall
+/// adjustmentTotalMinor has been allocated across every line item by a
+/// deterministic largest-remainder method (CommissionCalculationService.
+/// allocateAdjustmentsAcrossLines) — see docs/ARCHITECTURE.md for why
+/// largest-remainder rather than naive proportional rounding.
+enum CommissionCalculationBasis {
+  GROSS_LINE
+  NET_LINE_AFTER_ADJUSTMENTS
+
+  @@map("commission_calculation_basis")
+}
+
+/// POLICY: a CommissionRule was matched and used (even if it calculated
+/// to zero, e.g. a NONE-type rule or a 0-basis-point PERCENTAGE rule).
+/// NO_POLICY: no rule matched any of the eight precedence levels at all
+/// — an explicit zero-value accrual is still created (docs task Phase 1:
+/// "Missing policy must not prevent legitimate transaction posting").
+enum CommissionAccrualSource {
+  POLICY
+  NO_POLICY
+
+  @@map("commission_accrual_source")
+}
+
+/// A versioned commission policy. Never edited in place once created —
+/// changing a rule always either supersedes it with a brand-new row
+/// (`supersedesRuleId`/`supersededBy`, both the old row's `effectiveUntil`
+/// and the new row's `effectiveFrom` set to the same instant so temporal
+/// resolution never sees a gap or overlap) or explicitly deactivates it
+/// (`deactivatedAt`/`deactivatedByMembershipId`, with no replacement).
+/// Scope (`branchId`/`staffProfileId`/`serviceId`) is independently
+/// optional in each dimension — a null dimension means "any" — enabling
+/// the eight-level precedence CommissionCalculationService.
+/// selectMostSpecificRule implements (staff+branch+service down to the
+/// bare organization default, all four scoped fields null). Only one
+/// CURRENT rule (`effectiveUntil IS NULL AND deactivatedAt IS NULL`) may
+/// exist per exact scope combination — enforced by a hand-written partial
+/// unique index with `NULLS NOT DISTINCT` in this migration (scope
+/// columns are nullable, so a plain `@@unique` would treat every NULL as
+/// distinct and fail to prevent duplicates — see the migration.sql header
+/// comment, confirmed by a real-database integration test).
+model CommissionRule {
+  id                        String                     @id @default(uuid()) @db.Uuid
+  organizationId            String                     @map("organization_id") @db.Uuid
+  branchId                  String?                    @map("branch_id") @db.Uuid
+  staffProfileId            String?                    @map("staff_profile_id") @db.Uuid
+  serviceId                 String?                    @map("service_id") @db.Uuid
+  type                      CommissionRuleType
+  rateBasisPoints           Int?                       @map("rate_basis_points")
+  fixedAmountMinor          Int?                       @map("fixed_amount_minor")
+  fixedCurrency             String?                    @map("fixed_currency") @db.Char(3)
+  basis                     CommissionCalculationBasis @default(GROSS_LINE)
+  effectiveFrom             DateTime                   @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil            DateTime?                  @map("effective_until") @db.Timestamptz(6)
+  createdByMembershipId     String                     @map("created_by_membership_id") @db.Uuid
+  supersedesRuleId          String?                    @map("supersedes_rule_id") @db.Uuid
+  deactivatedAt             DateTime?                  @map("deactivated_at") @db.Timestamptz(6)
+  deactivatedByMembershipId String?                    @map("deactivated_by_membership_id") @db.Uuid
+  version                   Int                        @default(1)
+  createdAt                 DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile StaffProfile? @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  service      Service?      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+
+  createdByMembership     OrganizationMembership  @relation("CommissionRuleCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  deactivatedByMembership OrganizationMembership? @relation("CommissionRuleDeactivatedBy", fields: [organizationId, deactivatedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  supersedes   CommissionRule?  @relation("CommissionRuleSupersession", fields: [organizationId, supersedesRuleId], references: [organizationId, id], onDelete: Restrict)
+  supersededBy CommissionRule[] @relation("CommissionRuleSupersession")
+
+  accruals CommissionAccrual[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, supersedesRuleId])
+  @@index([organizationId, effectiveFrom, effectiveUntil])
+  @@index([organizationId, branchId])
+  @@index([organizationId, staffProfileId])
+  @@index([organizationId, serviceId])
+  @@map("commission_rules")
+}
+
+/// The immutable calculated commission for exactly one TransactionLineItem
+/// and its performing provider. Created only inside the same database
+/// transaction that posts the parent Transaction (TransactionPostingService)
+/// — never editable, never recalculated later even if the matched
+/// CommissionRule is subsequently superseded or deactivated, since every
+/// value a real calculation depended on is snapshotted onto this row.
+model CommissionAccrual {
+  id                       String                     @id @default(uuid()) @db.Uuid
+  organizationId           String                     @map("organization_id") @db.Uuid
+  transactionId            String                     @map("transaction_id") @db.Uuid
+  transactionLineItemId    String                     @map("transaction_line_item_id") @db.Uuid
+  staffProfileId           String                     @map("staff_profile_id") @db.Uuid
+  commissionRuleId         String?                    @map("commission_rule_id") @db.Uuid
+  source                   CommissionAccrualSource
+  ruleTypeSnapshot         CommissionRuleType?        @map("rule_type_snapshot")
+  rateBasisPointsSnapshot  Int?                       @map("rate_basis_points_snapshot")
+  fixedAmountMinorSnapshot Int?                       @map("fixed_amount_minor_snapshot")
+  basisSnapshot            CommissionCalculationBasis @map("basis_snapshot")
+  basisAmountMinor         Int                        @map("basis_amount_minor")
+  calculatedAmountMinor    Int                        @map("calculated_amount_minor")
+  currency                 String                     @db.Char(3)
+  calculatedAt             DateTime                   @map("calculated_at") @db.Timestamptz(6)
+  createdAt                DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction         Transaction         @relation(fields: [organizationId, transactionId], references: [organizationId, id], onDelete: Restrict)
+  transactionLineItem TransactionLineItem @relation(fields: [organizationId, transactionLineItemId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile        StaffProfile        @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  commissionRule      CommissionRule?     @relation(fields: [organizationId, commissionRuleId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([transactionLineItemId, staffProfileId])
+  @@unique([organizationId, transactionLineItemId])
+  @@unique([organizationId, id])
+  @@index([organizationId, staffProfileId, calculatedAt])
+  @@index([organizationId, transactionId])
+  @@map("commission_accruals")
+}
+
+/// Atomic per-(branch, calendar year) receipt-number counter — the exact
+/// same "single native upsert, no read-then-write" pattern
+/// `allocateQueueTicket`/`BranchQueueDay` already established for queue
+/// ticket numbers (apps/api/src/modules/queue/queue-ticket.util.ts).
+model BranchReceiptSequence {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  branchId       String   @map("branch_id") @db.Uuid
+  year           Int
+  lastSequence   Int      @default(0) @map("last_sequence")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  receipts     Receipt[]
+
+  @@unique([organizationId, branchId, year])
+  @@map("branch_receipt_sequences")
+}
+
+/// An immutable service receipt for exactly one POSTED Transaction — not
+/// a statutory VAT/tax invoice (no TIN, no tax calculation, no compliance
+/// claim of any kind). Every business/branch/customer/line/payment value
+/// is a snapshot taken atomically at issuance time (inside the same
+/// database transaction as Transaction posting and commission accrual —
+/// TransactionPostingService), never a later live read of mutable Branch/
+/// CustomerRecord/PaymentRecord rows.
+model Receipt {
+  id                           String   @id @default(uuid()) @db.Uuid
+  organizationId               String   @map("organization_id") @db.Uuid
+  branchId                     String   @map("branch_id") @db.Uuid
+  branchReceiptSequenceId      String   @map("branch_receipt_sequence_id") @db.Uuid
+  transactionId                String   @unique @map("transaction_id") @db.Uuid
+  customerRecordId             String   @map("customer_record_id") @db.Uuid
+  receiptNumber                String   @map("receipt_number")
+  sequenceNumber               Int      @map("sequence_number")
+  businessNameSnapshot         String   @map("business_name_snapshot")
+  branchNameSnapshot           String   @map("branch_name_snapshot")
+  branchPhoneSnapshot          String?  @map("branch_phone_snapshot")
+  branchAddressSnapshot        String?  @map("branch_address_snapshot")
+  customerNameSnapshot         String   @map("customer_name_snapshot")
+  currency                     String   @db.Char(3)
+  subtotalMinorSnapshot        Int      @map("subtotal_minor_snapshot")
+  adjustmentTotalMinorSnapshot Int      @map("adjustment_total_minor_snapshot")
+  totalMinorSnapshot           Int      @map("total_minor_snapshot")
+  issuedAt                     DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+  issuedByMembershipId         String   @map("issued_by_membership_id") @db.Uuid
+  createdAt                    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  branchReceiptSequence BranchReceiptSequence  @relation(fields: [branchReceiptSequenceId], references: [id], onDelete: Restrict)
+  transaction           Transaction            @relation(fields: [organizationId, transactionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord        CustomerRecord         @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  issuedByMembership    OrganizationMembership @relation("ReceiptIssuedBy", fields: [organizationId, issuedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  lineItems        ReceiptLineItem[]
+  paymentSummaries ReceiptPaymentSummary[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, transactionId])
+  // Deliberately scoped to the organization, not global — a receipt
+  // number is built from `Branch.code`, itself only unique per
+  // organization (@@unique([organizationId, code])), so two different
+  // organizations may legitimately format the same string (e.g. both
+  // naming a branch "MAIN"). Real-world receipt numbers are always
+  // business-scoped this way; nothing about "human-readable" or
+  // "database-enforced uniqueness" implies platform-wide uniqueness.
+  @@unique([organizationId, receiptNumber])
+  @@index([organizationId, branchId, issuedAt])
+  @@index([organizationId, customerRecordId])
+  @@map("receipts")
+}
+
+/// An immutable snapshot copied from one TransactionLineItem at receipt-
+/// issuance time. `quantity` is always 1 today — this schema has no
+/// concept of a repeated-quantity line item — kept as an explicit column
+/// only so a future phase never needs a migration to add it.
+model ReceiptLineItem {
+  id                     String   @id @default(uuid()) @db.Uuid
+  organizationId         String   @map("organization_id") @db.Uuid
+  receiptId              String   @map("receipt_id") @db.Uuid
+  transactionLineItemId  String   @map("transaction_line_item_id") @db.Uuid
+  serviceNameSnapshot    String   @map("service_name_snapshot")
+  quantity               Int      @default(1)
+  unitPriceMinorSnapshot Int      @map("unit_price_minor_snapshot")
+  lineTotalMinorSnapshot Int      @map("line_total_minor_snapshot")
+  currencySnapshot       String   @map("currency_snapshot") @db.Char(3)
+  displayOrder           Int      @map("display_order")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  receipt             Receipt             @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  transactionLineItem TransactionLineItem @relation(fields: [organizationId, transactionLineItemId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([transactionLineItemId])
+  @@unique([organizationId, transactionLineItemId])
+  @@index([receiptId, displayOrder])
+  @@map("receipt_line_items")
+}
+
+/// A safe payment-method summary line on a receipt — snapshotted from
+/// TransactionPaymentAllocation/PaymentRecord atomically at issuance
+/// time, never a later live read of a (mutable-until-posted) PaymentRecord.
+/// `safeReferenceSnapshot` copies only the already-safe-code-validated
+/// `PaymentRecord.externalReference` — never a card/account number, PIN,
+/// or other credential, and never `PaymentRecord.note` (unvalidated free
+/// text).
+model ReceiptPaymentSummary {
+  id                    String        @id @default(uuid()) @db.Uuid
+  organizationId        String        @map("organization_id") @db.Uuid
+  receiptId             String        @map("receipt_id") @db.Uuid
+  method                PaymentMethod
+  amountMinorSnapshot   Int           @map("amount_minor_snapshot")
+  currencySnapshot      String        @map("currency_snapshot") @db.Char(3)
+  safeReferenceSnapshot String?       @map("safe_reference_snapshot")
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  receipt      Receipt      @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  @@index([receiptId])
+  @@map("receipt_payment_summaries")
 }

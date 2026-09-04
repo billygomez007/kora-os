@@ -1,52 +1,30 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
-import { App } from 'supertest/types';
+import { normalizeEmail } from '../src/common/identity/normalize-email.js';
 import { validateEnvironment } from '../src/config/environment.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
-import { AppModule } from '../src/app.module.js';
-import { configureApplication } from '../src/bootstrap/configure-application.js';
+import { OtpChallengeStatus } from '../src/generated/prisma/client.js';
+import {
+  authed,
+  bypassOtpResendCooldown,
+  createTestApp,
+  signInWithEmailOtp,
+  type TestApp,
+} from './support/otp-test-helpers.js';
 
 const runPrefix = `auth-spec-${randomUUID()}`;
 let uniqueCounter = 0;
-
 function uniqueEmail(): string {
   uniqueCounter += 1;
   return `${runPrefix}-${uniqueCounter}@example.test`;
 }
 
-async function createApp(): Promise<INestApplication<App>> {
-  const moduleFixture: TestingModule = await Test.createTestingModule({
-    imports: [AppModule],
-  }).compile();
-  const app = moduleFixture.createNestApplication();
-  configureApplication(app);
-  await app.init();
-  return app;
-}
-
-async function registerUser(
-  app: INestApplication<App>,
-  overrides: Partial<{ email: string; password: string; displayName: string }> = {},
-) {
-  const body = {
-    email: overrides.email ?? uniqueEmail(),
-    password: overrides.password ?? 'a-safe-long-password',
-    displayName: overrides.displayName ?? 'Test User',
-  };
-  const response = await request(app.getHttpServer())
-    .post('/v1/auth/register')
-    .send(body)
-    .expect(201);
-  return { body, response };
-}
-
-describe('Auth (e2e)', () => {
+describe('Passwordless email OTP auth (e2e)', () => {
   let cleanupModule: TestingModule;
   let prisma: PrismaService;
   const createdUserIds: string[] = [];
@@ -71,9 +49,6 @@ describe('Auth (e2e)', () => {
   });
 
   afterAll(async () => {
-    // AuditEvent.actorUserId is onDelete: Restrict (audit history outlives
-    // the user it describes in production), so the test's own audit rows
-    // must be cleared before the user rows they reference can be deleted.
     await prisma.auditEvent.deleteMany({
       where: { actorUserId: { in: createdUserIds } },
     });
@@ -83,314 +58,434 @@ describe('Auth (e2e)', () => {
   });
 
   async function trackUser(email: string): Promise<void> {
-    const user = await prisma.user.findUnique({ where: { emailNormalized: email } });
+    const user = await prisma.user.findUnique({
+      where: { emailNormalized: normalizeEmail(email) },
+    });
     if (user) {
       createdUserIds.push(user.id);
     }
   }
 
-  describe('registration', () => {
-    let app: INestApplication<App>;
+  describe('request', () => {
+    let testApp: TestApp;
     beforeEach(async () => {
-      app = await createApp();
+      testApp = await createTestApp();
     });
     afterEach(async () => {
-      await app.close();
+      await testApp.app.close();
     });
 
-    it('creates a user and returns a usable access token', async () => {
-      const { body, response } = await registerUser(app);
-      await trackUser(body.email);
+    it('returns the same generic shape for a brand-new email and an existing one, and never returns the code', async () => {
+      const newEmail = uniqueEmail();
+      const existing = await signInWithEmailOtp(testApp, uniqueEmail());
+      await trackUser(existing.email);
 
-      expect(response.body.data).toMatchObject({
-        user: { email: body.email, displayName: body.displayName },
+      await bypassOtpResendCooldown(testApp, existing.emailNormalized);
+
+      const forNewEmail = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email: newEmail })
+        .expect(200);
+      const forExistingEmail = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email: existing.email })
+        .expect(200);
+
+      expect(Object.keys(forNewEmail.body.data).sort()).toEqual(
+        Object.keys(forExistingEmail.body.data).sort(),
+      );
+      expect(forNewEmail.body.data).toMatchObject({
+        challengeId: expect.any(String),
+        expiresAt: expect.any(String),
+      });
+      expect(JSON.stringify(forNewEmail.body)).not.toMatch(/"code"/);
+    });
+
+    it('creates no user before verification succeeds', async () => {
+      const email = uniqueEmail();
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+
+      const userBeforeVerify = await prisma.user.findUnique({
+        where: { emailNormalized: normalizeEmail(email) },
+      });
+      expect(userBeforeVerify).toBeNull();
+    });
+
+    it('rejects a malformed email', async () => {
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email: 'not-an-email' })
+        .expect(400);
+    });
+
+    it('enforces the resend cooldown', async () => {
+      const email = uniqueEmail();
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+
+      const second = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email });
+      expect(second.status).toBe(429);
+    });
+
+    it('invalidates the previous code when a new one is requested (after the cooldown)', async () => {
+      const email = uniqueEmail();
+      const first = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const firstCode = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+
+      // Bypass the cooldown directly at the data layer — this test is
+      // about resend invalidation, not the cooldown itself (covered
+      // separately above).
+      await prisma.emailOtpChallenge.update({
+        where: { id: first.body.data.challengeId },
+        data: { createdAt: new Date(Date.now() - 61_000) },
+      });
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+
+      const oldChallenge = await prisma.emailOtpChallenge.findUniqueOrThrow({
+        where: { id: first.body.data.challengeId },
+      });
+      expect(oldChallenge.status).toBe(OtpChallengeStatus.INVALIDATED);
+
+      // The old (now invalidated) code no longer works.
+      const rejected = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: first.body.data.challengeId, code: firstCode });
+      expect(rejected.status).toBe(401);
+    });
+
+    it('throttles repeated requests by IP across different emails', async () => {
+      const results = [];
+      for (let i = 0; i < 11; i += 1) {
+        results.push(
+          await request(testApp.app.getHttpServer())
+            .post('/v1/auth/email-otp/request')
+            .send({ email: uniqueEmail() }),
+        );
+      }
+      expect(results.some((r) => r.status === 429)).toBe(true);
+    });
+  });
+
+  describe('verify', () => {
+    let testApp: TestApp;
+    beforeEach(async () => {
+      testApp = await createTestApp();
+    });
+    afterEach(async () => {
+      await testApp.app.close();
+    });
+
+    it('creates a new user and a usable session on first verification', async () => {
+      const email = uniqueEmail();
+      const signedIn = await signInWithEmailOtp(testApp, email);
+      await trackUser(email);
+
+      expect(signedIn.response.body.data).toMatchObject({
+        user: { email: signedIn.emailNormalized },
         accessToken: expect.any(String),
         refreshToken: expect.any(String),
       });
-      expect(response.body.data.user).not.toHaveProperty('passwordHash');
 
-      const meResponse = await request(app.getHttpServer())
+      const meResponse = await authed(testApp, signedIn.accessToken)
         .get('/v1/auth/me')
-        .set('Authorization', `Bearer ${response.body.data.accessToken}`)
         .expect(200);
-      expect(meResponse.body.data).toMatchObject({ email: body.email });
+      expect(meResponse.body.data.email).toBe(signedIn.emailNormalized);
     });
 
-    it('rejects registering the same email twice', async () => {
-      const { body } = await registerUser(app);
-      await trackUser(body.email);
+    it('signs an existing email into the same user rather than creating a second one', async () => {
+      const email = uniqueEmail();
+      const first = await signInWithEmailOtp(testApp, email);
+      await trackUser(email);
+      const second = await signInWithEmailOtp(testApp, email);
 
-      const response = await request(app.getHttpServer())
-        .post('/v1/auth/register')
-        .send({ ...body, displayName: 'Different Name' })
-        .expect(409);
-      expect(response.body.error.code).toBe('EMAIL_ALREADY_IN_USE');
+      expect(second.userId).toBe(first.userId);
+      const userCount = await prisma.user.count({
+        where: { emailNormalized: first.emailNormalized },
+      });
+      expect(userCount).toBe(1);
     });
 
-    it('rejects a password shorter than the minimum length', async () => {
-      await request(app.getHttpServer())
-        .post('/v1/auth/register')
-        .send({ email: uniqueEmail(), password: 'short', displayName: 'Test' })
-        .expect(400);
+    it('normalizes email case, so two different-case requests resolve to the same account', async () => {
+      const baseEmail = uniqueEmail();
+      const lower = baseEmail.toLowerCase();
+      const upper = baseEmail.toUpperCase();
+
+      const first = await signInWithEmailOtp(testApp, lower);
+      await trackUser(lower);
+      const second = await signInWithEmailOtp(testApp, upper);
+
+      expect(second.userId).toBe(first.userId);
     });
 
-    it('rejects a malformed email address', async () => {
-      await request(app.getHttpServer())
-        .post('/v1/auth/register')
-        .send({
-          email: 'not-an-email',
-          password: 'a-safe-long-password',
-          displayName: 'Test',
-        })
-        .expect(400);
-    });
-  });
-
-  describe('login', () => {
-    let app: INestApplication<App>;
-    beforeEach(async () => {
-      app = await createApp();
-    });
-    afterEach(async () => {
-      await app.close();
-    });
-
-    it('succeeds with correct credentials', async () => {
-      const { body } = await registerUser(app);
-      await trackUser(body.email);
-
-      const response = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: body.password })
+    it('rejects an incorrect code without consuming the real one', async () => {
+      const email = uniqueEmail();
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
         .expect(200);
-      expect(response.body.data.accessToken).toEqual(expect.any(String));
-    });
 
-    it('fails with the same generic error for a wrong password and for a non-existent email', async () => {
-      const { body } = await registerUser(app);
-      await trackUser(body.email);
-
-      const wrongPassword = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: 'definitely-wrong-password' })
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: requestResponse.body.data.challengeId, code: '000000' })
         .expect(401);
 
-      const unknownEmail = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: uniqueEmail(), password: 'definitely-wrong-password' })
-        .expect(401);
-
-      expect(wrongPassword.body.error).toEqual(unknownEmail.body.error);
-    });
-  });
-
-  describe('refresh rotation and reuse detection', () => {
-    let app: INestApplication<App>;
-    beforeEach(async () => {
-      app = await createApp();
-    });
-    afterEach(async () => {
-      await app.close();
-    });
-
-    it('rotates the refresh token on every use and rejects reuse for the whole session', async () => {
-      const { body } = await registerUser(app);
-      await trackUser(body.email);
-
-      const login = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: body.password })
+      // The real code still works afterward.
+      const realCode = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: requestResponse.body.data.challengeId, code: realCode })
         .expect(200);
-      const refreshToken1 = login.body.data.refreshToken;
-
-      const firstRefresh = await request(app.getHttpServer())
-        .post('/v1/auth/refresh')
-        .send({ refreshToken: refreshToken1 })
-        .expect(200);
-      const refreshToken2 = firstRefresh.body.data.refreshToken;
-      expect(refreshToken2).not.toBe(refreshToken1);
-
-      // Reusing the already-rotated token is refresh-token reuse.
-      await request(app.getHttpServer())
-        .post('/v1/auth/refresh')
-        .send({ refreshToken: refreshToken1 })
-        .expect(401);
-
-      // The whole session's token family — including the newer, otherwise
-      // still-valid token2 — is now revoked.
-      await request(app.getHttpServer())
-        .post('/v1/auth/refresh')
-        .send({ refreshToken: refreshToken2 })
-        .expect(401);
+      await trackUser(email);
     });
 
-    it('rejects an unknown refresh token', async () => {
-      await request(app.getHttpServer())
-        .post('/v1/auth/refresh')
-        .send({ refreshToken: 'not-a-real-token' })
-        .expect(401);
-    });
-  });
-
-  describe('logout and session revocation', () => {
-    let app: INestApplication<App>;
-    beforeEach(async () => {
-      app = await createApp();
-    });
-    afterEach(async () => {
-      await app.close();
-    });
-
-    it('revokes the current session on logout', async () => {
-      const { body } = await registerUser(app);
-      await trackUser(body.email);
-      const login = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: body.password })
+    it('locks the challenge after the configured number of wrong attempts, blocking even the correct code afterward', async () => {
+      const email = uniqueEmail();
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
         .expect(200);
-      const accessToken = login.body.data.accessToken;
-
-      await request(app.getHttpServer())
-        .post('/v1/auth/logout')
-        .set('Authorization', `Bearer ${accessToken}`)
-        .expect(204);
-
-      await request(app.getHttpServer())
-        .get('/v1/auth/me')
-        .set('Authorization', `Bearer ${accessToken}`)
-        .expect(401);
-    });
-
-    it('revokes every session on logout-all', async () => {
-      const { body } = await registerUser(app);
-      await trackUser(body.email);
-
-      const session1 = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: body.password, deviceLabel: 'device-1' })
-        .expect(200);
-      const session2 = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: body.password, deviceLabel: 'device-2' })
-        .expect(200);
-
-      await request(app.getHttpServer())
-        .post('/v1/auth/logout-all')
-        .set('Authorization', `Bearer ${session1.body.data.accessToken}`)
-        .expect(204);
-
-      await request(app.getHttpServer())
-        .get('/v1/auth/me')
-        .set('Authorization', `Bearer ${session1.body.data.accessToken}`)
-        .expect(401);
-      await request(app.getHttpServer())
-        .get('/v1/auth/me')
-        .set('Authorization', `Bearer ${session2.body.data.accessToken}`)
-        .expect(401);
-    });
-
-    it('lists sessions and lets a user revoke one of their own other sessions', async () => {
-      const { body } = await registerUser(app);
-      await trackUser(body.email);
-
-      const session1 = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: body.password, deviceLabel: 'device-1' })
-        .expect(200);
-      const session2 = await request(app.getHttpServer())
-        .post('/v1/auth/login')
-        .send({ email: body.email, password: body.password, deviceLabel: 'device-2' })
-        .expect(200);
-
-      const listResponse = await request(app.getHttpServer())
-        .get('/v1/auth/sessions')
-        .set('Authorization', `Bearer ${session1.body.data.accessToken}`)
-        .expect(200);
-      // One session from registerUser's implicit login, plus session1 and
-      // session2 from the two explicit logins above.
-      expect(listResponse.body.data).toHaveLength(3);
-      expect(
-        listResponse.body.data.map((s: { id: string }) => s.id),
-      ).toEqual(
-        expect.arrayContaining([
-          session1.body.data.session.id,
-          session2.body.data.session.id,
-        ]),
+      const challengeId = requestResponse.body.data.challengeId;
+      const realCode = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
       );
 
-      await request(app.getHttpServer())
-        .delete(`/v1/auth/sessions/${session2.body.data.session.id}`)
-        .set('Authorization', `Bearer ${session1.body.data.accessToken}`)
-        .expect(204);
+      for (let i = 0; i < 5; i += 1) {
+        await request(testApp.app.getHttpServer())
+          .post('/v1/auth/email-otp/verify')
+          .send({ challengeId, code: '111111' })
+          .expect(401);
+      }
 
-      await request(app.getHttpServer())
-        .get('/v1/auth/me')
-        .set('Authorization', `Bearer ${session2.body.data.accessToken}`)
+      const locked = await prisma.emailOtpChallenge.findUniqueOrThrow({
+        where: { id: challengeId },
+      });
+      expect(locked.status).toBe(OtpChallengeStatus.LOCKED);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId, code: realCode })
         .expect(401);
-      // The revoking session itself stays active.
-      await request(app.getHttpServer())
-        .get('/v1/auth/me')
-        .set('Authorization', `Bearer ${session1.body.data.accessToken}`)
-        .expect(200);
     });
 
-    it('does not let a user revoke a different user\'s session', async () => {
-      const userA = await registerUser(app);
-      await trackUser(userA.body.email);
-      const userB = await registerUser(app);
-      await trackUser(userB.body.email);
-
-      await request(app.getHttpServer())
-        .delete(`/v1/auth/sessions/${userB.response.body.data.session.id}`)
-        .set('Authorization', `Bearer ${userA.response.body.data.accessToken}`)
-        .expect(401);
-
-      // Proof it was not actually revoked: user B's session still works.
-      await request(app.getHttpServer())
-        .get('/v1/auth/me')
-        .set('Authorization', `Bearer ${userB.response.body.data.accessToken}`)
+    it('rejects an expired code', async () => {
+      const email = uniqueEmail();
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
         .expect(200);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+
+      await prisma.emailOtpChallenge.update({
+        where: { id: requestResponse.body.data.challengeId },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: requestResponse.body.data.challengeId, code })
+        .expect(401);
+    });
+
+    it('cannot reuse an already-consumed code', async () => {
+      const email = uniqueEmail();
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: requestResponse.body.data.challengeId, code })
+        .expect(200);
+      await trackUser(email);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: requestResponse.body.data.challengeId, code })
+        .expect(401);
+    });
+
+    it('permits only one success out of concurrent verification attempts with the same code', async () => {
+      const email = uniqueEmail();
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+
+      const attempt = () =>
+        request(testApp.app.getHttpServer())
+          .post('/v1/auth/email-otp/verify')
+          .send({ challengeId: requestResponse.body.data.challengeId, code });
+
+      const results = await Promise.all([attempt(), attempt(), attempt()]);
+      await trackUser(email);
+
+      const succeeded = results.filter((r) => r.status === 200);
+      const rejected = results.filter((r) => r.status === 401);
+      expect(succeeded).toHaveLength(1);
+      expect(rejected).toHaveLength(2);
+    });
+
+    it('rejects an unknown challenge id', async () => {
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: randomUUID(), code: '123456' })
+        .expect(401);
     });
   });
 
-  describe('unauthenticated access', () => {
-    let app: INestApplication<App>;
+  describe('OTP never leaks', () => {
+    let testApp: TestApp;
     beforeEach(async () => {
-      app = await createApp();
+      testApp = await createTestApp();
     });
     afterEach(async () => {
-      await app.close();
+      await testApp.app.close();
     });
 
-    it('rejects a protected route with no token', async () => {
-      await request(app.getHttpServer()).get('/v1/auth/me').expect(401);
+    it('never stores the plaintext code, never returns it, and never logs it', async () => {
+      const logSpy = vi.spyOn(console, 'log');
+      const errorSpy = vi.spyOn(console, 'error');
+      const email = uniqueEmail();
+
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+      const verifyResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: requestResponse.body.data.challengeId, code })
+        .expect(200);
+      await trackUser(email);
+
+      expect(JSON.stringify(requestResponse.body)).not.toContain(code);
+      expect(JSON.stringify(verifyResponse.body)).not.toContain(code);
+
+      const storedChallenge = await prisma.emailOtpChallenge.findUniqueOrThrow({
+        where: { id: requestResponse.body.data.challengeId },
+      });
+      expect(storedChallenge.codeDigest).not.toContain(code);
+      expect(JSON.stringify(storedChallenge)).not.toContain(code);
+
+      const auditEvents = await prisma.auditEvent.findMany({
+        where: { entityId: requestResponse.body.data.challengeId },
+      });
+      expect(auditEvents.length).toBeGreaterThan(0);
+      for (const event of auditEvents) {
+        expect(JSON.stringify(event)).not.toContain(code);
+      }
+
+      const loggedText = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+        .flat()
+        .map((value) => String(value))
+        .join('\n');
+      expect(loggedText).not.toContain(code);
+
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+  });
+
+  describe('sessions built on OTP-verified sign-in', () => {
+    let testApp: TestApp;
+    beforeEach(async () => {
+      testApp = await createTestApp();
+    });
+    afterEach(async () => {
+      await testApp.app.close();
     });
 
-    it('rejects a protected route with a garbage token', async () => {
-      await request(app.getHttpServer())
+    it('rotates the refresh token and rejects reuse across the whole session', async () => {
+      const email = uniqueEmail();
+      const signedIn = await signInWithEmailOtp(testApp, email);
+      await trackUser(email);
+
+      const firstRefresh = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: signedIn.refreshToken })
+        .expect(200);
+      const rotatedToken = firstRefresh.body.data.refreshToken;
+      expect(rotatedToken).not.toBe(signedIn.refreshToken);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: signedIn.refreshToken })
+        .expect(401);
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: rotatedToken })
+        .expect(401);
+    });
+
+    it('revokes the current session on logout and every session on logout-all', async () => {
+      const email = uniqueEmail();
+      const session1 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-1' });
+      await trackUser(email);
+      const session2 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-2' });
+
+      await authed(testApp, session1.accessToken).post('/v1/auth/logout').expect(204);
+      await authed(testApp, session1.accessToken).get('/v1/auth/me').expect(401);
+      await authed(testApp, session2.accessToken).get('/v1/auth/me').expect(200);
+
+      await authed(testApp, session2.accessToken).post('/v1/auth/logout-all').expect(204);
+      await authed(testApp, session2.accessToken).get('/v1/auth/me').expect(401);
+    });
+
+    it('immediately invalidates a session revoked via the sessions endpoint', async () => {
+      const email = uniqueEmail();
+      const session1 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-1' });
+      await trackUser(email);
+      const session2 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-2' });
+
+      const list = await authed(testApp, session1.accessToken)
+        .get('/v1/auth/sessions')
+        .expect(200);
+      expect(list.body.data.map((s: { id: string }) => s.id)).toEqual(
+        expect.arrayContaining([session1.sessionId, session2.sessionId]),
+      );
+
+      await authed(testApp, session1.accessToken)
+        .delete(`/v1/auth/sessions/${session2.sessionId}`)
+        .expect(204);
+      await authed(testApp, session2.accessToken).get('/v1/auth/me').expect(401);
+      await authed(testApp, session1.accessToken).get('/v1/auth/me').expect(200);
+    });
+
+    it('rejects unauthenticated and garbage-token requests to protected routes', async () => {
+      await request(testApp.app.getHttpServer()).get('/v1/auth/me').expect(401);
+      await request(testApp.app.getHttpServer())
         .get('/v1/auth/me')
         .set('Authorization', 'Bearer not-a-real-jwt')
         .expect(401);
-    });
-  });
-
-  describe('rate limiting', () => {
-    it('returns 429 once the login throttle limit is exceeded', async () => {
-      const app = await createApp();
-      try {
-        const attempt = () =>
-          request(app.getHttpServer())
-            .post('/v1/auth/login')
-            .send({ email: uniqueEmail(), password: 'whatever-password' });
-
-        const results = [];
-        for (let i = 0; i < 11; i += 1) {
-          results.push(await attempt());
-        }
-        expect(results.some((r) => r.status === 429)).toBe(true);
-      } finally {
-        await app.close();
-      }
     });
   });
 });

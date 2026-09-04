@@ -145,17 +145,42 @@ enum SubscriptionAccessMode {
   @@map("subscription_access_mode")
 }
 
-/// PASSWORD is the only provider implemented in this phase. The others are
-/// reserved so the AuthIdentity shape does not need to change when they are
-/// added.
+/// EMAIL_OTP is the only provider implemented. Kora is passwordless by
+/// product decision (docs/SECURITY.md section 6) — there is no PASSWORD
+/// value here, and none should ever be added. The remaining values are
+/// reserved so the AuthIdentity shape does not need to change when they
+/// are added; none of them store a persisted secret either (an OAuth
+/// provider is re-verified against that provider on every sign-in, not
+/// against a stored Kora credential), which is exactly why AuthIdentity
+/// carries no credential field at all.
 enum AuthProvider {
-  PASSWORD
+  EMAIL_OTP
   GOOGLE
   APPLE
   PHONE_OTP
   EMAIL_MAGIC_LINK
 
   @@map("auth_provider")
+}
+
+enum OtpPurpose {
+  AUTHENTICATE
+
+  @@map("otp_purpose")
+}
+
+/// EXPIRED is deliberately not a stored value: expiry is always computed
+/// from `expiresAt` at the moment a challenge is checked (same pattern as
+/// StaffInvitation.status), so there is no background sweep to keep
+/// correct and no window where a stale ACTIVE row is wrongly treated as
+/// still usable.
+enum OtpChallengeStatus {
+  ACTIVE
+  CONSUMED
+  INVALIDATED
+  LOCKED
+
+  @@map("otp_challenge_status")
 }
 
 enum SessionRevokedReason {
@@ -195,12 +220,13 @@ enum BusinessVerificationStatus {
 /// OrganizationMembership and StaffProfile for the tenant-scoped layers,
 /// and CustomerProfile for the customer-workspace layer.
 ///
-/// Credentials moved to AuthIdentity in the authentication phase (this
-/// model previously carried `password_hash` directly; see the
-/// `add_kora_authentication` migration) so a password is scoped to the
-/// PASSWORD auth identity rather than the global user record, leaving a
-/// clean boundary for future phone OTP, email magic-link, Apple, and
-/// Google identities without touching this table again.
+/// Kora is passwordless by product decision (docs/SECURITY.md section
+/// 6) — this table has never carried a password and never should. An
+/// earlier revision briefly added `password_hash` and then removed it
+/// (see the `remove_password_authentication` migration) before any
+/// production use; sign-in is email OTP only (`EmailOtpChallenge`,
+/// `AuthIdentity`), leaving a clean boundary for future phone OTP, email
+/// magic-link, Apple, and Google identities without touching this table.
 model User {
   id              String     @id @default(uuid()) @db.Uuid
   emailNormalized String?    @unique @map("email_normalized")
@@ -227,28 +253,70 @@ model User {
 // ---------------------------------------------------------------------------
 
 /// Maps a User to one authentication provider (docs/DATA_MODEL.md section
-/// 2). For PASSWORD, `providerSubject` is the normalized email and
-/// `passwordHash`/`passwordAlgorithm` hold the credential; for a future
-/// external provider `providerSubject` is that provider's external user ID
-/// and the password fields stay null. Keeping the credential here, rather
-/// than on `users`, means adding a new provider never touches the User
-/// table.
+/// 2). For EMAIL_OTP, `providerSubject` is the normalized email; for a
+/// future external provider it is that provider's external user ID. No
+/// provider stores a persisted secret here — an OTP challenge is
+/// short-lived and lives in `EmailOtpChallenge`, not here, and an OAuth
+/// provider is re-verified against that provider on every sign-in rather
+/// than against anything Kora stores. Keeping this mapping separate from
+/// `users` means adding a new provider never touches the User table.
 model AuthIdentity {
-  id                String       @id @default(uuid()) @db.Uuid
-  userId            String       @map("user_id") @db.Uuid
-  provider          AuthProvider
-  providerSubject   String       @map("provider_subject")
-  passwordHash      String?      @map("password_hash")
-  passwordAlgorithm String?      @default("argon2id") @map("password_algorithm")
-  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
-  lastUsedAt        DateTime?    @map("last_used_at") @db.Timestamptz(6)
+  id              String       @id @default(uuid()) @db.Uuid
+  userId          String       @map("user_id") @db.Uuid
+  provider        AuthProvider
+  providerSubject String       @map("provider_subject")
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastUsedAt      DateTime?    @map("last_used_at") @db.Timestamptz(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerSubject])
   @@index([userId])
   @@map("auth_identities")
+}
+
+/// One issued (or re-sent) email OTP challenge. Kora is passwordless — this
+/// is the only credential-adjacent secret Kora ever stores, and even this
+/// is short-lived and single-use rather than a persisted account
+/// credential. `code_digest` is HMAC-SHA256(OTP_PEPPER, challenge id +
+/// normalized email + code) — keyed so a database-only leak cannot be
+/// brute-forced offline into codes without the server-side pepper, and
+/// salted per-challenge (via the id and email) so two challenges never
+/// produce the same digest even for the same code. The plaintext code
+/// itself is never persisted anywhere, including here.
+model EmailOtpChallenge {
+  id                  String             @id @default(uuid()) @db.Uuid
+  emailNormalized     String             @map("email_normalized")
+  purpose             OtpPurpose         @default(AUTHENTICATE)
+  codeDigest          String             @map("code_digest")
+  status              OtpChallengeStatus @default(ACTIVE)
+  attemptCount        Int                @default(0) @map("attempt_count")
+  // Snapshot of the configured limit at creation time, so a later config
+  // change never retroactively changes the rules for an in-flight
+  // challenge.
+  maxAttempts         Int                @map("max_attempts")
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt           DateTime           @map("expires_at") @db.Timestamptz(6)
+  consumedAt          DateTime?          @map("consumed_at") @db.Timestamptz(6)
+  invalidatedAt       DateTime?          @map("invalidated_at") @db.Timestamptz(6)
+  // Abuse-prevention metadata only — a salted hash of the caller's
+  // address, never the address itself (same pattern as
+  // Session.ipHash), and no other personal data.
+  requestIpHash       String?            @map("request_ip_hash")
+  requestUserAgent    String?            @map("request_user_agent")
+  // Resend/replacement lineage: requesting a new code while an ACTIVE one
+  // exists for the same (email, purpose) invalidates the old row and
+  // links the new one to it, purely for traceability — the actual
+  // invalidation is `status`/`invalidated_at` on the old row, not this
+  // link, so lineage can be missing (e.g. a future cleanup job) without
+  // weakening the invalidation guarantee itself.
+  replacesChallengeId String?            @map("replaces_challenge_id") @db.Uuid
+
+  @@index([emailNormalized, purpose, status])
+  @@index([requestIpHash, createdAt])
+  @@index([expiresAt])
+  @@map("email_otp_challenges")
 }
 
 /// A revocable device session (docs/DATA_MODEL.md section 2). Device/agent
@@ -279,10 +347,11 @@ model Session {
 /// session is that session's "token family". Presenting a token that is
 /// already used or revoked is refresh-token reuse — the caller revokes the
 /// entire owning Session (and therefore every token in its family) in
-/// response. `tokenHash` is a fast SHA-256 hash (not Argon2id): the raw
-/// token is already a high-entropy random value, not a human-guessable
-/// secret, so a slow password-hashing function is unnecessary here and
-/// would only add latency.
+/// response. `tokenHash` is a fast SHA-256 hash: the raw token is already
+/// a high-entropy random value, not a human-guessable secret, so a slow
+/// memory-hard hashing function (the kind a password would need — Kora
+/// has none; see the AuthProvider comment above) would add latency
+/// without adding security.
 model RefreshToken {
   id        String    @id @default(uuid()) @db.Uuid
   sessionId String    @map("session_id") @db.Uuid
@@ -706,12 +775,17 @@ model SubscriptionEvent {
 /// Append-only audit trail. Application services only ever insert and read
 /// these rows — no update or delete path is exposed (docs/SECURITY.md
 /// section 19). `organizationId` is nullable to allow platform-level actions
-/// that are not scoped to a single organization.
+/// that are not scoped to a single organization. `actorUserId` is nullable
+/// for the same reason applied to identity itself: an OTP request for an
+/// email with no Kora account yet has no user to attribute the event to
+/// (the account, if any, is only created on successful verification) —
+/// `entityType`/`entityId` (e.g. `email_otp_challenge`/the challenge ID)
+/// carry the subject of such an event instead.
 model AuditEvent {
   id                String   @id @default(uuid()) @db.Uuid
   organizationId    String?  @map("organization_id") @db.Uuid
   branchId          String?  @map("branch_id") @db.Uuid
-  actorUserId       String   @map("actor_user_id") @db.Uuid
+  actorUserId       String?  @map("actor_user_id") @db.Uuid
   actorMembershipId String?  @map("actor_membership_id") @db.Uuid
   action            String
   entityType        String   @map("entity_type")
@@ -725,7 +799,7 @@ model AuditEvent {
   occurredAt        DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
 
   organization    Organization?           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  actorUser       User                    @relation("AuditEventActorUser", fields: [actorUserId], references: [id], onDelete: Restrict)
+  actorUser       User?                   @relation("AuditEventActorUser", fields: [actorUserId], references: [id], onDelete: Restrict)
   actorMembership OrganizationMembership? @relation("AuditEventActorMembership", fields: [actorMembershipId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, occurredAt])

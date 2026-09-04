@@ -1,20 +1,10 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import {
-  Controller,
-  Get,
-  INestApplication,
-  Module,
-  Param,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Module, Param, UseGuards } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
-import { App } from 'supertest/types';
-import { AppModule } from '../src/app.module.js';
-import { configureApplication } from '../src/bootstrap/configure-application.js';
 import { AuthorizationModule } from '../src/common/authorization/authorization.module.js';
 import { RequireBranchParam } from '../src/common/authorization/decorators/require-branch-param.decorator.js';
 import { TenantAccessGuard } from '../src/common/authorization/tenant-access.guard.js';
@@ -22,6 +12,12 @@ import { validateEnvironment } from '../src/config/environment.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { SubscriptionStatus } from '../src/generated/prisma/client.js';
+import {
+  authed,
+  createTestApp,
+  signInWithEmailOtp,
+  type TestApp,
+} from './support/otp-test-helpers.js';
 
 // A minimal, test-only endpoint that requires an explicit branch scope so
 // TenantAccessGuard's branch check (docs task Phase 7: "branch-limited
@@ -52,46 +48,21 @@ function unique(): string {
   return `${runPrefix}-${uniqueCounter}`;
 }
 
-async function createApp(): Promise<INestApplication<App>> {
-  const moduleFixture: TestingModule = await Test.createTestingModule({
-    imports: [AppModule, BranchScopedTestModule],
-  }).compile();
-  const app = moduleFixture.createNestApplication();
-  configureApplication(app);
-  await app.init();
-  return app;
-}
-
-async function registerAndLogin(app: INestApplication<App>) {
-  const email = `${unique()}@example.test`;
-  const password = 'a-safe-long-password';
-  const response = await request(app.getHttpServer())
-    .post('/v1/auth/register')
-    .send({ email, password, displayName: 'Test User' })
-    .expect(201);
+async function registerAndLogin(testApp: TestApp) {
+  const signedIn = await signInWithEmailOtp(testApp, `${unique()}@example.test`);
   return {
-    email,
-    password,
-    userId: response.body.data.user.id as string,
-    accessToken: response.body.data.accessToken as string,
-  };
-}
-
-function authed(app: INestApplication<App>, accessToken: string) {
-  return {
-    get: (url: string) =>
-      request(app.getHttpServer()).get(url).set('Authorization', `Bearer ${accessToken}`),
-    post: (url: string) =>
-      request(app.getHttpServer()).post(url).set('Authorization', `Bearer ${accessToken}`),
+    email: signedIn.email,
+    userId: signedIn.userId,
+    accessToken: signedIn.accessToken,
   };
 }
 
 async function onboardOrganization(
-  app: INestApplication<App>,
+  testApp: TestApp,
   accessToken: string,
   overrides: Partial<{ name: string; slug: string }> = {},
 ) {
-  const response = await authed(app, accessToken)
+  const response = await authed(testApp, accessToken)
     .post('/v1/organizations')
     .send({
       name: overrides.name ?? `Kora Test Org ${unique()}`,
@@ -149,34 +120,34 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
   });
 
   describe('organization onboarding and membership access', () => {
-    let app: INestApplication<App>;
+    let testApp: TestApp;
     beforeEach(async () => {
-      app = await createApp();
+      testApp = await createTestApp([BranchScopedTestModule]);
     });
     afterEach(async () => {
-      await app.close();
+      await testApp.app.close();
     });
 
     it('lets an authenticated user create an organization and view it back', async () => {
-      const owner = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId);
-      const result = await onboardOrganization(app, owner.accessToken);
+      const result = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(result.organization.id);
 
-      const detail = await authed(app, owner.accessToken)
+      const detail = await authed(testApp, owner.accessToken)
         .get(`/v1/organizations/${result.organization.id}`)
         .expect(200);
       expect(detail.body.data).toMatchObject({ id: result.organization.id });
     });
 
     it('lists every organization the user belongs to', async () => {
-      const owner = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId);
-      const first = await onboardOrganization(app, owner.accessToken);
-      const second = await onboardOrganization(app, owner.accessToken);
+      const first = await onboardOrganization(testApp, owner.accessToken);
+      const second = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(first.organization.id, second.organization.id);
 
-      const list = await authed(app, owner.accessToken)
+      const list = await authed(testApp, owner.accessToken)
         .get('/v1/organizations')
         .expect(200);
       const ids = list.body.data.map((o: { id: string }) => o.id);
@@ -186,36 +157,36 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
     });
 
     it('rejects unauthenticated requests', async () => {
-      await request(app.getHttpServer()).post('/v1/organizations').expect(401);
-      await request(app.getHttpServer()).get('/v1/organizations').expect(401);
+      await request(testApp.app.getHttpServer()).post('/v1/organizations').expect(401);
+      await request(testApp.app.getHttpServer()).get('/v1/organizations').expect(401);
     });
 
     it('does not let membership in one organization grant access to another', async () => {
-      const ownerA = await registerAndLogin(app);
-      const ownerB = await registerAndLogin(app);
+      const ownerA = await registerAndLogin(testApp);
+      const ownerB = await registerAndLogin(testApp);
       createdUserIds.push(ownerA.userId, ownerB.userId);
-      const orgA = await onboardOrganization(app, ownerA.accessToken);
+      const orgA = await onboardOrganization(testApp, ownerA.accessToken);
       createdOrganizationIds.push(orgA.organization.id);
 
-      await authed(app, ownerB.accessToken)
+      await authed(testApp, ownerB.accessToken)
         .get(`/v1/organizations/${orgA.organization.id}`)
         .expect(403);
     });
   });
 
   describe('subscription access mode enforcement', () => {
-    let app: INestApplication<App>;
+    let testApp: TestApp;
     beforeEach(async () => {
-      app = await createApp();
+      testApp = await createTestApp([BranchScopedTestModule]);
     });
     afterEach(async () => {
-      await app.close();
+      await testApp.app.close();
     });
 
     it('lets a READ_ONLY organization keep reading but blocks a mutation', async () => {
-      const owner = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
 
       await prisma.organizationSubscription.update({
@@ -223,22 +194,22 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
         data: { status: SubscriptionStatus.SUSPENDED },
       });
 
-      await authed(app, owner.accessToken)
+      await authed(testApp, owner.accessToken)
         .get(`/v1/organizations/${org.organization.id}`)
         .expect(200);
 
       const roles = await prisma.role.findMany({ where: { organizationId: null } });
       const managerRole = roles.find((r) => r.code === 'manager')!;
-      await authed(app, owner.accessToken)
+      await authed(testApp, owner.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({ email: `${unique()}@example.test`, roleId: managerRole.id })
         .expect(403);
     });
 
     it('blocks every protected request once BLOCKED', async () => {
-      const owner = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
 
       await prisma.organizationSubscription.update({
@@ -246,26 +217,26 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
         data: { status: SubscriptionStatus.EXPIRED },
       });
 
-      await authed(app, owner.accessToken)
+      await authed(testApp, owner.accessToken)
         .get(`/v1/organizations/${org.organization.id}`)
         .expect(403);
     });
   });
 
   describe('branch-scoped access', () => {
-    let app: INestApplication<App>;
+    let testApp: TestApp;
     beforeEach(async () => {
-      app = await createApp();
+      testApp = await createTestApp([BranchScopedTestModule]);
     });
     afterEach(async () => {
-      await app.close();
+      await testApp.app.close();
     });
 
     it('lets the owner reach any branch and a branch-limited membership reach only its own', async () => {
-      const owner = await registerAndLogin(app);
-      const staffUser = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
+      const staffUser = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId, staffUser.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
 
       const secondBranch = await prisma.branch.create({
@@ -280,10 +251,10 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
       });
 
       // Owner reaches both branches.
-      await authed(app, owner.accessToken)
+      await authed(testApp, owner.accessToken)
         .get(`/v1/test-branch-scoped/${org.organization.id}/branches/${org.primaryBranch.id}`)
         .expect(200);
-      await authed(app, owner.accessToken)
+      await authed(testApp, owner.accessToken)
         .get(`/v1/test-branch-scoped/${org.organization.id}/branches/${secondBranch.id}`)
         .expect(200);
 
@@ -291,7 +262,7 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
       // scoped only to the primary branch.
       const roles = await prisma.role.findMany({ where: { organizationId: null } });
       const receptionistRole = roles.find((r) => r.code === 'receptionist')!;
-      const invitation = await authed(app, owner.accessToken)
+      const invitation = await authed(testApp, owner.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({
           email: staffUser.email,
@@ -299,46 +270,46 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
           branchId: org.primaryBranch.id,
         })
         .expect(201);
-      await authed(app, staffUser.accessToken)
+      await authed(testApp, staffUser.accessToken)
         .post(`/v1/staff-invitations/${invitation.body.data.rawToken}/accept`)
         .expect(201);
 
-      await authed(app, staffUser.accessToken)
+      await authed(testApp, staffUser.accessToken)
         .get(`/v1/test-branch-scoped/${org.organization.id}/branches/${org.primaryBranch.id}`)
         .expect(200);
-      await authed(app, staffUser.accessToken)
+      await authed(testApp, staffUser.accessToken)
         .get(`/v1/test-branch-scoped/${org.organization.id}/branches/${secondBranch.id}`)
         .expect(403);
     });
   });
 
   describe('staff invitations', () => {
-    let app: INestApplication<App>;
+    let testApp: TestApp;
     beforeEach(async () => {
-      app = await createApp();
+      testApp = await createTestApp([BranchScopedTestModule]);
     });
     afterEach(async () => {
-      await app.close();
+      await testApp.app.close();
     });
 
     it('creates, exposes a safe public view of, and accepts an invitation atomically', async () => {
-      const owner = await registerAndLogin(app);
-      const invitee = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId, invitee.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
 
       const roles = await prisma.role.findMany({ where: { organizationId: null } });
       const managerRole = roles.find((r) => r.code === 'manager')!;
 
-      const created = await authed(app, owner.accessToken)
+      const created = await authed(testApp, owner.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({ email: invitee.email, roleId: managerRole.id })
         .expect(201);
       const rawToken = created.body.data.rawToken as string;
       expect(rawToken).toEqual(expect.any(String));
 
-      const publicView = await request(app.getHttpServer())
+      const publicView = await request(testApp.app.getHttpServer())
         .get(`/v1/staff-invitations/${rawToken}`)
         .expect(200);
       expect(publicView.body.data).toMatchObject({
@@ -348,7 +319,7 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
       });
       expect(publicView.body.data).not.toHaveProperty('emailNormalized');
 
-      await authed(app, invitee.accessToken)
+      await authed(testApp, invitee.accessToken)
         .post(`/v1/staff-invitations/${rawToken}/accept`)
         .expect(201);
 
@@ -361,31 +332,31 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
       expect(membership?.membershipRoles.map((r) => r.role.code)).toContain('manager');
 
       // Single-use: the same token cannot be accepted again.
-      await authed(app, invitee.accessToken)
+      await authed(testApp, invitee.accessToken)
         .post(`/v1/staff-invitations/${rawToken}/accept`)
         .expect(409);
     });
 
     it('rejects an invitation and prevents it from later being accepted', async () => {
-      const owner = await registerAndLogin(app);
-      const invitee = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId, invitee.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
       const roles = await prisma.role.findMany({ where: { organizationId: null } });
       const cashierRole = roles.find((r) => r.code === 'cashier')!;
 
-      const created = await authed(app, owner.accessToken)
+      const created = await authed(testApp, owner.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({ email: invitee.email, roleId: cashierRole.id })
         .expect(201);
       const rawToken = created.body.data.rawToken as string;
 
-      await authed(app, invitee.accessToken)
+      await authed(testApp, invitee.accessToken)
         .post(`/v1/staff-invitations/${rawToken}/reject`)
         .expect(204);
 
-      await authed(app, invitee.accessToken)
+      await authed(testApp, invitee.accessToken)
         .post(`/v1/staff-invitations/${rawToken}/accept`)
         .expect(409);
 
@@ -396,76 +367,76 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
     });
 
     it('revokes a pending invitation, which can then no longer be accepted', async () => {
-      const owner = await registerAndLogin(app);
-      const invitee = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId, invitee.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
       const roles = await prisma.role.findMany({ where: { organizationId: null } });
       const cashierRole = roles.find((r) => r.code === 'cashier')!;
 
-      const created = await authed(app, owner.accessToken)
+      const created = await authed(testApp, owner.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({ email: invitee.email, roleId: cashierRole.id })
         .expect(201);
 
-      await authed(app, owner.accessToken)
+      await authed(testApp, owner.accessToken)
         .post(
           `/v1/organizations/${org.organization.id}/staff-invitations/${created.body.data.invitation.id}/revoke`,
         )
         .expect(204);
 
-      await authed(app, invitee.accessToken)
+      await authed(testApp, invitee.accessToken)
         .post(`/v1/staff-invitations/${created.body.data.rawToken}/accept`)
         .expect(409);
     });
 
     it('rejects an unknown invitation token without leaking anything', async () => {
-      const response = await request(app.getHttpServer())
+      const response = await request(testApp.app.getHttpServer())
         .get('/v1/staff-invitations/not-a-real-token')
         .expect(404);
       expect(JSON.stringify(response.body)).not.toMatch(/organization|role|branch/i);
     });
 
     it('does not let a staff member without staff.invite create invitations', async () => {
-      const owner = await registerAndLogin(app);
-      const cashierUser = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
+      const cashierUser = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId, cashierUser.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
 
       const roles = await prisma.role.findMany({ where: { organizationId: null } });
       const cashierRole = roles.find((r) => r.code === 'cashier')!;
-      const invitation = await authed(app, owner.accessToken)
+      const invitation = await authed(testApp, owner.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({ email: cashierUser.email, roleId: cashierRole.id })
         .expect(201);
-      await authed(app, cashierUser.accessToken)
+      await authed(testApp, cashierUser.accessToken)
         .post(`/v1/staff-invitations/${invitation.body.data.rawToken}/accept`)
         .expect(201);
 
-      await authed(app, cashierUser.accessToken)
+      await authed(testApp, cashierUser.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({ email: `${unique()}@example.test`, roleId: cashierRole.id })
         .expect(403);
     });
 
     it('rejects acceptance by an account whose email does not match the invitation', async () => {
-      const owner = await registerAndLogin(app);
-      const invitee = await registerAndLogin(app);
-      const mismatchedUser = await registerAndLogin(app);
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
+      const mismatchedUser = await registerAndLogin(testApp);
       createdUserIds.push(owner.userId, invitee.userId, mismatchedUser.userId);
-      const org = await onboardOrganization(app, owner.accessToken);
+      const org = await onboardOrganization(testApp, owner.accessToken);
       createdOrganizationIds.push(org.organization.id);
       const roles = await prisma.role.findMany({ where: { organizationId: null } });
       const cashierRole = roles.find((r) => r.code === 'cashier')!;
 
-      const created = await authed(app, owner.accessToken)
+      const created = await authed(testApp, owner.accessToken)
         .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
         .send({ email: invitee.email, roleId: cashierRole.id })
         .expect(201);
 
-      await authed(app, mismatchedUser.accessToken)
+      await authed(testApp, mismatchedUser.accessToken)
         .post(`/v1/staff-invitations/${created.body.data.rawToken}/accept`)
         .expect(403);
     });

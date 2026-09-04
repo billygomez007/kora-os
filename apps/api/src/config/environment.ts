@@ -6,6 +6,8 @@ const DATABASE_URL_PATTERN = /^postgres(ql)?:\/\/.+/;
 const DURATION_PATTERN = /^\d+[smhd]$/;
 const MIN_SIGNING_SECRET_LENGTH = 32;
 
+const MIN_OTP_CODE_LENGTH = 6;
+
 export interface KoraEnvironment extends Record<string, unknown> {
   NODE_ENV: NodeEnvironment;
   PORT: number;
@@ -15,6 +17,13 @@ export interface KoraEnvironment extends Record<string, unknown> {
   JWT_ACCESS_TTL: string;
   REFRESH_TOKEN_PEPPER?: string;
   REFRESH_TOKEN_TTL_DAYS: number;
+  OTP_PEPPER?: string;
+  OTP_CODE_LENGTH: number;
+  OTP_EXPIRY_MINUTES: number;
+  OTP_MAX_ATTEMPTS: number;
+  OTP_RESEND_COOLDOWN_SECONDS: number;
+  OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: number;
+  OTP_MAX_REQUESTS_PER_IP_PER_HOUR: number;
 }
 
 export function validateEnvironment(
@@ -70,6 +79,46 @@ export function validateEnvironment(
     throw new Error('REFRESH_TOKEN_TTL_DAYS must be a positive integer');
   }
 
+  const otpPepper = requireSigningSecret(
+    'OTP_PEPPER',
+    input.OTP_PEPPER,
+    nodeEnvironment,
+  );
+
+  const otpCodeLength = requirePositiveInteger(
+    'OTP_CODE_LENGTH',
+    input.OTP_CODE_LENGTH,
+    6,
+  );
+  if (otpCodeLength < MIN_OTP_CODE_LENGTH) {
+    throw new Error(`OTP_CODE_LENGTH must be at least ${MIN_OTP_CODE_LENGTH}`);
+  }
+  const otpExpiryMinutes = requirePositiveInteger(
+    'OTP_EXPIRY_MINUTES',
+    input.OTP_EXPIRY_MINUTES,
+    10,
+  );
+  const otpMaxAttempts = requirePositiveInteger(
+    'OTP_MAX_ATTEMPTS',
+    input.OTP_MAX_ATTEMPTS,
+    5,
+  );
+  const otpResendCooldownSeconds = requirePositiveInteger(
+    'OTP_RESEND_COOLDOWN_SECONDS',
+    input.OTP_RESEND_COOLDOWN_SECONDS,
+    60,
+  );
+  const otpMaxRequestsPerEmailPerHour = requirePositiveInteger(
+    'OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR',
+    input.OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR,
+    5,
+  );
+  const otpMaxRequestsPerIpPerHour = requirePositiveInteger(
+    'OTP_MAX_REQUESTS_PER_IP_PER_HOUR',
+    input.OTP_MAX_REQUESTS_PER_IP_PER_HOUR,
+    20,
+  );
+
   return {
     ...input,
     NODE_ENV: nodeEnvironment as NodeEnvironment,
@@ -80,6 +129,13 @@ export function validateEnvironment(
     JWT_ACCESS_TTL: jwtAccessTtl,
     REFRESH_TOKEN_PEPPER: refreshTokenPepper,
     REFRESH_TOKEN_TTL_DAYS: refreshTokenTtlDays,
+    OTP_PEPPER: otpPepper,
+    OTP_CODE_LENGTH: otpCodeLength,
+    OTP_EXPIRY_MINUTES: otpExpiryMinutes,
+    OTP_MAX_ATTEMPTS: otpMaxAttempts,
+    OTP_RESEND_COOLDOWN_SECONDS: otpResendCooldownSeconds,
+    OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: otpMaxRequestsPerEmailPerHour,
+    OTP_MAX_REQUESTS_PER_IP_PER_HOUR: otpMaxRequestsPerIpPerHour,
   };
 }
 
@@ -92,11 +148,16 @@ function normalizeDatabaseUrl(value: unknown): string | undefined {
 }
 
 /**
- * Both JWT_ACCESS_SECRET and REFRESH_TOKEN_PEPPER follow the same policy as
- * DATABASE_URL: required and explicit in production (no local-.env
- * fallback there), optional in development/test so unit tests that never
- * boot the auth module do not need one, but never accepted below a safe
- * minimum length when one is supplied.
+ * JWT_ACCESS_SECRET, REFRESH_TOKEN_PEPPER, and OTP_PEPPER all follow the
+ * same policy as DATABASE_URL: required and explicit in production (no
+ * local-.env fallback there), optional in development/test so unit tests
+ * that never boot the auth module do not need one, but never accepted
+ * below a safe minimum length when one is supplied. OTP_PEPPER keys the
+ * HMAC-SHA256 digest EmailOtpService stores instead of a plaintext or
+ * plain-hashed code (see prisma/schema.prisma's EmailOtpChallenge
+ * comment) — a mandatory strong pepper in production is exactly what the
+ * passwordless product decision (docs/SECURITY.md section 6) requires in
+ * place of a password hashing function.
  */
 function requireSigningSecret(
   name: string,
@@ -116,4 +177,16 @@ function requireSigningSecret(
     );
   }
   return trimmed;
+}
+
+function requirePositiveInteger(
+  name: string,
+  value: unknown,
+  defaultValue: number,
+): number {
+  const parsed = Number(value ?? defaultValue);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
 }

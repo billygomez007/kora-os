@@ -7,7 +7,10 @@ type TransactionClient = Prisma.TransactionClient;
 export interface RecordAuditEventInput {
   organizationId?: string | null;
   branchId?: string | null;
-  actorUserId: string;
+  /** Null for a pre-authentication event with no resolved user yet — e.g.
+   * an OTP request for an email with no Kora account (docs task Phase E).
+   * `entityType`/`entityId` carry the event's subject in that case. */
+  actorUserId?: string | null;
   actorMembershipId?: string | null;
   action: string;
   entityType: string;
@@ -38,7 +41,7 @@ export class AuditService {
       data: {
         organizationId: input.organizationId ?? null,
         branchId: input.branchId ?? null,
-        actorUserId: input.actorUserId,
+        actorUserId: input.actorUserId ?? null,
         actorMembershipId: input.actorMembershipId ?? null,
         action: input.action,
         entityType: input.entityType,

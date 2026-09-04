@@ -159,14 +159,25 @@ export class StaffInvitationService {
       }
       this.assertUsable(invitation);
 
-      if (
-        invitation.emailNormalized &&
-        (await tx.user.findUnique({ where: { id: acceptingUserId } }))
-          ?.emailNormalized !== invitation.emailNormalized
-      ) {
-        throw new ForbiddenException(
-          'This invitation cannot be accepted by this account',
-        );
+      if (invitation.emailNormalized) {
+        const acceptingUser = await tx.user.findUnique({
+          where: { id: acceptingUserId },
+        });
+        // Kora is passwordless (docs/SECURITY.md section 6): every
+        // successful sign-in is an OTP verification, which always sets
+        // emailVerifiedAt — so in practice this is never null here. The
+        // explicit check is defense in depth against a future
+        // authentication provider that might not auto-verify email
+        // (docs task Phase C: "the authenticated user's normalized
+        // verified email must match the invitation recipient").
+        if (
+          acceptingUser?.emailNormalized !== invitation.emailNormalized ||
+          !acceptingUser.emailVerifiedAt
+        ) {
+          throw new ForbiddenException(
+            'This invitation cannot be accepted by this account',
+          );
+        }
       }
 
       let membership = await tx.organizationMembership.findFirst({

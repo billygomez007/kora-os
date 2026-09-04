@@ -16,30 +16,67 @@ import type { RequestWithId } from '../../common/middleware/request-id.middlewar
 import { AuthService } from './auth.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import { Public } from './decorators/public.decorator.js';
-import { LoginDto } from './dto/login.dto.js';
+import { RequestEmailOtpDto } from './dto/request-email-otp.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
-import { RegisterDto } from './dto/register.dto.js';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto.js';
+import { EmailOtpService } from './email-otp/email-otp.service.js';
 import type { RequestUser } from './interfaces/authenticated-request.interface.js';
 
+// Applies to /email-otp/request and /email-otp/verify below. Per-code
+// abuse limits (resend cooldown, per-email/per-IP request caps) are
+// additionally enforced inside EmailOtpService itself, driven by
+// centralized OTP_* configuration (docs task Phase B) — this decorator
+// is a coarser, IP-only backstop consistent with how the rest of the
+// auth surface is throttled.
 const AUTH_THROTTLE = { default: { limit: 10, ttl: 60_000 } };
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly emailOtpService: EmailOtpService,
+  ) {}
 
+  /**
+   * The only entry point into a Kora session — the same request/verify
+   * pair is both sign-up and sign-in (docs task Phase C); there is no
+   * separate password-style registration endpoint. Response shape is
+   * identical whether or not `email` already has an account, and the
+   * generated code is never included in the response.
+   */
   @Public()
   @Throttle(AUTH_THROTTLE)
-  @Post('register')
-  async register(@Body() dto: RegisterDto, @Req() request: RequestWithId) {
-    return this.authService.register(dto, buildMetadata(dto.deviceLabel, request));
+  @Post('email-otp/request')
+  @HttpCode(HttpStatus.OK)
+  async requestEmailOtp(
+    @Body() dto: RequestEmailOtpDto,
+    @Req() request: RequestWithId,
+  ) {
+    return this.emailOtpService.requestChallenge({
+      email: dto.email,
+      ipHash: hashIp(request),
+      userAgent: request.headers['user-agent'],
+      requestId: request.requestId,
+    });
   }
 
   @Public()
   @Throttle(AUTH_THROTTLE)
-  @Post('login')
+  @Post('email-otp/verify')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() dto: LoginDto, @Req() request: RequestWithId) {
-    return this.authService.login(dto, buildMetadata(dto.deviceLabel, request));
+  async verifyEmailOtp(
+    @Body() dto: VerifyEmailOtpDto,
+    @Req() request: RequestWithId,
+  ) {
+    const { userId } = await this.emailOtpService.verifyChallenge({
+      challengeId: dto.challengeId,
+      code: dto.code,
+      requestId: request.requestId,
+    });
+    return this.authService.issueSessionForVerifiedUser(
+      userId,
+      buildMetadata(dto.deviceLabel, request),
+    );
   }
 
   @Public()
@@ -100,11 +137,15 @@ export class AuthController {
  * logging unnecessary raw identifying detail, while still supporting
  * anomaly review.
  */
+function hashIp(request: RequestWithId & Request): string {
+  return createHash('sha256').update(request.ip ?? 'unknown').digest('hex');
+}
+
 function buildMetadata(deviceLabel: string | undefined, request: RequestWithId & Request) {
   return {
     deviceLabel,
     userAgent: request.headers['user-agent'],
-    ipHash: createHash('sha256').update(request.ip ?? 'unknown').digest('hex'),
+    ipHash: hashIp(request),
     requestId: request.requestId,
   };
 }

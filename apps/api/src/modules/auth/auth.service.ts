@@ -1,14 +1,8 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { normalizeEmail } from '../../common/identity/normalize-email.js';
 import { PrismaService } from '../../database/prisma.service.js';
-import {
-  AuthProvider,
-  SessionRevokedReason,
-  UserStatus,
-} from '../../generated/prisma/client.js';
+import { SessionRevokedReason, UserStatus } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
-import { PasswordService } from './password.service.js';
 import { TokenService } from './token.service.js';
 
 export interface RequestMetadata {
@@ -36,147 +30,49 @@ export interface SessionSummary {
   isCurrent: boolean;
 }
 
-const GENERIC_LOGIN_ERROR = 'Invalid email or password';
 const GENERIC_AUTH_ERROR = 'Authentication is required';
 
+/**
+ * Session issuance, rotation, and revocation — everything except how a
+ * user's identity is first established, which is EmailOtpService's job
+ * (Kora is passwordless; see docs/SECURITY.md section 6). The controller
+ * calls `issueSessionForVerifiedUser` only after EmailOtpService has
+ * already verified a one-time code.
+ */
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly passwordService: PasswordService,
     private readonly tokenService: TokenService,
     private readonly auditService: AuditService,
     private readonly config: ConfigService,
   ) {}
 
-  async register(
-    input: { email: string; password: string; displayName: string },
+  async issueSessionForVerifiedUser(
+    userId: string,
     meta: RequestMetadata,
   ): Promise<AuthResult> {
-    const normalizedEmail = normalizeEmail(input.email);
-
-    const existing = await this.prisma.authIdentity.findUnique({
-      where: {
-        provider_providerSubject: {
-          provider: AuthProvider.PASSWORD,
-          providerSubject: normalizedEmail,
-        },
-      },
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
     });
-    if (existing) {
-      throw new ConflictException({
-        code: 'EMAIL_ALREADY_IN_USE',
-        message: 'An account with this email already exists',
-      });
-    }
 
-    const passwordHash = await this.passwordService.hash(input.password);
-
-    const user = await this.prisma.$transaction(async (tx) => {
-      const createdUser = await tx.user.create({
-        data: {
-          emailNormalized: normalizedEmail,
-          displayName: input.displayName,
-          // No email-verification delivery exists yet (docs task Phase 6
-          // explicitly excludes SMS/email sending), so the account is
-          // usable immediately rather than gated on a step that cannot be
-          // completed. `emailVerifiedAt` stays null until that flow exists.
-          status: UserStatus.ACTIVE,
-        },
-      });
-
-      await tx.authIdentity.create({
-        data: {
-          userId: createdUser.id,
-          provider: AuthProvider.PASSWORD,
-          providerSubject: normalizedEmail,
-          passwordHash,
-        },
-      });
-
-      return createdUser;
-    });
+    const result = await this.issueSession(
+      user.id,
+      user.emailNormalized,
+      user.displayName,
+      meta,
+    );
 
     await this.auditService.record({
       actorUserId: user.id,
-      action: 'auth.registered',
-      entityType: 'user',
-      entityId: user.id,
+      action: 'auth.session_created',
+      entityType: 'session',
+      entityId: result.session.id,
       requestId: meta.requestId,
       source: 'auth',
     });
 
-    return this.issueSession(user.id, user.emailNormalized, user.displayName, meta);
-  }
-
-  async login(
-    input: { email: string; password: string },
-    meta: RequestMetadata,
-  ): Promise<AuthResult> {
-    const normalizedEmail = normalizeEmail(input.email);
-
-    const identity = await this.prisma.authIdentity.findUnique({
-      where: {
-        provider_providerSubject: {
-          provider: AuthProvider.PASSWORD,
-          providerSubject: normalizedEmail,
-        },
-      },
-      include: { user: true },
-    });
-
-    // Every branch below throws the exact same generic error and takes a
-    // comparable amount of time (argon2.verify still runs against a
-    // decoy hash when no account exists) — a client cannot distinguish
-    // "no such account" from "wrong password" (docs task Phase 6:
-    // "Never reveal whether an email is registered through reset or login
-    // error text").
-    const passwordHash = identity?.passwordHash ?? DECOY_HASH_FOR_TIMING;
-    const passwordValid = await this.passwordService.verify(
-      passwordHash,
-      input.password,
-    );
-
-    if (
-      !identity ||
-      !identity.passwordHash ||
-      !passwordValid ||
-      identity.user.status === UserStatus.SUSPENDED ||
-      identity.user.status === UserStatus.DELETED
-    ) {
-      if (identity) {
-        await this.auditService.record({
-          actorUserId: identity.userId,
-          action: 'auth.login_failed',
-          entityType: 'user',
-          entityId: identity.userId,
-          requestId: meta.requestId,
-          source: 'auth',
-        });
-      }
-      throw new UnauthorizedException(GENERIC_LOGIN_ERROR);
-    }
-
-    await this.prisma.authIdentity.update({
-      where: { id: identity.id },
-      data: { lastUsedAt: new Date() },
-    });
-
-    await this.auditService.record({
-      actorUserId: identity.userId,
-      action: 'auth.login_succeeded',
-      entityType: 'user',
-      entityId: identity.userId,
-      requestId: meta.requestId,
-      source: 'auth',
-    });
-
-    return this.issueSession(
-      identity.userId,
-      identity.user.emailNormalized,
-      identity.user.displayName,
-      meta,
-    );
+    return result;
   }
 
   async refresh(rawRefreshToken: string, meta: RequestMetadata): Promise<AuthResult> {
@@ -412,14 +308,3 @@ export class AuthService {
     return amount * multiplier;
   }
 }
-
-/**
- * A syntactically valid Argon2id hash of a value nobody can supply, used
- * so a login attempt against a non-existent email still pays the same
- * argon2.verify cost as a real one — this keeps timing indistinguishable
- * between "no such account" and "wrong password", both of which must
- * produce the same generic error and, as much as possible, take the same
- * time.
- */
-const DECOY_HASH_FOR_TIMING =
-  '$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';

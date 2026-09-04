@@ -25,12 +25,19 @@ describe('validateEnvironment', () => {
     );
   });
 
-  it('leaves JWT and refresh-token secrets undefined outside production', () => {
+  it('leaves JWT, refresh-token, and OTP secrets undefined outside production, with safe OTP defaults', () => {
     expect(validateEnvironment({})).toMatchObject({
       JWT_ACCESS_SECRET: undefined,
       JWT_ACCESS_TTL: '15m',
       REFRESH_TOKEN_PEPPER: undefined,
       REFRESH_TOKEN_TTL_DAYS: 30,
+      OTP_PEPPER: undefined,
+      OTP_CODE_LENGTH: 6,
+      OTP_EXPIRY_MINUTES: 10,
+      OTP_MAX_ATTEMPTS: 5,
+      OTP_RESEND_COOLDOWN_SECONDS: 60,
+      OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
+      OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
     });
   });
 
@@ -60,6 +67,17 @@ describe('validateEnvironment', () => {
     ).toThrow('JWT_ACCESS_SECRET must be at least 32 characters');
   });
 
+  it('requires an explicit OTP_PEPPER in production', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://user:pass@host:5432/db',
+        JWT_ACCESS_SECRET: 'a'.repeat(32),
+        REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
+      }),
+    ).toThrow('OTP_PEPPER must be explicitly provided in production');
+  });
+
   it('accepts a production config with strong secrets', () => {
     expect(
       validateEnvironment({
@@ -67,10 +85,44 @@ describe('validateEnvironment', () => {
         DATABASE_URL: 'postgresql://user:pass@host:5432/db',
         JWT_ACCESS_SECRET: 'a'.repeat(32),
         REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
+        OTP_PEPPER: 'c'.repeat(32),
       }),
     ).toMatchObject({
       JWT_ACCESS_SECRET: 'a'.repeat(32),
       REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
+      OTP_PEPPER: 'c'.repeat(32),
+    });
+  });
+
+  it('rejects an OTP_CODE_LENGTH below the minimum of six digits', () => {
+    expect(() => validateEnvironment({ OTP_CODE_LENGTH: '4' })).toThrow(
+      'OTP_CODE_LENGTH must be at least 6',
+    );
+  });
+
+  it('rejects a non-positive OTP_MAX_ATTEMPTS', () => {
+    expect(() => validateEnvironment({ OTP_MAX_ATTEMPTS: '0' })).toThrow(
+      'OTP_MAX_ATTEMPTS must be a positive integer',
+    );
+  });
+
+  it('accepts overridden OTP configuration', () => {
+    expect(
+      validateEnvironment({
+        OTP_CODE_LENGTH: '8',
+        OTP_EXPIRY_MINUTES: '5',
+        OTP_MAX_ATTEMPTS: '3',
+        OTP_RESEND_COOLDOWN_SECONDS: '30',
+        OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: '10',
+        OTP_MAX_REQUESTS_PER_IP_PER_HOUR: '50',
+      }),
+    ).toMatchObject({
+      OTP_CODE_LENGTH: 8,
+      OTP_EXPIRY_MINUTES: 5,
+      OTP_MAX_ATTEMPTS: 3,
+      OTP_RESEND_COOLDOWN_SECONDS: 30,
+      OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 10,
+      OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 50,
     });
   });
 

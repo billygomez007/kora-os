@@ -14,8 +14,10 @@ export interface GeneratedRefreshToken {
   /** Returned to the client once; never persisted. */
   raw: string;
   /** SHA-256(raw + pepper) — refresh tokens are already high-entropy random
-   * values, not human-guessable secrets, so a fast hash is appropriate
-   * (Argon2id is reserved for passwords; see PasswordService). */
+   * values, not human-guessable secrets, so a fast hash is appropriate; a
+   * slow memory-hard hash (the kind a password would need — Kora has
+   * none, see docs/SECURITY.md section 6) would add latency for no
+   * security benefit here. */
   hash: string;
 }
 

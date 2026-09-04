@@ -157,4 +157,36 @@ describe('TenantAccessGuard', () => {
       ),
     ).resolves.toBe(true);
   });
+
+  it('denies when none of an any-of permission list is present', async () => {
+    const guard = createGuard(baseTenantContext({ permissionCodes: new Set(['staff.read']) }), {
+      requireAnyPermission: ['service_sessions.start', 'service_sessions.perform', 'service_sessions.manage'],
+    });
+    await expect(
+      guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('allows when exactly one of an any-of permission list is present', async () => {
+    const guard = createGuard(
+      baseTenantContext({ permissionCodes: new Set(['service_sessions.start']) }),
+      { requireAnyPermission: ['service_sessions.start', 'service_sessions.perform', 'service_sessions.manage'] },
+    );
+    await expect(
+      guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
+    ).resolves.toBe(true);
+  });
+
+  it('allows when every AND-required permission is present and at least one OR permission is present', async () => {
+    const guard = createGuard(
+      baseTenantContext({ permissionCodes: new Set(['queue.read', 'service_sessions.perform']) }),
+      {
+        requiredPermissions: ['queue.read'],
+        requireAnyPermission: ['service_sessions.start', 'service_sessions.perform', 'service_sessions.manage'],
+      },
+    );
+    await expect(
+      guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
+    ).resolves.toBe(true);
+  });
 });

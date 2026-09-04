@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { CurrentTenant } from '../../common/authorization/decorators/current-tenant.decorator.js';
+import { RequireAnyPermission } from '../../common/authorization/decorators/require-any-permission.decorator.js';
 import { RequirePermissions } from '../../common/authorization/decorators/require-permissions.decorator.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
 import { TenantAccessGuard } from '../../common/authorization/tenant-access.guard.js';
@@ -81,10 +82,13 @@ export class QueueEntriesController {
     return this.commandsService.noShow(tenant, request.requestId, queueEntryId);
   }
 
-  /** Guarded entirely by ServiceSessionsService's own OR-permission
-   * check (`service_sessions.perform` or `.manage`) — no
-   * `@RequirePermissions` here, since NestJS's decorator only expresses
-   * "every listed code required," not "either of these two." */
+  /** The guard's `@RequireAnyPermission` is only the coarse "can reach
+   * this route at all" gate — `service_sessions.start` (receptionist,
+   * limited to the already-assigned provider), `.perform` (a provider
+   * starting their own work), or `.manage` (owner/manager, unrestricted)
+   * all pass it. ServiceSessionsService.start then applies the
+   * fine-grained rule each specific permission actually carries. */
+  @RequireAnyPermission('service_sessions.start', 'service_sessions.perform', 'service_sessions.manage')
   @Post(':queueEntryId/start-service')
   async startService(
     @CurrentTenant() tenant: TenantContext,

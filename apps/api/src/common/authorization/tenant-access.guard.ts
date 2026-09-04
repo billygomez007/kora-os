@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { SubscriptionAccessMode } from '../../generated/prisma/client.js';
 import { ALLOW_READ_ONLY_ACCESS_KEY } from './decorators/allow-read-only-access.decorator.js';
+import { ANY_PERMISSIONS_KEY } from './decorators/require-any-permission.decorator.js';
 import { BRANCH_PARAM_KEY } from './decorators/require-branch-param.decorator.js';
 import { PERMISSIONS_KEY } from './decorators/require-permissions.decorator.js';
 import type { TenantScopedRequest } from './interfaces/tenant-context.interface.js';
@@ -29,7 +30,14 @@ const BROAD_BRANCH_ACCESS_PERMISSION = 'branches.manage';
  *    denies mutating requests unless explicitly marked safe.
  * 3. Permissions — every code named by @RequirePermissions must be in
  *    the membership's resolved permission set.
- * 4. Branch scope — when @RequireBranchParam names a route param, the
+ * 4. Any-of permissions — when @RequireAnyPermission names one or more
+ *    codes, at least one must be in the membership's resolved permission
+ *    set. This is the OR counterpart to step 3's AND semantics, for a
+ *    route more than one permission legitimately reaches (see that
+ *    decorator's own doc comment) — always a coarse gate only; the
+ *    service layer still narrows what each specific permission actually
+ *    allows once past this guard.
+ * 5. Branch scope — when @RequireBranchParam names a route param, the
  *    membership must either have that branch explicitly assigned or hold
  *    the broad `branches.manage` permission.
  *
@@ -93,6 +101,20 @@ export class TenantAccessGuard implements CanActivate {
       (code) => !tenantContext.permissionCodes.has(code),
     );
     if (missingPermission) {
+      throw new ForbiddenException(
+        'You do not have permission to perform this action',
+      );
+    }
+
+    const anyOfPermissions =
+      this.reflector.getAllAndOverride<string[]>(ANY_PERMISSIONS_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]) ?? [];
+    if (
+      anyOfPermissions.length > 0 &&
+      !anyOfPermissions.some((code) => tenantContext.permissionCodes.has(code))
+    ) {
       throw new ForbiddenException(
         'You do not have permission to perform this action',
       );

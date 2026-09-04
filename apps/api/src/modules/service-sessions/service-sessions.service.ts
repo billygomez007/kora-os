@@ -21,10 +21,16 @@ import { bumpQueueRevision } from '../queue/queue-ticket.util.js';
 import type { CancelServiceSessionDto } from './dto/cancel-service-session.dto.js';
 import type { ReplaceServiceSessionItemsDto } from './dto/replace-service-session-items.dto.js';
 import type { StartServiceSessionDto } from './dto/start-service-session.dto.js';
+import { assertStartAuthorized } from './service-session-start-authorization.util.js';
 import { toServiceSessionView, type ServiceSessionView } from './service-session-view.js';
 
+const START_PERMISSION = 'service_sessions.start';
 const PERFORM_PERMISSION = 'service_sessions.perform';
 const MANAGE_PERMISSION = 'service_sessions.manage';
+/** The permission a `.start`-only caller (typically a receptionist)
+ * additionally needs to select a *different* provider than the one
+ * already assigned to the queue entry — see `start()`. */
+const CHANGE_PROVIDER_PERMISSION = 'queue.manage';
 const ONE_ACTIVE_PER_STAFF_CONSTRAINT = 'service_sessions_one_active_per_staff';
 const ONE_ACTIVE_PER_QUEUE_ENTRY_CONSTRAINT = 'service_sessions_one_active_per_queue_entry';
 
@@ -55,7 +61,7 @@ export class ServiceSessionsService {
     dto: StartServiceSessionDto,
     requestId: string,
   ): Promise<ServiceSessionView> {
-    const hasManage = this.assertCanPerform(tenant);
+    const { hasManage, hasPerform, hasStart } = this.assertCanStart(tenant);
 
     const queueEntry = await this.prisma.queueEntry.findFirst({
       where: { id: queueEntryId, organizationId: tenant.organizationId },
@@ -81,12 +87,19 @@ export class ServiceSessionsService {
       throw new BadRequestException('A staff member must be assigned before starting service');
     }
 
-    if (!hasManage) {
-      const ownStaffProfileId = await this.resolveOwnStaffProfileId(tenant.organizationId, tenant.membershipId);
-      if (!ownStaffProfileId || ownStaffProfileId !== providerStaffProfileId) {
-        throw new ForbiddenException('You can only start service for your own assigned work');
-      }
-    }
+    const ownStaffProfileId = hasManage
+      ? null
+      : await this.resolveOwnStaffProfileId(tenant.organizationId, tenant.membershipId);
+    assertStartAuthorized({
+      hasManage,
+      hasPerform,
+      hasStart,
+      hasChangeProviderPermission: tenant.permissionCodes.has(CHANGE_PROVIDER_PERMISSION),
+      ownStaffProfileId,
+      resolvedProviderStaffProfileId: providerStaffProfileId,
+      providerExplicitlyRequested: dto.staffProfileId !== undefined,
+      currentlyAssignedStaffProfileId: queueEntry.assignedStaffProfileId,
+    });
 
     const serviceIds = queueEntry.services.map((service) => service.serviceId);
     const eligible = await this.availabilityEngine.resolveEligibleProviders(
@@ -155,6 +168,16 @@ export class ServiceSessionsService {
             queueEntryId,
             previousStatus: queueEntry.status,
             newStatus: QueueEntryStatus.IN_SERVICE,
+            actorUserId: tenant.userId,
+            actorMembershipId: tenant.membershipId,
+          },
+        });
+        await tx.serviceSessionStatusHistory.create({
+          data: {
+            organizationId: tenant.organizationId,
+            serviceSessionId: created.id,
+            previousStatus: null,
+            newStatus: ServiceSessionStatus.IN_PROGRESS,
             actorUserId: tenant.userId,
             actorMembershipId: tenant.membershipId,
           },
@@ -313,6 +336,16 @@ export class ServiceSessionsService {
           actorMembershipId: tenant.membershipId,
         },
       });
+      await tx.serviceSessionStatusHistory.create({
+        data: {
+          organizationId: tenant.organizationId,
+          serviceSessionId,
+          previousStatus: ServiceSessionStatus.IN_PROGRESS,
+          newStatus: ServiceSessionStatus.COMPLETED,
+          actorUserId: tenant.userId,
+          actorMembershipId: tenant.membershipId,
+        },
+      });
       await bumpQueueRevision(tx, queueEntry.branchQueueDayId);
 
       return tx.serviceSession.findUniqueOrThrow({ where: { id: serviceSessionId }, include: { items: true } });
@@ -404,6 +437,18 @@ export class ServiceSessionsService {
           reason: dto.reason,
         },
       });
+      await tx.serviceSessionStatusHistory.create({
+        data: {
+          organizationId: tenant.organizationId,
+          serviceSessionId,
+          previousStatus: ServiceSessionStatus.IN_PROGRESS,
+          newStatus: ServiceSessionStatus.CANCELLED,
+          actorUserId: tenant.userId,
+          actorMembershipId: tenant.membershipId,
+          reason: dto.reason,
+          cancelDisposition: dto.disposition,
+        },
+      });
       await bumpQueueRevision(tx, queueEntry.branchQueueDayId);
 
       return tx.serviceSession.findUniqueOrThrow({ where: { id: serviceSessionId }, include: { items: true } });
@@ -426,6 +471,11 @@ export class ServiceSessionsService {
     return toServiceSessionView(updated);
   }
 
+  /** Used by `replaceItems`/`complete`/`cancel` — deliberately excludes
+   * `service_sessions.start`, which permits reaching `start()` only
+   * (docs task correction: "It does not permit replacing session
+   * items, completing a session, cancelling a session or acting as the
+   * assigned provider"). */
   private assertCanPerform(tenant: TenantContext): boolean {
     const hasManage = tenant.permissionCodes.has(MANAGE_PERMISSION);
     const hasPerform = tenant.permissionCodes.has(PERFORM_PERMISSION);
@@ -433,6 +483,24 @@ export class ServiceSessionsService {
       throw new ForbiddenException('You do not have permission to perform this action');
     }
     return hasManage;
+  }
+
+  /** Used by `start()` only — the any-of set `@RequireAnyPermission`
+   * already gated at the route, resolved here into which specific
+   * permission(s) the caller holds so `start()` can apply the right
+   * fine-grained rule for each (docs task correction 2). */
+  private assertCanStart(tenant: TenantContext): {
+    hasManage: boolean;
+    hasPerform: boolean;
+    hasStart: boolean;
+  } {
+    const hasManage = tenant.permissionCodes.has(MANAGE_PERMISSION);
+    const hasPerform = tenant.permissionCodes.has(PERFORM_PERMISSION);
+    const hasStart = tenant.permissionCodes.has(START_PERMISSION);
+    if (!hasManage && !hasPerform && !hasStart) {
+      throw new ForbiddenException('You do not have permission to perform this action');
+    }
+    return { hasManage, hasPerform, hasStart };
   }
 
   /** A provider must not complete/cancel/edit another provider's session

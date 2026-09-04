@@ -884,37 +884,61 @@ Refunds are not modeled yet — deferred to a later phase alongside commissions,
 
 ## 9. Commissions, receipts, and reconciliation
 
+Commissions and receipts are implemented (docs/ROADMAP.md Phase 7); cash-session reconciliation is not — `cash_sessions` below remains the original aspirational sketch. Both implemented tables are derived exclusively from an already-POSTED `transactions` row — see docs/ARCHITECTURE.md section 21 for why, and for the rounding/allocation/precedence rules the columns below only summarize.
+
 ### `commission_rules`
 
+A versioned policy — never edited in place. Changing one always either supersedes it (closing the old row's `effective_until` and creating a new row pointing back via `supersedes_rule_id`, at the identical instant) or explicitly deactivates it (`deactivated_at`/`deactivated_by_membership_id`, no replacement).
+
 - `id`, `organization_id`
-- `name`, `strategy`: percentage, fixed, service_specific, tiered
-- `configuration`
+- `branch_id`, `staff_profile_id`, `service_id` — independently nullable; a null dimension means "any" (see the eight-level precedence in docs/ARCHITECTURE.md section 21)
+- `type`: PERCENTAGE, FIXED, NONE
+- `rate_basis_points` (0-10000, PERCENTAGE only), `fixed_amount_minor`/`fixed_currency` (FIXED only)
+- `basis`: GROSS_LINE, NET_LINE_AFTER_ADJUSTMENTS
 - `effective_from`, `effective_until` nullable
-- `active`, `created_at`, `updated_at`
+- `created_by_membership_id`, `supersedes_rule_id` nullable, `deactivated_at`/`deactivated_by_membership_id` nullable
+- `version`, `created_at`, `updated_at`
 
-### `commission_records`
+Unique: `(organization_id, id)`, `(organization_id, supersedes_rule_id)`. A hand-written partial `UNIQUE` index with `NULLS NOT DISTINCT` on `(organization_id, branch_id, staff_profile_id, service_id)`, restricted to `WHERE effective_until IS NULL AND deactivated_at IS NULL`, enforces "only one current rule per exact scope" — a plain `@@unique` cannot express this, since it would treat every `NULL` scope column as distinct and fail to prevent two different organization-default rules from coexisting. CHECK constraints enforce the PERCENTAGE/FIXED/NONE field shapes, `effective_until > effective_from`, and the deactivation columns being all-null or all-set together.
 
-- `id`, `organization_id`, `branch_id`
-- `transaction_id`, `transaction_line_item_id`
-- `staff_profile_id`, `commission_rule_id`
-- `status`: pending, finalized, reversed
-- `basis_amount_minor`, `commission_amount_minor`, `currency`
-- `calculation_snapshot`
-- `finalized_at`, `reversed_at` nullable
-- `created_at`
+### `commission_accruals`
+
+Immutable once created — never edited, never recalculated even if the matched rule is later superseded or deactivated, because every value the calculation depended on is snapshotted onto the row itself. Created only inside the same database transaction that posts the parent `transactions` row.
+
+- `id`, `organization_id`, `transaction_id`, `transaction_line_item_id`, `staff_profile_id`
+- `commission_rule_id` nullable — null exactly when `source = NO_POLICY`
+- `source`: POLICY (a rule was matched and used, even one that calculates to zero), NO_POLICY (no rule matched any precedence level — an explicit zero-value accrual, never a missing one)
+- `rule_type_snapshot`, `rate_basis_points_snapshot`, `fixed_amount_minor_snapshot` — nullable, snapshotted from the matched rule
+- `basis_snapshot`, `basis_amount_minor`, `calculated_amount_minor`, `currency`
+- `calculated_at`, `created_at`
+
+Unique: `(transaction_line_item_id, staff_profile_id)`, `(organization_id, transaction_line_item_id)`, `(organization_id, id)` — exactly one accrual per line item.
+
+### `branch_receipt_sequences`
+
+An atomic per-(branch, calendar year) counter, the same single-`upsert`-with-`increment` pattern `branch_queue_days` already established for queue ticket numbers.
+
+- `id`, `organization_id`, `branch_id`, `year`, `last_sequence`, `created_at`, `updated_at`
+
+Unique: `(organization_id, branch_id, year)`.
 
 ### `receipts`
 
-- `id`, `organization_id`, `branch_id`, `transaction_id`
-- `receipt_number`
-- `status`: issued, voided
-- `issued_at`, `issued_by_membership_id`
-- `document_object_key` nullable
-- `snapshot`
+Not a statutory VAT/tax invoice — a plain, immutable service receipt. Every value is a snapshot taken atomically at issuance time, inside the same database transaction as transaction posting and commission accrual — never a later live read of a mutable `branches`/`customer_records`/`payment_records` row.
 
-Unique: `(organization_id, receipt_number)` and one active receipt per confirmed transaction.
+- `id`, `organization_id`, `branch_id`, `branch_receipt_sequence_id`, `transaction_id` (unique — exactly one receipt per transaction), `customer_record_id`
+- `receipt_number` (`{branchCode}-{year}-{sequence}`, e.g. `MAIN-2026-00001` — no UUID, PII, or credential), `sequence_number`
+- `business_name_snapshot`, `branch_name_snapshot`, `branch_phone_snapshot`/`branch_address_snapshot` nullable, `customer_name_snapshot`
+- `currency`, `subtotal_minor_snapshot`, `adjustment_total_minor_snapshot`, `total_minor_snapshot`
+- `issued_at`, `issued_by_membership_id`, `created_at`
 
-### `cash_sessions`
+Unique: `(organization_id, id)`, `(organization_id, transaction_id)`, and `(organization_id, receipt_number)` — deliberately organization-scoped, not global, since a receipt number is built from `branches.code`, itself only unique per organization (two different organizations may legitimately both code a branch "MAIN"). CHECK constraints enforce non-negative totals, `total = subtotal + adjustments`, and a positive sequence number.
+
+### `receipt_line_items` / `receipt_payment_summaries`
+
+Immutable snapshots copied at issuance time from `transaction_line_items` and from the confirmed `payment_records` that funded the transaction, respectively — never a later live read of either. `receipt_payment_summaries.safe_reference_snapshot` copies only the already-safe-code-validated `payment_records.external_reference`, never `note` (unvalidated free text) or anything resembling a credential.
+
+### `cash_sessions` (not implemented)
 
 - `id`, `organization_id`, `branch_id`, `cashier_membership_id`
 - `status`: open, submitted, approved, rejected
@@ -923,7 +947,7 @@ Unique: `(organization_id, receipt_number)` and one active receipt per confirmed
 - `currency`, `notes` nullable
 - `approved_by_membership_id`, `approved_at` nullable
 
-Only one open cash session per cashier and branch is permitted.
+Only one open cash session per cashier and branch would be permitted. Deferred alongside refunds/reversals and payouts.
 
 ## 10. Platform reliability tables
 

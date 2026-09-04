@@ -615,46 +615,74 @@ A rejected payment moves to VOIDED and the Checkout's status is recalculated to 
 
 ## 20. Commissions
 
-- `GET /commission-rules`
-- `POST /commission-rules`
-- `GET /commission-rules/{ruleId}`
-- `PATCH /commission-rules/{ruleId}`
-- `POST /commission-rules/{ruleId}/activate`
-- `POST /commission-rules/{ruleId}/retire`
-- `GET /commissions`
-- `GET /staff/{staffId}/commissions`
+Implemented (docs/ROADMAP.md Phase 7). Commission *rules* (the policy) and commission *accruals* (the immutable calculated result) are managed and read through entirely separate permission-gated endpoints — see docs/ARCHITECTURE.md section 21.
 
-The API returns calculation snapshots but does not allow direct editing of finalized commission amounts.
+- `GET /organizations/{organizationId}/commission-rules`
+- `GET /organizations/{organizationId}/commission-rules/{ruleId}`
+- `POST /organizations/{organizationId}/commission-rules`
+- `POST /organizations/{organizationId}/commission-rules/{ruleId}/supersede`
+- `POST /organizations/{organizationId}/commission-rules/{ruleId}/deactivate`
+- `GET /organizations/{organizationId}/commissions`
+- `GET /organizations/{organizationId}/me/earnings`
 
-## 21. Receipts and reconciliation
+Example rule creation:
 
-### Receipts
+```json
+{
+  "type": "PERCENTAGE",
+  "rateBasisPoints": 1000,
+  "basis": "GROSS_LINE",
+  "staffProfileId": "staff_..."
+}
+```
 
-- `GET /transactions/{transactionId}/receipt`
-- `GET /receipts/{receiptId}`
-- `POST /receipts/{receiptId}/share`
+`rateBasisPoints` (0-10000) is required and exclusive for `PERCENTAGE`; `fixedAmountMinor`/`fixedCurrency` are required and exclusive for `FIXED`; a `NONE`-type rule takes neither. `branchId`/`staffProfileId`/`serviceId` are each independently optional — the eight-level precedence this enables is documented in docs/ARCHITECTURE.md section 21. A rule is never edited in place: `.../supersede` closes the current rule and creates a new one with the given terms at the same scope; `.../deactivate` closes it with no replacement. Only one current rule may exist per exact scope (`409 COMMISSION_RULE_SCOPE_CONFLICT`); acting on a rule that is already superseded or deactivated returns `409 COMMISSION_RULE_NOT_CURRENT`.
 
-### Cash sessions
+`GET .../commissions` (org-wide, `commissions.read_all`) supports `branchId`, `staffProfileId`, `source` (POLICY/NO_POLICY), `from`/`to`, and pagination filters. `GET .../me/earnings` (`commissions.read_own`) always resolves the caller's own StaffProfile server-side — a client-supplied staff id is never accepted — and returns line-level accrual detail enriched with the originating transaction's reference and the service name.
 
-- `GET /cash-sessions`
-- `POST /cash-sessions/open`
-- `GET /cash-sessions/{cashSessionId}`
-- `POST /cash-sessions/{cashSessionId}/submit`
-- `POST /cash-sessions/{cashSessionId}/approve`
-- `POST /cash-sessions/{cashSessionId}/reject`
+There is no endpoint to create, edit, or delete a `CommissionAccrual` directly — every row is written only by the internal posting flow described in section 18.
 
-Expected values are calculated by the server. Submitted actual cash and notes are captured as explicit facts.
+## 21. Receipts
 
-## 22. Dashboard and reports
+Implemented (docs/ROADMAP.md Phase 7) — a plain, immutable service receipt, not a statutory VAT or tax invoice (no TIN, no tax calculation, no compliance claim). Issued automatically and atomically the moment a Transaction posts; there is no endpoint to create one directly.
 
-- `GET /dashboard/summary`
-- `GET /reports/revenue`
-- `GET /reports/services`
-- `GET /reports/staff`
-- `GET /reports/payments`
-- `GET /reports/appointments`
+- `GET /organizations/{organizationId}/receipts`
+- `GET /organizations/{organizationId}/receipts/{receiptId}`
+- `GET /me/receipts`
+- `GET /me/receipts/{receiptId}`
 
-Report access is permission and entitlement controlled. Date ranges are interpreted using the selected branch or organization reporting time zone.
+The business-side routes (`receipts.read`) are organization-scoped like every other endpoint in this document. The customer-side routes carry no `organizationId` at all — a receipt is visible to `/me/receipts` only when its `customerRecordId` is linked to the authenticated user's own `CustomerProfile`; a walk-in customer with no linked Kora account is visible only through the business-side routes, never through `/me/receipts`, and a customer can never see another customer's receipt (`404`, not `403`, either way — existence is never confirmed to a caller who cannot see it).
+
+Cash-session reconciliation (`cash-sessions`) remains unimplemented and deferred alongside refunds and payouts.
+
+## 22. Reports
+
+Implemented (docs/ROADMAP.md Phase 7), owner/manager only (`reports.read`). Every figure is derived from an already-POSTED Transaction and its snapshots — see docs/ARCHITECTURE.md section 21 and docs/SECURITY.md section 34 for the full authority model, including exactly which figures count as revenue.
+
+- `GET /organizations/{organizationId}/reports/overview`
+- `GET /organizations/{organizationId}/reports/revenue`
+- `GET /organizations/{organizationId}/reports/staff-performance`
+- `GET /organizations/{organizationId}/reports/services`
+- `GET /organizations/{organizationId}/reports/payment-methods`
+- `GET /organizations/{organizationId}/reports/commissions`
+
+Every endpoint requires `from` and `to` (ISO date-times, `to` not before `from`, span capped at 366 days) and accepts an optional `branchId`. `revenue` additionally buckets by calendar day: a branch-scoped request groups by that branch's own local date automatically; an organization-wide request (no `branchId`) requires an explicit, IANA-validated `timezone` query parameter instead of silently picking one branch's zone or mixing ambiguous local-day boundaries (`400` without it). `staff-performance`, `services`, `payment-methods`, and `commissions` return a paginated list of aggregated entries (`cursor`/`limit`); every monetary figure across every endpoint is grouped strictly by currency — two currencies are never summed into one total.
+
+Example overview response shape:
+
+```json
+{
+  "postedRevenue": [{ "currency": "GHS", "amountMinor": 850000 }],
+  "transactionCount": 17,
+  "averageTransactionValue": [{ "currency": "GHS", "amountMinor": 50000 }],
+  "completedServiceCount": 21,
+  "commissionAccrued": [{ "currency": "GHS", "amountMinor": 85000 }],
+  "pendingPaymentClaimCount": 2,
+  "disputedPaymentClaimCount": 0
+}
+```
+
+`pendingPaymentClaimCount`/`disputedPaymentClaimCount` describe RECORDED/DISPUTED `PaymentRecord`s — operational metrics, never revenue, and never combined with `postedRevenue` into one number.
 
 ## 23. Notifications and audit
 
@@ -716,13 +744,14 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 - `checkouts.read`, `checkouts.create`, `checkouts.adjust`, `checkouts.void`
 - `payments.read`, `payments.record`, `payments.verify_own`, `payments.resolve`
 - `transactions.read`
-- `commissions.read_own`, `commissions.read_all`, `commissions.manage_rules`
+- `commissions.read_own`, `commissions.read_all`, `commissions.manage`, `commissions.manage_rules`
+- `receipts.read`
 - `reconciliation.perform`, `reconciliation.approve`
-- `reports.basic`, `reports.advanced`
+- `reports.read`, `reports.basic`, `reports.advanced`
 - `audit.read`
 - `business_profile.manage`
 
-`checkouts.*`, `payments.read`/`payments.record`/`payments.verify_own`/`payments.resolve`, and `transactions.read` are implemented as of docs/ROADMAP.md Phase 6 — see section 27a below for the exact role grants. A handful of additional codes seeded ahead of their own future phase (`transactions.create`, `transactions.cancel`, `payments.void`, `payments.refund`, `verifications.*`, `commissions.*`, `reconciliation.*`) exist in the permission vocabulary but are not yet wired to any route.
+`checkouts.*`, `payments.read`/`payments.record`/`payments.verify_own`/`payments.resolve`, and `transactions.read` are implemented as of docs/ROADMAP.md Phase 6; `commissions.read_own`/`commissions.read_all`/`commissions.manage`, `receipts.read`, and `reports.read` are implemented as of Phase 7 — see sections 27a and 27b below for the exact role grants. A handful of additional codes seeded ahead of their own future phase (`transactions.create`, `transactions.cancel`, `payments.void`, `payments.refund`, `verifications.*`, `commissions.manage_rules`, `reconciliation.*`, `reports.basic`, `reports.advanced`) exist in the permission vocabulary but are not yet wired to any route — `commissions.manage_rules` and `reports.basic`/`reports.advanced` in particular predate, and are superseded for this stage's purposes by, the newer `commissions.manage` and `reports.read` codes actually enforced below.
 
 ### 27a. Financial-domain role grants (Phase 6)
 
@@ -739,6 +768,18 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 | `transactions.read` | ✓ | ✓ | ✓ | | |
 
 A membership's effective permissions are the union across every role it holds (e.g. a receptionist additionally granted the cashier role gets both roles' grants). `payments.verify_own` only ever authorizes acting on a record assigned to the caller's *own* StaffProfile — holding the permission grants no blanket authority over every payment (see docs/SECURITY.md section 12 and docs/ARCHITECTURE.md section 12).
+
+### 27b. Commission, receipt, and reporting role grants (Phase 7)
+
+| Permission | OWNER | MANAGER | CASHIER | RECEPTIONIST | SERVICE_PROVIDER |
+| --- | --- | --- | --- | --- | --- |
+| `commissions.read_own` | ✓ | | | | ✓ |
+| `commissions.read_all` | ✓ | ✓ | | | |
+| `commissions.manage` | ✓ | ✓ | | | |
+| `receipts.read` | ✓ | ✓ | ✓ | ✓ | |
+| `reports.read` | ✓ | ✓ | | | |
+
+`commissions.read_own` only ever returns accruals belonging to the caller's own StaffProfile, resolved server-side — never a client-supplied staff id (`GET .../me/earnings`). A service provider deliberately has neither `receipts.read` nor `reports.read` by default.
 
 Permission codes are seeded and stable. Roles map to permissions and may later be customized by authorized organizations.
 

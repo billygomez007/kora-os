@@ -223,6 +223,28 @@ docs/ARCHITECTURE.md section 12 and docs/SECURITY.md section 33.
 - Reports distinguish recorded, verified, disputed, refunded, and outstanding.
 - Owners can monitor live branch activity from the mobile dashboard.
 
+Commissions, receipts, and reports are implemented; cash-session
+reconciliation is not. Commission rules are PERCENTAGE, FIXED, or NONE
+— not distinct "service-specific" or "tiered" strategies as such, but a
+service-specific (or staff-specific, or branch-specific) rate is
+expressed as a scoped PERCENTAGE/FIXED rule through the same eight-level
+precedence every scope dimension shares (docs/ARCHITECTURE.md section
+21). "Commission is finalized only from verified transaction value" is
+implemented literally: a `CommissionAccrual` is created only inside the
+same database transaction that posts a Transaction, never for a
+merely-recorded or disputed payment claim — there is no separate
+"finalized" step, since posting itself is the only trigger. Receipt
+numbers are a stable `{branchCode}-{year}-{sequence}` format, atomically
+issued from a per-branch/year counter. Reports distinguish posted
+revenue from RECORDED/DISPUTED payment claims (`pendingPaymentClaimCount`/
+`disputedPaymentClaimCount`, explicitly never summed into revenue);
+"refunded" and "outstanding" reporting await refunds themselves, which
+remain unimplemented. "Owners can monitor live branch activity from the
+mobile dashboard" remains future work — the reporting endpoints exist
+as a real-time query API (`GET .../reports/*`), but no push/scheduled
+dashboard delivery mechanism or Android integration exists yet. See
+docs/API_SPEC.md sections 20-22 and docs/SECURITY.md section 34.
+
 ### Notifications and audit
 
 - Business logic publishes notification requests through channel-neutral APIs.

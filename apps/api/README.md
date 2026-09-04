@@ -192,10 +192,54 @@ ever get posted per `Checkout` true even under concurrent confirmations
 (proven in `test/transaction-posting-and-concurrency.e2e-spec.ts`). A
 posted `Transaction` is the only thing a future reporting phase may
 ever count as business revenue; it cannot be edited, deleted, reversed,
-or refunded through any public route yet. Commissions, receipts,
-reporting, refunds, reconciliation, and payment-gateway integration
-remain deliberately unimplemented. See `docs/ARCHITECTURE.md` sections
-11-12 and `docs/SECURITY.md` section 33 for the full model.
+or refunded through any public route yet. Refunds, reconciliation, and
+payment-gateway integration remain deliberately unimplemented — but
+commissions, receipts, and reports (the next paragraph) are now built.
+See `docs/ARCHITECTURE.md` sections 11-12 and `docs/SECURITY.md`
+section 33 for the full model.
+
+## Commissions, receipts, and reports in one paragraph
+
+The moment a `Transaction` posts (previous paragraph), `Commission
+AccrualService` and `ReceiptService` run inside that exact same
+database transaction — the full chain (payment confirmation → posted
+`Transaction` → `CommissionAccrual` rows → `Receipt`) commits or rolls
+back together, never partially. A `CommissionRule` (`commissions.manage`
+— owner/manager) is `PERCENTAGE`, `FIXED`, or `NONE`, independently
+scoped by branch/staff/service across an eight-level precedence (most
+specific combination down to the bare organization default), and is
+never edited in place — changing one always supersedes it with a new
+row or explicitly deactivates it, and only one *current* rule may exist
+per exact scope, enforced by a hand-written `NULLS NOT DISTINCT`
+partial unique index (Prisma's schema DSL has no stable declarative
+support for it). A rule is resolved as of the Transaction's own
+`postedAt`, and every accrual snapshots the exact terms it used, so a
+later rule change never touches an already-created accrual. Percentage
+commissions round half-up using exact `BigInt` arithmetic; a
+`NET_LINE_AFTER_ADJUSTMENTS`-basis rule allocates a checkout's discount
+or surcharge across line items by the largest-remainder method, so the
+allocated amounts always sum to exactly the posted total. No matching
+rule still posts the Transaction — it creates an explicit zero-value
+`NO_POLICY` accrual (`commissions.read_own`/`.read_all`,
+`GET .../commissions`, `GET .../me/earnings` — the latter always
+resolves the caller's own StaffProfile server-side, never a
+client-supplied id). A `Receipt` (`receipts.read`) is not a tax
+invoice — a plain, fully immutable snapshot with a
+`{branchCode}-{year}-{sequence}` number from an atomic per-branch/year
+counter (the same pattern queue ticket numbers already use), visible to
+authorized business users (`GET .../receipts{,/:id}`) and, separately,
+to the linked customer only (`GET /me/receipts{,/:id}` — ownership
+proven by `CustomerRecord.customerProfileId`, a walk-in with no linked
+account reachable only through the business side). Owner/manager
+reports (`reports.read`, `GET .../reports/{overview,revenue,staff-
+performance,services,payment-methods,commissions}`) derive every figure
+from these same immutable records — a RECORDED or DISPUTED payment
+claim never inflates revenue, appearing only as a separate operational
+counter, and every monetary total stays strictly separated by currency.
+Cash-session reconciliation, refunds, reversals, payouts, and any
+"paid" status for a commission remain deliberately unimplemented. See
+`docs/ARCHITECTURE.md` section 21 and `docs/SECURITY.md` section 34 for
+the full model.
 
 ## Useful root-level scripts
 

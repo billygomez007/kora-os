@@ -229,12 +229,12 @@ Permission decisions are covered by policy unit tests and endpoint integration t
 ## 12. Financial integrity
 
 - Money uses integer minor units and explicit currency codes, with explicit overflow validation against the ceiling of a 32-bit column before any value is written (`assertSafeMoneyAmount`, `apps/api/src/common/money/`).
-- Server code calculates checkout totals, adjustments, and (a future phase) commissions and expected reconciliation values. Client-submitted totals are never trusted as authoritative.
+- Server code calculates checkout totals, adjustments, commissions, and reported figures; expected cash-reconciliation values remain a future phase. Client-submitted totals are never trusted as authoritative.
 - Recording a payment requires a stable `Idempotency-Key`; Checkout creation accepts the same guarantee for free from a database-level unique constraint instead (see section 33).
 - The server fingerprints idempotent requests and rejects key reuse with different content (`IDEMPOTENCY_CONFLICT`).
 - Financial state changes use database transactions, validated state machines, optimistic concurrency, a `SELECT ... FOR UPDATE` row lock on the parent Checkout, and audit events — see section 33 for the full implementation.
-- A Checkout may be voided before settlement; a posted Transaction is immutable and cannot yet be reversed, refunded, or adjusted — those are explicitly deferred to a later phase, alongside commissions and reconciliation.
-- Commission finalization (a future phase) is intended to require a confirmed outcome, mirroring the same separation-of-duties principle section 33 establishes for payment confirmation.
+- A Checkout may be voided before settlement; a posted Transaction is immutable and cannot yet be reversed, refunded, or adjusted — those are explicitly deferred to a later phase, alongside cash-session reconciliation and payouts.
+- Commission finalization requires a POSTED Transaction — never a merely-recorded or disputed payment claim — mirroring the same separation-of-duties principle section 33 establishes for payment confirmation; see section 34 for the full commission/receipt/reporting implementation.
 - Uncertain network results are resolved by querying the original command or transaction before any retry with a new key.
 
 ## 13. Android application security
@@ -990,3 +990,121 @@ domain never touches `OrganizationSubscription`/`PlanPrice`, and Kora
 does not hold, transfer, or settle customer money in this phase; every
 payment method here is a manually recorded staff attestation, not a
 processed transaction.
+
+## 34. Commission accrual, receipt issuance, and reporting
+
+**Every derived record traces back to one immutable, already-POSTED
+Transaction — never a mutable `PaymentRecord` claim.** `Commission
+AccrualService.accrueForTransaction` and `ReceiptService.
+issueForTransaction` are invoked only from inside
+`TransactionPostingService.postForCheckout`, in the same database
+transaction that creates the Transaction itself: a failure in either
+rolls back the Transaction, its line items, and its payment
+allocations together, and a failure anywhere else in that transaction
+leaves no accrual or receipt behind. Both services check what already
+exists for the transaction before creating anything, which is what
+lets the exact same call also serve as `TransactionPostingService.
+ensureDerivedRecords` — an internal repair path for a hypothetical gap,
+never exposed through any controller, unauthenticated route, or
+arbitrary public backfill endpoint. Proven under real concurrent load
+(`test/commission-accrual-posting.e2e-spec.ts`,
+`test/receipts.e2e-spec.ts`): five simultaneous confirmation attempts
+on the payment that completes a checkout's balance still produce
+exactly one accrual per line item and exactly one receipt, and several
+transactions posted back to back receive distinct, strictly increasing
+receipt sequence numbers with no gap or duplicate.
+
+**Commission rules are versioned and scope-unique at the database
+layer, not only in application code.** A `CommissionRule` is never
+edited in place once current — `commissions.manage` (owner/manager
+only) reaches only `POST .../commission-rules{,/:id/supersede,/:id/
+deactivate}`, each of which either creates a brand-new row or closes
+the current one, never an in-place field update. Only one CURRENT rule
+(`effectiveUntil IS NULL AND deactivatedAt IS NULL`) may exist per
+exact `(branchId, staffProfileId, serviceId)` scope combination — a
+plain `UNIQUE` constraint cannot express this because each scope
+column is independently nullable and would treat every `NULL` as
+distinct, so this is a hand-written partial index with `NULLS NOT
+DISTINCT` (PostgreSQL 15+), confirmed against the real database
+(`test/commission-rules.e2e-spec.ts`: a second organization-default
+rule is rejected with `409 COMMISSION_RULE_SCOPE_CONFLICT`; five
+concurrent attempts to create the same exact scope converge on exactly
+one row). A rule is resolved as of the Transaction's own `postedAt`,
+never "now" — superseding or deactivating a rule after a Transaction
+has already posted never changes that Transaction's already-created
+accrual, since every value the calculation depended on was snapshotted
+onto the accrual row itself.
+
+**Separation of duties for `commissions.read_own` mirrors
+`payments.verify_own`'s own rule.** `GET .../me/earnings` resolves the
+caller's own StaffProfile fresh from the database on every request —
+a client-supplied staff-profile id is never accepted, and a membership
+with no StaffProfile at all simply has no earnings. `commissions.
+read_all` (owner/manager only) is the only way to see another staff
+member's accruals.
+
+**A Receipt is not a statutory VAT or tax invoice** — no TIN, no tax
+calculation, no compliance claim of any kind, and every value on it is
+a snapshot taken atomically at issuance time (business name, branch
+name, branch contact/location, customer display name, currency,
+totals, line items, and payment-method summaries with only a
+safe-code-validated `externalReference`, never a card/account number,
+PIN, or `PaymentRecord.note` free text) — never a later live read of a
+mutable `Branch`/`CustomerRecord`/`PaymentRecord` row. The receipt
+number (`{branchCode}-{year}-{sequence}`) carries no UUID, PII, or
+credential, and is unique only within the issuing organization, not
+platform-wide, since it is built from `Branch.code` — itself only
+unique per organization.
+
+**Receipt access is two entirely separate paths that never overlap.**
+The business side (`GET .../organizations/:organizationId/receipts{,/
+:id}`, `receipts.read` — owner/manager/cashier/receptionist, never a
+plain service provider by default) is tenant-scoped exactly like every
+other endpoint in this document. The customer side (`GET /me/receipts
+{,/:id}`) carries no organization in its route at all — proving
+ownership is the *only* access rule, via `Receipt.customerRecordId ->
+CustomerRecord.customerProfileId` matching the authenticated user's
+own CustomerProfile, resolved fresh from the database on every
+request. A walk-in customer with no linked CustomerProfile is
+reachable only through the business side; requesting their receipt id
+through `/me/receipts/:id` as any other authenticated customer returns
+the same `404` as a receipt that does not exist at all — proven
+directly (`test/receipts.e2e-spec.ts`): a stranger, and a different
+real customer, both get `404` for a receipt they do not own.
+
+**Reporting authority follows the same "only POSTED Transactions are
+revenue" rule as commission calculation.** `GET .../reports/*`
+(`reports.read`, owner/manager only) derives every figure from already
+-immutable records — POSTED Transactions and their line-item/
+CommissionAccrual/ReceiptPaymentSummary snapshots — never a live
+PaymentRecord. A RECORDED or DISPUTED payment claim appears only as an
+explicitly separate operational counter on the overview report
+(`pendingPaymentClaimCount`/`disputedPaymentClaimCount`), never summed
+into `postedRevenue`, never labeled revenue, and never combined across
+currencies (every monetary figure is grouped strictly by currency
+code). Every report requires a validated `from`/`to` range capped at
+366 days; a branch-scoped report groups by that branch's own local
+calendar day, while an organization-wide report spanning potentially
+several branch timezones requires an explicit, IANA-validated
+`timezone` query parameter rather than silently choosing one branch's
+zone or mixing ambiguous local-day boundaries. `READ_ONLY` subscription
+mode permits every report/receipt/earnings read (all `GET`) while still
+blocking commission-rule mutations (`POST`, no `@AllowReadOnlyAccess`
+override) through the same unconditional `TenantAccessGuard` mechanism
+as every other domain (section 10).
+
+**Cross-tenant and cross-branch safety follow the established
+mechanism** (composite `(organizationId, id)` foreign keys throughout,
+`assertMembershipHasBranchAccess` on every branch-scoped report/rule
+route) and are re-verified for this domain specifically: a commission
+rule, receipt, or branch-scoped report request for another
+organization's id returns `404`, never confirming its existence.
+
+**Explicitly out of scope for this stage, and not implemented:**
+commission payouts, payroll, settlement, a "paid" status or staff
+wallet balance for any commission, cash-session reconciliation,
+receipt PDF/email delivery or public share links, refunds, reversals,
+and tax invoicing. Kora does not hold, transfer, or settle any money
+in this phase — every commission accrual and every receipt describes
+value already claimed and confirmed through the payment-verification
+stage (section 33), never a payout Kora itself makes.

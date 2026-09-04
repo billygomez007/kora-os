@@ -141,16 +141,24 @@ later catalogue edit cannot change a past appointment's record.
 - Queue entries support waiting, called, in-service, completed, and canceled.
 - Actual work is represented by an independent service session.
 
-V1 booking is implemented against the first two lines of this list only:
-a customer- or staff-created appointment is `CONFIRMED` on creation (there
-is no separate "requested" step to confirm later) and can become
-`CANCELLED` or `NO_SHOW`; "checked-in", "in-service", and "completed" are
-not appointment states at all here, since only a future service session
-can establish that work actually happened (docs/SECURITY.md section 30).
-The server-prevented scheduling conflict is a database-enforced
-constraint, not only an application check (docs/ARCHITECTURE.md section
-6). Walk-ins, the branch queue, and service sessions remain future work
-(docs/ROADMAP.md items 4-5).
+A customer- or staff-created appointment is `CONFIRMED` on creation
+(there is no separate "requested" step to confirm later) and can become
+`CANCELLED` or `NO_SHOW`; "checked-in", "in-service", and "completed"
+are deliberately not appointment states at all — an appointment is a
+reservation, and only a `ServiceSession` can establish that work
+actually happened (docs/SECURITY.md section 30/31). The server-prevented
+scheduling conflict is a database-enforced constraint, not only an
+application check (docs/ARCHITECTURE.md section 6).
+
+Walk-ins, the live branch queue, and service sessions are now
+implemented: a walk-in or a checked-in appointment becomes a
+`QueueEntry` (waiting, called, in-service, completed, cancelled, or
+no-show); starting service creates a `ServiceSession` with its own
+snapshot of the services actually performed, attributed to the provider
+who performed them, and completing it is the only way work is ever
+recorded as done. Checkout, payments, commissions, and receipts — what
+happens *after* a `ServiceSession` completes — remain future work
+(docs/ROADMAP.md item 6 onward).
 
 ### Transactions and payments
 

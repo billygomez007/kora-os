@@ -635,36 +635,125 @@ leak a stale key into.
 
 Unique: `(customer_profile_id, idempotency_key)`.
 
-`queue_entries`, `service_sessions`, and `service_session_items` below
-remain schema for a future phase (not yet created by any migration) —
-the walk-in/live-queue and service-session boundary docs/ROADMAP.md
-items 4-5 describe.
+The tables below implement the walk-in/live-queue and service-session
+boundary (docs task "Walk-in intake -> Live branch queue -> Staff
+assignment -> Service Session -> Service completion"). Domain
+separation, kept strict throughout: an `appointments` row is a
+reservation; a `queue_entries` row is a customer waiting for or
+receiving service at a branch *today*; a `service_sessions` row is
+actual work performed. A completed `service_sessions` row is not a
+payment, transaction, receipt, commission, or revenue event — none of
+those tables exist yet.
+
+Design decision: `queue_entries` itself is the durable walk-in record.
+No separate `walk_ins` table exists — a walk-in-sourced entry and an
+appointment-checked-in entry share exactly the same lifecycle and the
+same `queue_entry_status_history` trail; `source` alone distinguishes
+how a row was created.
+
+### `branch_queue_days`
+
+One record per organization, branch, and branch-local business date
+(computed from `branches.time_zone`, never the API server's own
+timezone). Its sole purpose is atomic ticket issuance and a
+monotonically increasing `revision` mobile clients can poll against —
+both via a single native Postgres `INSERT ... ON CONFLICT DO UPDATE`
+(Prisma's `upsert`) rather than a read-then-write application check.
+
+- `id`, `organization_id`, `branch_id`, `business_date`
+- `last_ticket_number` (default 0), `revision` (default 0)
+- `created_at`, `updated_at`
+
+Unique: `(organization_id, branch_id, business_date)`.
 
 ### `queue_entries`
 
-- `id`, `organization_id`, `branch_id`, `customer_id`
-- `appointment_id` nullable
+A customer waiting for or receiving service at a branch. `business_date`
+is denormalized from the owning `branch_queue_days` row for direct
+indexing. `appointment_id` is nullable (a `WALK_IN`-sourced entry has
+none) but globally unique when set, so an appointment can never be
+linked to more than one queue entry. Terminal states (`completed`,
+`cancelled`, `no_show`) cannot be reopened; `in_service` is reachable
+only through `service_sessions` creation, and `completed` only through
+`service_sessions` completion — never a direct manual transition.
+
+- `id`, `organization_id`, `branch_id`, `branch_queue_day_id`, `business_date`
+- `ticket_number` (positive, unique per `(branch_id, business_date)`)
+- `source`: walk_in, appointment
+- `appointment_id` nullable, unique
+- `customer_record_id`
+- `status`: waiting, called, in_service, completed, cancelled, no_show
+- `priority`: normal, priority
 - `assigned_staff_profile_id` nullable
-- `status`: waiting, called, in_service, completed, canceled
-- `position`, `checked_in_at`, `called_at`, `started_at`, `completed_at` nullable
-- `created_by_membership_id`, `created_at`, `updated_at`
+- `notes` nullable
+- `joined_at`, `called_at`/`service_started_at`/`completed_at`/`cancelled_at`/`no_show_at` nullable
+- `created_by_membership_id`, `version`, `created_at`, `updated_at`
+
+### `queue_entry_services`
+
+A service requested at intake — deliberately unpriced ("these are
+requested services, not financial records"); `service_session_items`
+below captures the priced, provider-attributed snapshot once work
+actually starts.
+
+- `id`, `organization_id`, `queue_entry_id`, `service_id`
+- `display_order`, `created_at`
+
+### `queue_entry_status_history`
+
+Append-only transition log for one queue entry — the same convention
+`appointment_status_history` establishes.
+
+- `id`, `organization_id`, `queue_entry_id`
+- `previous_status` nullable, `new_status`
+- `actor_user_id`/`actor_membership_id` nullable, `reason` nullable
+- `occurred_at`
+
+### `queue_intake_idempotency_keys`
+
+Guarantees a client-supplied `Idempotency-Key` header is honored for
+walk-in intake and appointment check-in — scoped per acting membership
+(the staff member performing the intake), the same reasoning
+`appointment_idempotency_keys` applies per customer.
+
+- `id`, `organization_id`, `membership_id`, `idempotency_key`
+- `request_fingerprint`, `queue_entry_id`, `created_at`
+
+Unique: `(membership_id, idempotency_key)`.
 
 ### `service_sessions`
 
-- `id`, `organization_id`, `branch_id`, `customer_id`
-- `appointment_id`, `queue_entry_id` nullable
-- `status`: planned, in_progress, completed, canceled
-- `started_at`, `completed_at`, `canceled_at` nullable
-- `started_by_membership_id`, `completed_by_membership_id` nullable
-- `notes` nullable, `created_at`, `updated_at`
+The operational representation of work actually performed.
+`service_total_minor` is the value of performed services, not proof
+that money was received — no `paid` status, and no payment/transaction/
+receipt/commission field exists on this table. One session has exactly
+one primary provider in V1; every item is attributed to that same
+provider. `queue_entry_id` is deliberately *not* globally unique — a
+queue entry can accumulate more than one session over its lifetime
+(e.g. a `RETURN_TO_QUEUE` cancellation followed by a later restart) —
+only one *active* (`in_progress`) session per queue entry, and per
+staff profile, is permitted (section 12).
+
+- `id`, `organization_id`, `branch_id`, `queue_entry_id`
+- `appointment_id` nullable, `customer_record_id`, `assigned_staff_profile_id`
+- `status`: in_progress, completed, cancelled
+- `currency`, `service_total_minor`
+- `started_at`, `completed_at`/`cancelled_at` nullable
+- `cancel_reason`/`cancel_disposition` nullable (`return_to_queue` or `cancel_visit`; set only alongside `cancelled`)
+- `created_by_membership_id`, `completed_by_membership_id` nullable
+- `version`, `created_at`, `updated_at`
 
 ### `service_session_items`
 
-- `id`, `organization_id`, `service_session_id`, `service_id`
-- `provider_staff_profile_id`
-- `service_name_snapshot`, `duration_minutes_snapshot`
-- `price_minor_snapshot`, `currency`
-- `status`, `started_at`, `completed_at` nullable
+A snapshot of one service actually being performed. Server-resolved
+from the catalogue, branch configuration, and staff-service assignment
+at the moment the session starts or its items are replaced — never
+accepted as authoritative values from a client. Immutable once the
+owning session is `completed`.
+
+- `id`, `organization_id`, `service_session_id`, `service_id`, `staff_profile_id`
+- `service_name_snapshot`, `duration_minutes_snapshot`, `price_minor_snapshot`, `currency_snapshot`
+- `display_order`, `created_at`
 
 ## 8. Transactions and payments
 
@@ -836,8 +925,8 @@ Every foreign key is indexed where join direction requires it. Additional high-v
 - Customers by organization plus normalized phone, email, and searchable name.
 - Appointments by `(organization_id, branch_id, starts_at, status)`.
 - Appointment provider and time range for conflict checks.
-- Queue by `(organization_id, branch_id, status, position)`.
-- Service sessions by branch, provider, status, and start time.
+- Queue entries by `(organization_id, branch_id, business_date, status)`, by `(organization_id, assigned_staff_profile_id, status)`, and by `(organization_id, customer_record_id)`.
+- Service sessions by `(organization_id, branch_id, status)`, `(organization_id, assigned_staff_profile_id, status)`, and `(organization_id, queue_entry_id)`.
 - Transactions by `(organization_id, branch_id, created_at)` and status.
 - Payments and verifications by transaction and status.
 - Commission records by staff and finalized date.
@@ -850,6 +939,7 @@ Every foreign key is indexed where join direction requires it. Additional high-v
 - All line totals and transaction totals are non-negative except explicit adjustment or reversal types.
 - Currency codes on a transaction and its normal line items and payments must agree unless currency conversion is deliberately introduced later.
 - Appointment and service-session end times must be after start times. For appointments this is enforced by a `CHECK` constraint (`end_at > start_at`, and separately that the occupied window contains the service window); double-booking itself is enforced by a PostgreSQL `EXCLUDE` constraint (`appointments_no_staff_double_booking`, requiring the `btree_gist` extension) on the assigned staff member and the occupied UTC time range, restricted to `CONFIRMED` appointments — not only by the availability screen. `[)` range bounds mean two exactly back-to-back appointments are adjacent, not overlapping, and are allowed.
+- A staff profile cannot hold more than one `IN_PROGRESS` service session at once, and a queue entry cannot have more than one active service session, each enforced by a partial `UNIQUE` index (`service_sessions_one_active_per_staff` on `assigned_staff_profile_id`, and `service_sessions_one_active_per_queue_entry` on `queue_entry_id`, both `WHERE status = 'IN_PROGRESS'`) — not only by an application check-then-insert. Ticket numbers are issued through a single atomic `INSERT ... ON CONFLICT DO UPDATE` on `branch_queue_days`, backed by its own unique constraint plus `queue_entries`' `(branch_id, business_date, ticket_number)` unique constraint as a second line of defense.
 - Payment verification references the responsible provider and the same tenant as its payment and transaction.
 - Commission records cannot become finalized before a confirmed verification outcome.
 - Subscription trial and billing period end times must be after their corresponding start times.
@@ -876,3 +966,11 @@ One database transaction is required for:
 ## 15. Migration rule
 
 Every production schema change uses a reviewed forward migration. Destructive development fallback migrations are removed before real customer data is introduced. Seed data is isolated to development and test environments and is never embedded in production application behavior.
+
+The applied migration `allow_walk_in_appointment_customer` has a
+historically misleading name: it only relaxed `appointments.customer_
+profile_id` to nullable so a staff-assisted appointment could reference
+a customer with no global Kora account. It did not implement the Kora
+walk-in or live-queue workflow — that is `add_walk_in_queue_and_
+service_sessions` (section 7 above), a separate, later migration. Per
+the migration rule above, its name is not corrected retroactively.

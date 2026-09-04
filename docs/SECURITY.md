@@ -581,3 +581,159 @@ another device-bound method remain a security-roadmap item for a later
 phase, targeted at sensitive financial and owner-administration actions
 rather than ordinary booking; passwords are not planned as a fallback
 for any of this, booking included.
+
+## 31. Walk-in intake, live branch queue, and service sessions
+
+**Kora remains passwordless.** Nothing in this phase introduces a
+credential — every walk-in, check-in, and queue/session command is
+performed by an authenticated staff member using the same email-OTP
+session as everywhere else (section 6). No customer-facing surface
+exists in this phase; there is no customer self-check-in, QR check-in,
+or geofenced check-in.
+
+**`Appointment`, `QueueEntry`, and `ServiceSession` are three separate
+concepts, never conflated.** An `Appointment` is a reservation. A
+`QueueEntry` is a customer waiting for or receiving service at a branch
+*today* — `QueueEntry` itself is the durable walk-in record; no
+separate `WalkIn` table exists, since a walk-in-sourced entry and an
+appointment-checked-in entry share exactly the same lifecycle
+(docs/DATA_MODEL.md section 7). A `ServiceSession` is actual work
+performed. Checking an appointment into the queue never mutates the
+appointment itself and never marks it completed; only a future
+`ServiceSession` can establish that work happened, and a completed
+session is not itself a `Payment`, `Transaction`, `Receipt`, or
+`Commission` — none of those exist yet, and `serviceTotalMinor` is the
+value of performed services, not proof money was received.
+
+**The queue and service-session state machines are enforced, not
+advisory.** A `QueueEntry` reaches `IN_SERVICE` only by starting a
+`ServiceSession`, and `COMPLETED` only by completing one — never
+through a direct command; terminal states (`COMPLETED`, `CANCELLED`,
+`NO_SHOW`) cannot be reopened. A `ServiceSession` reaches `COMPLETED`
+or `CANCELLED` only from `IN_PROGRESS`. Every invalid transition is
+rejected with a stable `409` before any write is attempted
+(`assertQueueTransitionAllowed`,
+`apps/api/src/modules/queue/queue-transition.util.ts`), verified by a
+dedicated unit test for every allowed and rejected pair.
+
+**Double-booking-style protection extends to service sessions, enforced
+at the database level.** Two partial PostgreSQL unique indexes —
+`service_sessions_one_active_per_staff` and
+`service_sessions_one_active_per_queue_entry`, both `WHERE status =
+'IN_PROGRESS'`, requiring no extension beyond what this schema already
+uses — guarantee a staff profile can never hold two active sessions at
+once, and a queue entry can never have more than one active session,
+regardless of what the application layer believed was free. Starting a
+session is one database transaction: claiming the queue entry (an
+`UPDATE ... WHERE status IN ('WAITING', 'CALLED')`, the same
+re-checked-on-lock-wait pattern the rest of the codebase uses), creating
+the session and its item snapshots, moving the queue entry to
+`IN_SERVICE`, and writing history. A violation of either partial index
+rolls the *entire* transaction back — the queue-entry claim included —
+so a failed start leaves the queue entry completely unchanged, and the
+raw constraint name and SQLSTATE are never returned to the caller
+(translated to a generic `409 STAFF_ALREADY_SERVING` or `409
+QUEUE_ENTRY_ALREADY_IN_SERVICE` via the same `isUniqueConstraintViolation`
+utility appointment booking's idempotency path already established).
+Proven directly (`test/service-sessions.e2e-spec.ts`): several
+concurrent start attempts on the same queue entry resolve to exactly
+one `IN_PROGRESS` session; concurrent start attempts assigning the same
+staff member to two different queue entries also resolve to exactly
+one, with the losing queue entry's status and `version` provably
+unchanged. Completion is the same shape — freeze the total, complete
+the queue entry, one transaction, so a failed completion leaves both
+rows unchanged.
+
+**Ticket numbers are issued atomically, per branch and branch-local
+business date.** `BranchQueueDay` — one row per `(organizationId,
+branchId, businessDate)`, with `businessDate` always computed from the
+*branch's* own `timeZone` via `todayInZone`
+(`apps/api/src/common/scheduling/local-time.util.ts`), never the API
+server's — issues the next ticket number and bumps a polling `revision`
+through a single native Postgres `INSERT ... ON CONFLICT DO UPDATE`
+(Prisma's `upsert`), not a read-then-write application check. A second,
+structural line of defense (`queue_entries`' own unique constraint on
+`(branchId, businessDate, ticketNumber)`) would reject a duplicate even
+if the first ever failed. Proven directly: several concurrent walk-in
+requests receive unique, sequential ticket numbers with no gaps and no
+duplicates.
+
+**Both intake paths are idempotent.** A client-supplied `Idempotency-
+Key` header, scoped per acting staff membership (not globally — a key
+only needs to be unique within one staff member's own request stream,
+the same reasoning `AppointmentIdempotencyKey` applies per customer), is
+checked *before* any write is attempted, exactly mirroring the booking
+flow's own two-layer approach: a proactive pre-check short-circuits a
+genuine retry, and a reactive unique-constraint catch on
+`queue_intake_idempotency_keys` is the safety net for a true concurrent
+race — proven under actual concurrency (`test/queue-intake-and-
+commands.e2e-spec.ts`: 5 simultaneous identical-key walk-in requests
+create exactly one `QueueEntry`). Appointment check-in additionally
+enforces "at most one `QueueEntry` per `Appointment`" through a plain
+unique constraint on `queue_entries.appointment_id`, with the same
+reactive-catch pattern proving 5 simultaneous check-in requests for the
+same appointment resolve to exactly one success and four generic `409
+ALREADY_CHECKED_IN` responses — never a raw constraint error.
+
+**A newly entered walk-in email or phone number is never used to link a
+global `CustomerProfile`.** Creating a new `CustomerRecord` for a
+walk-in customer never searches for or attaches an existing
+`CustomerProfile` by matching contact details — account linking
+requires verified ownership (the passwordless sign-in flow itself) and
+stays out of scope here, the same boundary section 29 draws for
+discovery. Every `QueueEntry` still carries an organization-scoped
+`CustomerRecord`, tenant-isolated the same way section 8 and section 30
+already describe for appointments — a cross-tenant `customerRecordId`
+is rejected with a clean `400`, never a raw foreign-key violation, and a
+cross-tenant or cross-branch `appointmentId` at check-in is rejected
+with `404` (its existence is never confirmed to a caller who cannot
+reach it).
+
+**A provider acts on their own session only, unless granted broader
+management.** `service_sessions.perform` lets a staff member start and
+complete/cancel/edit only the session assigned to their own
+`StaffProfile`; `service_sessions.manage` (owner, manager) lifts that
+restriction to any session in the organization. Because NestJS's
+declarative permission guard expresses only "all of these codes
+required," not "either of these, then check ownership," this
+either/or-plus-ownership rule is checked explicitly in
+`ServiceSessionsService` rather than through `@RequirePermissions` —
+proven directly: a plain service-provider cannot start, complete, or
+cancel another provider's session (`403`), and a manager/owner can.
+Every id-scoped queue-entry and service-session route (none of which
+carry a `:branchId` route parameter — see the API surface in
+docs/API_SPEC.md sections 16-17) re-checks branch access against the
+caller's own tenant context after loading the entity
+(`assertMembershipHasBranchAccess`,
+`apps/api/src/common/authorization/assert-branch-access.util.ts`), the
+same guarantee `TenantAccessGuard`'s `@RequireBranchParam` gives routes
+that do carry one.
+
+Continues enforcing section 9's existing subscription/tenant/RBAC model
+exactly: `READ_ONLY` may read queue and session records but not mutate
+them (`TenantAccessGuard` blocks every non-`GET` method under
+`READ_ONLY` automatically, by HTTP method, with no extra service-layer
+check required here — unlike customer appointment booking, every
+queue/session route is staff-initiated and already passes through that
+guard); `BLOCKED` denies everything.
+
+Every mutation in this section writes an audit event —
+`queue.walk_in.created`, `queue.appointment.checked_in`,
+`queue.entry.called`, `queue.entry.returned_to_waiting`,
+`queue.entry.assigned`, `queue.entry.cancelled`, `queue.entry.no_show`,
+`service_session.started`, `service_session.items_updated`,
+`service_session.completed`, `service_session.cancelled` — through the
+same append-only `AuditEvent` path as the rest of the platform (section
+19). Metadata carries identifiers and safe operational values only
+(status, ticket number, assigned staff id, service total) — never a
+customer's phone/email or an internal exception detail; proven directly
+that a completed session's audit trail never mentions a payment,
+transaction, receipt, commission, or payout (`test/service-
+sessions.e2e-spec.ts`), because none of those concepts exist yet to
+mention.
+
+The already-applied migration named `allow_walk_in_appointment_customer`
+did **not** implement any of the above — its name is historical and
+narrower than it sounds (docs/DATA_MODEL.md section 15). This phase's
+actual walk-in/queue/service-session tables were added by
+`add_walk_in_queue_and_service_sessions`.

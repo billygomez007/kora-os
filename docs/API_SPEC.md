@@ -380,12 +380,12 @@ Search and contact details are always organization-scoped.
 
 ## 15. Appointments
 
-Appointment is not a `ServiceSession`, a `Payment`, or a `Transaction` —
-none of those exist yet. A successfully created appointment is always
-`CONFIRMED`; there is no separate unconfirmed/requested state, and no
-`completed` status — completion is a claim about work performed, which
-only a future `ServiceSession` can establish (docs/SECURITY.md section
-20). `CONFIRMED` can become `CANCELLED` or `NO_SHOW` through the
+Appointment is not a `ServiceSession`, a `Payment`, or a `Transaction`.
+A successfully created appointment is always `CONFIRMED`; there is no
+separate unconfirmed/requested state, and no `completed` status —
+completion is a claim about work performed, which only a
+`ServiceSession` (section 17) can establish (docs/SECURITY.md section
+30). `CONFIRMED` can become `CANCELLED` or `NO_SHOW` through the
 explicit commands below only.
 
 Requests to a business's discovery slug (below) resolve services,
@@ -432,27 +432,80 @@ reschedule leaves the original appointment completely unchanged
 
 ## 16. Walk-ins and queue
 
-- `GET /queue`
-- `POST /queue/walk-ins`
-- `GET /queue/{queueEntryId}`
-- `POST /queue/{queueEntryId}/call`
-- `POST /queue/{queueEntryId}/assign`
-- `POST /queue/{queueEntryId}/move`
-- `POST /queue/{queueEntryId}/cancel`
+A `QueueEntry` is a customer waiting for or receiving service at a
+branch *today* — distinct from an `Appointment` (a reservation) and a
+`ServiceSession` (actual work performed, section 17). `QueueEntry`
+itself is the durable walk-in record; there is no separate `WalkIn`
+resource (docs/DATA_MODEL.md section 7).
 
-Queue mutation responses return the updated entry and a queue revision so clients can refresh after concurrent changes.
+### Intake (`queue.manage`)
+
+- `POST /organizations/{organizationId}/branches/{branchId}/queue/walk-ins` — `{customerRecordId | newCustomer, serviceIds[], priority?, notes?}`; exactly one of an existing organization customer or a walk-in-style `newCustomer` (`{name, phoneE164?, email?}`) is required. A newly entered email/phone is never used to search for or link an existing global `CustomerProfile` — only a plain `CustomerRecord` is created.
+- `POST /organizations/{organizationId}/appointments/{appointmentId}/check-in` — checks a `CONFIRMED` appointment into its own branch's queue for today; carries over its assigned provider and services. Never mutates the appointment itself, and only permitted on the appointment's own branch-local calendar date. Rejects a cancelled/no-show appointment (`409 APPOINTMENT_NOT_CHECKINABLE`) and a duplicate check-in (`409 ALREADY_CHECKED_IN`).
+
+Both intake commands accept an `Idempotency-Key` header, scoped per
+acting staff membership: a genuine retry with the same request
+fingerprint returns the original queue entry; reusing the key with a
+different request returns `409 IDEMPOTENCY_CONFLICT`.
+
+### Queries (`queue.read`)
+
+- `GET /organizations/{organizationId}/branches/{branchId}/queue?businessDate=&status=&assignedStaffProfileId=` — `businessDate` defaults to today under the branch's own timezone. Returns `{branchId, businessDate, revision, serverTime, entries[], counts}` — `revision` and `serverTime` give Android/iOS a safe polling foundation with no WebSocket or realtime vendor. `counts` always reflects the whole day regardless of the `status`/`assignedStaffProfileId` filters applied to `entries`.
+- `GET /organizations/{organizationId}/queue-entries/{queueEntryId}`
+
+### Commands (`queue.manage`)
+
+- `POST /organizations/{organizationId}/queue-entries/{queueEntryId}/call`
+- `POST /organizations/{organizationId}/queue-entries/{queueEntryId}/return-to-waiting`
+- `POST /organizations/{organizationId}/queue-entries/{queueEntryId}/assign` — `{staffProfileId}`; rejects a staff member who cannot perform every requested service at this branch
+- `POST /organizations/{organizationId}/queue-entries/{queueEntryId}/cancel` — `{reason?}`
+- `POST /organizations/{organizationId}/queue-entries/{queueEntryId}/no-show`
+- `POST /organizations/{organizationId}/queue-entries/{queueEntryId}/start-service` — `{staffProfileId?}`, omitted when the entry already carries an assigned provider; see section 17
+
+State machine: `WAITING -> CALLED | IN_SERVICE | CANCELLED | NO_SHOW`;
+`CALLED -> WAITING | IN_SERVICE | CANCELLED | NO_SHOW`. `IN_SERVICE` is
+reachable only through `start-service`, and `COMPLETED` only through
+`ServiceSession` completion — never a direct command. Terminal states
+cannot be reopened. An invalid transition returns `409
+QUEUE_ENTRY_INVALID_TRANSITION`; a stale concurrent update returns a
+plain `409`. Default ordering: priority classification, then join
+time, then ticket number, then id.
+
+None of these routes are branch-scoped in the URL beyond the two intake
+routes above — each command loads the entry and re-checks branch access
+against the caller's own membership.
 
 ## 17. Service sessions
 
-- `GET /service-sessions`
-- `POST /service-sessions`
-- `GET /service-sessions/{sessionId}`
-- `POST /service-sessions/{sessionId}/start`
-- `POST /service-sessions/{sessionId}/complete`
-- `POST /service-sessions/{sessionId}/cancel`
-- `POST /service-sessions/{sessionId}/reassign`
+The operational representation of work actually performed
+(docs/DATA_MODEL.md section 7). `serviceTotalMinor` is the value of
+performed services, not proof that money was received — no
+payment/transaction/receipt/commission field exists here or ever will
+on this resource.
 
-Start, complete, cancel, and reassign are commands with explicit permissions and valid-state checks.
+- `GET /organizations/{organizationId}/service-sessions?branchId=&status=&assignedStaffProfileId=&cursor=&limit=` (`service_sessions.read`) — cursor-paginated; an explicit `branchId` must be one of the caller's own assigned branches, and omitting it implicitly scopes results to those branches unless the caller holds the broad `branches.manage` permission
+- `GET /organizations/{organizationId}/service-sessions/{serviceSessionId}` (`service_sessions.read`)
+- `PUT /organizations/{organizationId}/service-sessions/{serviceSessionId}/items` — `{serviceIds[]}`, ordered; replaces the full item list, only while `IN_PROGRESS`; server-resolves every name/duration/price/currency snapshot, requires one currency
+- `POST /organizations/{organizationId}/service-sessions/{serviceSessionId}/complete`
+- `POST /organizations/{organizationId}/service-sessions/{serviceSessionId}/cancel` — `{reason, disposition}`; `disposition` is `RETURN_TO_QUEUE` (returns the queue entry to `WAITING`, releasing the provider for another session) or `CANCEL_VISIT` (cancels the queue entry too); both fields required
+
+`start-service` (section 16), `PUT .../items`, `complete`, and `cancel`
+are gated by `service_sessions.perform` **or** `service_sessions.manage`
+— a `.perform`-only caller may only act on their own assigned session;
+a provider can never complete or cancel another provider's session
+without `.manage`.
+
+State machine: `IN_PROGRESS -> COMPLETED` (via `complete`, requiring at
+least one item) or `IN_PROGRESS -> CANCELLED` (via `cancel`). Starting a
+session atomically claims the queue entry, resolves and validates the
+provider, snapshots items, moves the queue entry to `IN_SERVICE`, and
+writes queue history — a failed attempt (`409 QUEUE_ENTRY_ALREADY_IN_
+SERVICE` or `409 STAFF_ALREADY_SERVING`, backed by two PostgreSQL
+partial unique indexes, docs/DATA_MODEL.md section 12) leaves the queue
+entry completely unchanged, the same all-or-nothing guarantee
+appointment booking and reschedule already provide. Completion
+atomically freezes the total and moves the queue entry to `COMPLETED`;
+a queue entry is never manually marked `COMPLETED`.
 
 ## 18. Checkout and transactions
 

@@ -37,6 +37,7 @@ Completed:
 - A deterministic availability engine (`AvailabilityEngineService`) resolving effective price/duration, eligible providers, the branch/staff schedule intersection, exceptions, lead time, horizon, and buffers into concrete UTC slots — exposed publicly (`GET /v1/discovery/businesses/:slug/branches/:branchId/{services,services/:serviceId/providers,availability}`, respecting PUBLIC/LINK_ONLY/PRIVATE visibility the same way the rest of discovery does) and to authenticated staff (`GET /v1/organizations/:organizationId/branches/:branchId/availability`). Results are advisory; booking creation revalidates atomically.
 - The customer workspace is now self-service: `GET`/`PATCH /v1/me/customer-profile` (display name, phone, city/area, and location only when the customer explicitly provided it, with its own consent timestamp).
 - Atomic appointment booking (`Appointment`, `AppointmentItem` snapshots, `AppointmentStatusHistory`, `AppointmentIdempotencyKey`) for both the customer app (`POST`/`GET /v1/me/appointments`, `/:id`, `/:id/cancel`, `/:id/reschedule`) and staff-assisted bookings (`.../branches/:branchId/appointments{,/:id,/:id/cancel,/:id/reschedule,/:id/no-show}`, gated by `appointments.read`/`appointments.manage`). Double-booking is prevented at the database level by a PostgreSQL `EXCLUDE` constraint (`btree_gist`) on the assigned staff member and the occupied UTC time range, not only by the availability screen; a client-generated idempotency key makes repeated/retried booking requests return the original appointment rather than a duplicate. Server-resolved price, duration, staff eligibility, and subscription state are never accepted from the client.
+- Walk-in intake, appointment check-in, a live branch queue, and service sessions (`BranchQueueDay`, `QueueEntry`, `QueueEntryService`, `QueueEntryStatusHistory`, `ServiceSession`, `ServiceSessionItem`) under `/v1/organizations/:organizationId/branches/:branchId/queue/walk-ins`, `.../appointments/:appointmentId/check-in`, `.../queue`, `.../queue-entries/:id/*`, and `.../service-sessions{,/:id,/:id/items,/:id/complete,/:id/cancel}` (docs/API_SPEC.md sections 16-17), gated by `queue.read`/`queue.manage` and `service_sessions.read`/`.perform`/`.manage`. Ticket numbers are issued atomically per branch-local business date; at most one active service session per staff member and per queue entry is enforced by two partial PostgreSQL unique indexes, not only an application check. `Appointment` is a reservation, `QueueEntry` is a customer present at a branch, and `ServiceSession` is work actually performed — kept strictly separate, with no `Payment`, `Transaction`, `Receipt`, or `Commission` concept anywhere in this phase (docs/SECURITY.md section 31).
 
 Current limitations:
 
@@ -45,19 +46,19 @@ Current limitations:
 - Role/permission *management* endpoints (creating custom roles, editing a membership's roles or branches) are not implemented; every role assignment today comes from the seeded system roles via staff invitation.
 - Current Android roles are simulated locally and are not security controls, and Android does not yet call this API at all.
 - Payments and subscriptions are not connected to an authoritative backend, and no billing provider is integrated.
-- Walk-ins/live queue, service sessions, and everything downstream of them (checkout, payments, commissions, receipts) do not exist yet. A CONFIRMED appointment is a reservation only — it is not a ServiceSession, a Payment, or a Transaction, and is never treated as proof that work happened or that revenue was earned; that connection is a future phase's job (docs/SECURITY.md section 30).
-- Android is the only implemented client, and does not yet call any of the service-catalogue, availability, or appointment endpoints above.
+- Checkout, transactions, payments, provider verification, commissions, reconciliation, and receipts do not exist yet — everything downstream of a completed `ServiceSession`. A `ServiceSession` establishes that work happened; it is never itself proof that revenue was earned (docs/SECURITY.md section 31).
+- Android is the only implemented client, and does not yet call any of the service-catalogue, availability, appointment, queue, or service-session endpoints above.
 
 ### Implementation sequence for the remaining work
 
-Kept intentionally concise — each item expands into its own phase below once it starts, and is not built ahead of that phase. Items 1–3 (authentication/sessions/staff invitations; organization-scoped RBAC, branch authorization, and subscription enforcement; services, staff availability, and customer appointment booking) and public business discovery are done — see "Current baseline" above — so the active boundary starts at item 4:
+Kept intentionally concise — each item expands into its own phase below once it starts, and is not built ahead of that phase. Items 1–5 (authentication/sessions/staff invitations; organization-scoped RBAC, branch authorization, and subscription enforcement; services, staff availability, and customer appointment booking; walk-ins/live queue; service sessions) and public business discovery are done — see "Current baseline" above — so the active boundary starts at item 6:
 
 1. ~~Authentication, sessions, and staff invitations.~~ Done.
 2. ~~Organization-scoped RBAC and branch authorization.~~ Done, including subscription-access-mode enforcement.
 3. ~~Services, staff availability, and atomic customer appointment booking.~~ Done — see "Current baseline" above. Role/permission *management* endpoints (as opposed to RBAC *enforcement*, already done in item 2) remain a carry-over gap.
-4. Walk-ins and live queues — the next boundary. Appointments already exist (item 3); this item is specifically the unscheduled, same-day operational flow and the branch queue built around it.
-5. Service sessions representing actual work performed — the first thing allowed to imply an appointment was fulfilled.
-6. Transactions, line items, and checkout.
+4. ~~Walk-ins and live queues.~~ Done — see "Current baseline" above.
+5. ~~Service sessions representing actual work performed — the first thing allowed to imply an appointment was fulfilled.~~ Done — see "Current baseline" above.
+6. Transactions, line items, and checkout — the next boundary.
 7. Payments, provider verification, and disputes.
 8. Commissions, reconciliation, and receipts.
 9. Subscription billing-provider integration.
@@ -225,20 +226,26 @@ Deliverables:
 - Provider availability calculation. Done — `AvailabilityEngineService`
   (docs/ARCHITECTURE.md section 6), exposed publicly through discovery
   and to authenticated staff.
-- Appointment create, confirm, check-in, cancel, and no-show. Create is
-  always CONFIRMED (there is no separate unconfirmed/requested state);
-  cancel and no-show are done. Check-in does not exist yet — it belongs
-  to the walk-in/queue phase below, where an appointment's customer
-  actually arrives.
-- Walk-in creation and live branch queue. Not started (item 4 of the
-  implementation sequence).
-- Queue call, assign, move, start, complete, and cancel actions. Not
-  started — depends on the queue above.
-- Service-session aggregate and provider attribution. Not started.
-  Deliberately: a CONFIRMED `Appointment` is a reservation only, never
-  treated as evidence that work happened or that revenue was earned
-  (docs/SECURITY.md section 30) — only a future `ServiceSession` can
-  establish that.
+- Appointment create, confirm, check-in, cancel, and no-show. Create,
+  cancel, and no-show are done. Check-in is done: `POST /v1/organizations/
+  :organizationId/appointments/:appointmentId/check-in` creates a
+  `QueueEntry` from a CONFIRMED appointment without mutating the
+  appointment itself, only on its own branch-local calendar date.
+- Walk-in creation and live branch queue. Done —
+  `POST /v1/organizations/:organizationId/branches/:branchId/queue/
+  walk-ins`, `GET .../queue`, and per-entry `queue-entries/:id/*`
+  commands (docs/API_SPEC.md section 16). `QueueEntry` itself is the
+  durable walk-in record; no separate `WalkIn` table exists.
+- Queue call, assign, return-to-waiting, cancel, no-show, and
+  start-service actions. Done. ("Move"/reorder is deliberately not
+  built — ordering is deterministic by priority, join time, and ticket
+  number.)
+- Service-session aggregate and provider attribution. Done —
+  `ServiceSession`/`ServiceSessionItem`, one primary provider per
+  session in V1, snapshotted name/duration/price/currency per item,
+  immutable once `COMPLETED`. A CONFIRMED `Appointment` remains a
+  reservation only; only `ServiceSession` completion establishes that
+  work happened (docs/SECURITY.md section 30/31).
 - Android operational screens connected to the API with cached reads. Not started.
 
 Critical tests:
@@ -249,16 +256,18 @@ Critical tests:
   range, proven under real concurrent requests
   (`test/appointment-booking.e2e-spec.ts`: 6 simultaneous identical
   booking requests, exactly 1 succeeds).
-- Walk-ins work without appointments. Not yet applicable — walk-ins do not exist yet.
+- Walk-ins work without appointments. Done — a walk-in creates its own
+  `CustomerRecord` and `QueueEntry` with no `Appointment` at all
+  (`test/queue-intake-and-commands.e2e-spec.ts`).
 - Appointments do not require payment records. Done — `Appointment` has
   no relationship to any payment/transaction concept, which do not exist
   yet either.
-- Service sessions preserve the staff member who performed each item. Not yet applicable — service sessions do not exist yet.
-- Concurrent queue changes resolve through revisions or conflicts. Not yet applicable — the queue does not exist yet. (`Appointment.version` already provides the same optimistic-concurrency pattern for reschedule/cancel races.)
+- Service sessions preserve the staff member who performed each item. Done — `ServiceSessionItem.staffProfileId` is snapshotted per item at start/replace time.
+- Concurrent queue changes resolve through revisions or conflicts. Done — `BranchQueueDay.revision` bumps atomically on every mutation; two partial PostgreSQL unique indexes (`WHERE status = 'IN_PROGRESS'`) prove at most one active session per staff member and per queue entry under real concurrent requests (`test/service-sessions.e2e-spec.ts`).
 
 Exit gate:
 
-- A receptionist and provider on separate emulator sessions can complete the operational flow through service completion. Blocked on Android API integration (item 14) and the walk-in/queue/service-session work above; the backend booking half (create, cancel, reschedule, no-show, double-booking prevention, idempotency) is done and tested.
+- A receptionist and provider on separate emulator sessions can complete the operational flow through service completion. Blocked on Android API integration (item 14); the backend half (booking, walk-in intake, appointment check-in, queue commands, and service-session start/items/complete/cancel) is done and tested.
 
 ## 10. Phase 6 — Financial core and verification
 
@@ -457,13 +466,16 @@ far requires bounded caching, job queues, or realtime coordination).
 Current: the database/tenancy foundation (this document's Phase 2),
 authentication and sessions, organization-scoped RBAC and subscription
 enforcement, staff invitations, public business discovery, the service
-catalogue, branch/staff scheduling, the availability engine, and atomic
+catalogue, branch/staff scheduling, the availability engine, atomic
 customer and staff-assisted appointment booking (with database-enforced
-double-booking prevention and idempotent booking commands) are done —
-see "Current baseline" above. The next step is item 4 of the
-implementation sequence: walk-ins and the live branch queue, the last
-piece Phase 5 above needs before service sessions (item 5) — the first
-concept allowed to imply an appointment was actually fulfilled — can
-begin. No further feature module is implemented until each prior one's
-quality gates (tests, lint, build, migration status) are green, per this
+double-booking prevention and idempotent booking commands), walk-in
+intake, appointment check-in, the live branch queue, and service
+sessions (with database-enforced single-active-session-per-staff/per-
+queue-entry protection and idempotent intake commands) are done — see
+"Current baseline" above. The next step is item 6 of the implementation
+sequence: transactions, line items, and checkout — the first concept
+allowed to represent money changing hands, built on top of a completed
+`ServiceSession` rather than an `Appointment` or `QueueEntry` directly.
+No further feature module is implemented until each prior one's quality
+gates (tests, lint, build, migration status) are green, per this
 document's delivery principle.

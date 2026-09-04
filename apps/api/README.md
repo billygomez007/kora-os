@@ -116,6 +116,37 @@ reservation only, never itself proof that work happened. See
 `docs/ARCHITECTURE.md` section 6 and `docs/SECURITY.md` section 30 for
 the full model.
 
+## Walk-ins, queue, and service sessions in one paragraph
+
+A customer arrives one of two ways: a genuine walk-in
+(`POST /v1/organizations/:organizationId/branches/:branchId/queue/walk-ins`,
+resolving or creating an organization-scoped `CustomerRecord` — a
+newly entered email/phone is never used to link an existing global
+`CustomerProfile`) or checking a `CONFIRMED` appointment into today's
+queue (`POST /v1/organizations/:organizationId/appointments/:appointmentId/check-in`,
+which never mutates the appointment itself). Either way, a `QueueEntry`
+is created in `WAITING` with an atomically issued, per-branch,
+per-branch-local-business-date ticket number (`BranchQueueDay`, a
+single native `INSERT ... ON CONFLICT DO UPDATE`) and moves through an
+explicit state machine (`GET`/`POST /v1/organizations/:organizationId/{branches/:branchId/queue,queue-entries/:id/{call,return-to-waiting,assign,cancel,no-show}}`)
+— `IN_SERVICE` and `COMPLETED` are reachable only by starting and
+completing a `ServiceSession`, never a direct command. Starting service
+(`POST .../queue-entries/:queueEntryId/start-service`) is one
+transaction: claim the queue entry, resolve and validate the provider,
+snapshot the requested services as `ServiceSessionItem` rows, move the
+entry to `IN_SERVICE`. Two partial PostgreSQL unique indexes (`WHERE
+status = 'IN_PROGRESS'`) guarantee at most one active session per staff
+member and per queue entry at the database level, so a failed start
+(`409 STAFF_ALREADY_SERVING` / `409 QUEUE_ENTRY_ALREADY_IN_SERVICE`)
+leaves the queue entry completely unchanged. A provider acts on their
+own session only (`service_sessions.perform`) unless granted
+`service_sessions.manage`. A completed `ServiceSession` is not a
+`Payment`, `Transaction`, `Receipt`, or `Commission` — `serviceTotalMinor`
+is the value of performed services, not proof money was received; none
+of those concepts exist in this codebase yet. See
+`docs/ARCHITECTURE.md` section 6 and `docs/SECURITY.md` section 31 for
+the full model.
+
 ## Useful root-level scripts
 
 Run from the repository root (see the root `package.json` for the full

@@ -3,7 +3,7 @@ import { isUniqueConstraintViolation } from '../../common/database/postgres-cons
 import { generateReference } from '../../common/identity/generate-reference.util.js';
 import { sumMinorAmounts } from '../../common/money/assert-safe-money-amount.util.js';
 import { PrismaService } from '../../database/prisma.service.js';
-import { CheckoutStatus, PaymentRecordStatus } from '../../generated/prisma/client.js';
+import { CheckoutStatus, PaymentRecordStatus, TransactionKind } from '../../generated/prisma/client.js';
 import type { Checkout, Prisma } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CommissionAccrualService } from '../commissions/commission-accrual.service.js';
@@ -86,6 +86,7 @@ export class TransactionPostingService {
             customerRecordId: checkout.customerRecordId,
             assignedStaffProfileId: checkout.assignedStaffProfileId,
             reference,
+            kind: TransactionKind.SALE,
             currency: checkout.currency,
             subtotalMinor: checkout.subtotalMinor,
             adjustmentTotalMinor: checkout.adjustmentTotalMinor,
@@ -171,17 +172,20 @@ export class TransactionPostingService {
   }
 
   /**
-   * Internal repair path — never exposed through any controller or
-   * unauthenticated route (docs task Phase 2: "must not be exposed as
-   * an unauthenticated or arbitrary public backfill endpoint"). Safe to
-   * call any number of times for the same `transactionId`: both
-   * `CommissionAccrualService.accrueForTransaction` and
-   * `ReceiptService.issueForTransaction` are themselves idempotent (they
-   * check what already exists before creating anything), so this simply
-   * re-runs the same derivation the original posting attempt did and
-   * fills in whatever is still missing — nothing more. `actor` is
+   * Internal repair path for a SALE Transaction only — never exposed
+   * through any controller or unauthenticated route (docs task Phase 2:
+   * "must not be exposed as an unauthenticated or arbitrary public
+   * backfill endpoint"). Safe to call any number of times for the same
+   * `transactionId`: both `CommissionAccrualService.accrueForTransaction`
+   * and `ReceiptService.issueForTransaction` are themselves idempotent
+   * (they check what already exists before creating anything), so this
+   * simply re-runs the same derivation the original posting attempt did
+   * and fills in whatever is still missing — nothing more. `actor` is
    * supplied by the caller (an internal ops tool or test), since a
-   * repair has no HTTP request of its own to attribute one from.
+   * repair has no HTTP request of its own to attribute one from. A
+   * REFUND/REVERSAL Transaction's own derived records (commission
+   * adjustments, corrective receipt) are the correction-execution flow's
+   * own concern (TransactionCorrectionsService), not this method's.
    */
   async ensureDerivedRecords(transactionId: string, actor: PostTransactionActor): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
@@ -189,6 +193,9 @@ export class TransactionPostingService {
         where: { id: transactionId },
         include: transactionViewInclude,
       });
+      if (transaction.kind !== TransactionKind.SALE || !transaction.checkoutId) {
+        throw new InternalServerErrorException('ensureDerivedRecords only supports a SALE transaction');
+      }
       const confirmedPayments = await tx.paymentRecord.findMany({
         where: { checkoutId: transaction.checkoutId, status: PaymentRecordStatus.CONFIRMED },
       });

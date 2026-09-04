@@ -29,12 +29,17 @@ export interface TransactionView {
   id: string;
   organizationId: string;
   branchId: string;
-  checkoutId: string;
-  serviceSessionId: string;
+  checkoutId: string | null;
+  serviceSessionId: string | null;
   customerRecordId: string;
   assignedStaffProfileId: string;
   reference: string;
   status: string;
+  /** SALE, REFUND, or REVERSAL (docs task Phase 3) — a REFUND/REVERSAL
+   * always carries `correctedTransactionId` and null checkout/service-
+   * session ids, since a correction has neither of its own. */
+  kind: string;
+  correctedTransactionId: string | null;
   currency: string;
   subtotalMinor: number;
   adjustmentTotalMinor: number;
@@ -47,10 +52,12 @@ export interface TransactionView {
 
 /**
  * The only thing a future reporting phase may ever count as business
- * revenue (docs task Phase 4) — every value here is copied at posting
- * time from an already-immutable Checkout snapshot, never recomputed
- * from live catalogue data. No commission, receipt, or refund field
- * exists on this view; none of those concepts are implemented yet.
+ * revenue (docs task Phase 4) when `kind === 'SALE'` — every value here
+ * is copied at posting time from an already-immutable Checkout snapshot,
+ * never recomputed from live catalogue data. `*Minor` fields are always
+ * non-negative magnitudes regardless of kind; a REFUND/REVERSAL's
+ * negative contribution to net revenue is derived at the reporting
+ * layer from `kind`, never stored as a negative value here.
  */
 export function toTransactionView(transaction: TransactionWithRelations): TransactionView {
   return {
@@ -63,6 +70,8 @@ export function toTransactionView(transaction: TransactionWithRelations): Transa
     assignedStaffProfileId: transaction.assignedStaffProfileId,
     reference: transaction.reference,
     status: transaction.status,
+    kind: transaction.kind,
+    correctedTransactionId: transaction.correctedTransactionId,
     currency: transaction.currency,
     subtotalMinor: transaction.subtotalMinor,
     adjustmentTotalMinor: transaction.adjustmentTotalMinor,

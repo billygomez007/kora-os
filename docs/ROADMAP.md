@@ -35,7 +35,7 @@ Completed:
 Current limitations:
 
 - Room is still the only working data store on Android and contains demonstration-oriented local behavior.
-- No real email delivery provider is integrated yet (`EmailOtpSender` fails closed in production and uses a local-only stdout catcher in development — see docs/SECURITY.md section 6); phone OTP and any external identity provider (Apple, Google) remain unimplemented.
+- No real email delivery provider is integrated yet (`EmailOtpSender` fails closed in production; development delivers through a local, credential-free Mailpit container over SMTP — see docs/SECURITY.md section 6); phone OTP and any external identity provider (Apple, Google) remain unimplemented.
 - Role/permission *management* endpoints (creating custom roles, editing a membership's roles or branches) are not implemented; every role assignment today comes from the seeded system roles via staff invitation.
 - Current Android roles are simulated locally and are not security controls, and Android does not yet call this API at all.
 - Payments and subscriptions are not connected to an authoritative backend, and no billing provider is integrated.

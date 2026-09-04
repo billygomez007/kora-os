@@ -13,11 +13,16 @@ Requires Node 24.19+, pnpm 11.21+, and Docker (for local PostgreSQL).
 ```bash
 # from the repository root
 pnpm install
-pnpm db:up          # starts PostgreSQL 18.6 in Docker on port 5433
+pnpm db:up          # starts PostgreSQL 18.6 and Mailpit in Docker
 ```
 
-Copy `.env.example` (repository root) to `.env` and fill in the two
-signing secrets, which are never committed and have no default value:
+`pnpm db:up` also starts [Mailpit](https://mailpit.axllent.org/), a
+local, credential-free SMTP catcher bound to `127.0.0.1` only
+(web UI + API on 8025, SMTP on 1025) — never used in production. Copy
+`.env.example` (repository root) to `.env` and fill in the three
+signing secrets, which are never committed and have no default value
+(the `EMAIL_DELIVERY_MODE`/`SMTP_*` values are already filled in with
+Mailpit's non-secret local defaults):
 
 ```bash
 openssl rand -base64 48   # JWT_ACCESS_SECRET
@@ -74,10 +79,13 @@ already-rotated one revokes the whole session. Send the access token as
 additionally need either an `X-Kora-Organization-Id` header or an
 `:organizationId` route param — that ID only *selects* which membership
 to check, it never grants access by itself. See `docs/API_SPEC.md` and
-`docs/SECURITY.md` for the full model. There is no real email provider
-wired in yet — locally, a sign-in code is printed to the terminal
-running `pnpm api:dev` (clearly labeled, development-only, never enabled
-in production; see `EmailOtpModule`).
+`docs/SECURITY.md` for the full model. No code is ever written to any
+application log — there is no console/stdout sender, in any
+environment. There is no real production email provider wired in yet;
+locally, `pnpm db:up` also starts a Mailpit container
+(`infrastructure/compose.yaml`) and codes are delivered to it over real
+SMTP — read them at http://127.0.0.1:8025 (see `EmailOtpModule` and
+`SmtpEmailOtpSender`).
 
 ## Useful root-level scripts
 

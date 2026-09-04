@@ -101,12 +101,24 @@ requests a new code the same way they always sign in.
   passkey/device-bound roadmap note at the end of this section.
 
 Email delivery itself goes through a provider-neutral `EmailOtpSender`
-port (docs/ARCHITECTURE.md section 6): tests inject an in-memory fake
-that never logs a code; local development uses a clearly-labeled,
-stdout-only sender that refuses to run when `NODE_ENV=production`;
-production has no real provider connected yet and fails closed (a
-`503`) rather than silently pretending a code was sent — see
-docs/ROADMAP.md for where a real provider integration lands.
+port (docs/ARCHITECTURE.md section 6), and no code is ever written to
+application logs, a container's stdout/stderr, or any other log
+destination by any sender — there is no "logging is fine as long as
+it's not the app's own logger" exception. Tests inject an in-memory fake
+that captures a code only inside the test process. Development and
+production share the same real implementation, an SMTP sender
+(nodemailer, with its `logger`/`debug` transport options — which would
+otherwise print the raw SMTP conversation, code included — explicitly
+off): development points it at a local, credential-free Mailpit
+container (`infrastructure/compose.yaml`, `pnpm db:up`; inspect
+delivered codes at `http://127.0.0.1:8025`, never enabled in
+production) via `EMAIL_DELIVERY_MODE=smtp`; production has no real
+provider connected yet, so it runs with delivery unconfigured and fails
+closed (a `503`) rather than silently pretending a code was sent — see
+docs/ROADMAP.md for where a real provider integration lands. A failed
+delivery also invalidates the challenge it belongs to immediately, the
+same as a resend would, so an undelivered code is never left active and
+guessable for its full TTL.
 
 Email OTP is Kora's chosen initial authentication method, but it is not
 phishing-resistant — a sufficiently well-crafted lookalike site can

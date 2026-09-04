@@ -23,7 +23,6 @@ import {
   type EmailOtpSender,
 } from './email-otp-sender.interface.js';
 import { computeOtpDigest, digestsMatch, generateOtpCode } from './otp-code.util.js';
-import { EmailDeliveryUnavailableError } from './unconfigured-email-otp-sender.js';
 
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const OTP_ERROR_BODY = {
@@ -127,7 +126,20 @@ export class EmailOtpService {
 
     try {
       await this.sender.send({ emailNormalized, code, expiresAt });
-    } catch (error) {
+    } catch {
+      // An undelivered challenge must not remain usable: the recipient
+      // never received the code, so nobody should be able to verify this
+      // challenge id at all — invalidate it the same as a resend would,
+      // rather than leaving it ACTIVE and guessable for its full TTL.
+      await this.prisma.emailOtpChallenge.updateMany({
+        where: { id: challengeId, status: OtpChallengeStatus.ACTIVE },
+        data: {
+          status: OtpChallengeStatus.INVALIDATED,
+          invalidatedAt: new Date(),
+        },
+      });
+      // Sanitized: no SMTP/provider internals, no message body, no code —
+      // just that delivery for this challenge failed.
       await this.auditService.record({
         actorUserId: existingUser?.id ?? null,
         action: 'auth.otp_delivery_failed',
@@ -136,13 +148,16 @@ export class EmailOtpService {
         requestId: input.requestId,
         source: 'auth',
       });
-      if (error instanceof EmailDeliveryUnavailableError) {
-        throw new ServiceUnavailableException({
-          code: 'EMAIL_DELIVERY_UNAVAILABLE',
-          message: 'Unable to deliver a sign-in code right now.',
-        });
-      }
-      throw error;
+      // This catch block wraps nothing but sender.send() — any error
+      // reaching it means delivery failed, so it always fails closed the
+      // same way (never leaking which sender or which internal error was
+      // involved), rather than trusting every sender implementation to
+      // throw exactly EmailDeliveryUnavailableError and falling through
+      // to a raw, unsanitized 500 for anything else.
+      throw new ServiceUnavailableException({
+        code: 'EMAIL_DELIVERY_UNAVAILABLE',
+        message: 'Unable to deliver a sign-in code right now.',
+      });
     }
 
     await this.auditService.record({

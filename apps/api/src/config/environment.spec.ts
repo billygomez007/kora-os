@@ -137,4 +137,90 @@ describe('validateEnvironment', () => {
       validateEnvironment({ REFRESH_TOKEN_TTL_DAYS: '0' }),
     ).toThrow('REFRESH_TOKEN_TTL_DAYS must be a positive integer');
   });
+
+  it('leaves email delivery unset by default, in every environment — the safe, fail-closed state', () => {
+    expect(validateEnvironment({})).toMatchObject({
+      EMAIL_DELIVERY_MODE: undefined,
+      SMTP_HOST: undefined,
+      SMTP_PORT: undefined,
+      SMTP_SECURE: undefined,
+      EMAIL_FROM: undefined,
+    });
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://user:pass@host:5432/db',
+        JWT_ACCESS_SECRET: 'a'.repeat(32),
+        REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
+        OTP_PEPPER: 'c'.repeat(32),
+      }),
+    ).toMatchObject({ EMAIL_DELIVERY_MODE: undefined });
+  });
+
+  it('rejects any EMAIL_DELIVERY_MODE other than "smtp" — no console or fake mode is a valid config value', () => {
+    expect(() =>
+      validateEnvironment({ EMAIL_DELIVERY_MODE: 'console' }),
+    ).toThrow('EMAIL_DELIVERY_MODE must be "smtp"');
+  });
+
+  it('requires SMTP_HOST, SMTP_PORT, SMTP_SECURE, and EMAIL_FROM when EMAIL_DELIVERY_MODE=smtp', () => {
+    expect(() =>
+      validateEnvironment({ EMAIL_DELIVERY_MODE: 'smtp' }),
+    ).toThrow('SMTP_HOST is required');
+
+    expect(() =>
+      validateEnvironment({ EMAIL_DELIVERY_MODE: 'smtp', SMTP_HOST: '127.0.0.1' }),
+    ).toThrow('SMTP_PORT must be an integer');
+
+    expect(() =>
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'smtp',
+        SMTP_HOST: '127.0.0.1',
+        SMTP_PORT: '1025',
+      }),
+    ).toThrow('SMTP_SECURE must be "true" or "false"');
+
+    expect(() =>
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'smtp',
+        SMTP_HOST: '127.0.0.1',
+        SMTP_PORT: '1025',
+        SMTP_SECURE: 'false',
+      }),
+    ).toThrow('EMAIL_FROM must be a non-empty address');
+  });
+
+  it('accepts a full local Mailpit SMTP configuration, with SMTP_USER/SMTP_PASSWORD optional', () => {
+    expect(
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'smtp',
+        SMTP_HOST: '127.0.0.1',
+        SMTP_PORT: '1025',
+        SMTP_SECURE: 'false',
+        EMAIL_FROM: 'Kora <no-reply@kora.local>',
+      }),
+    ).toMatchObject({
+      EMAIL_DELIVERY_MODE: 'smtp',
+      SMTP_HOST: '127.0.0.1',
+      SMTP_PORT: 1025,
+      SMTP_SECURE: false,
+      SMTP_USER: undefined,
+      SMTP_PASSWORD: undefined,
+      EMAIL_FROM: 'Kora <no-reply@kora.local>',
+    });
+  });
+
+  it('accepts SMTP_USER and SMTP_PASSWORD when a provider requires authentication', () => {
+    expect(
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'smtp',
+        SMTP_HOST: 'smtp.example.test',
+        SMTP_PORT: '587',
+        SMTP_SECURE: 'true',
+        SMTP_USER: 'a-user',
+        SMTP_PASSWORD: 'a-password',
+        EMAIL_FROM: 'Kora <no-reply@kora.example>',
+      }),
+    ).toMatchObject({ SMTP_USER: 'a-user', SMTP_PASSWORD: 'a-password' });
+  });
 });

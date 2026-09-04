@@ -24,6 +24,32 @@ services:
       start_period: 10s
     stop_grace_period: 30s
 
+  # Development-only local email catcher (docs/SECURITY.md section 6).
+  # Kora's SMTP EmailOtpSender points here in development so OTP emails
+  # can be inspected at http://127.0.0.1:8025 without a real provider or
+  # any credentials. Never referenced by any production configuration —
+  # a real provider is chosen and connected there later, not this image.
+  mailpit:
+    image: axllent/mailpit:v1.31.0
+    container_name: kora-mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025" # web UI + HTTP API
+      - "127.0.0.1:1025:1025" # SMTP
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --no-verbose
+        - --tries=1
+        - --spider
+        - http://127.0.0.1:8025/readyz
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    stop_grace_period: 10s
+
 volumes:
   kora_postgres_data:
     name: kora-postgres-data

@@ -15,6 +15,29 @@ export interface TestApp {
   prisma: PrismaService;
 }
 
+// Each test file boots (and tears down) a fresh Nest app per test, dozens
+// of times across a suite run. Leaving the port to supertest's default
+// `listen(0)` hands each app an OS-assigned ephemeral port, and the OS is
+// free to reuse a very recently released one — including one whose prior
+// occupant still has a connection in TIME_WAIT at the kernel level, below
+// anything forceCloseConnections (Node/Nest-level socket tracking) can see
+// or control. That reuse was reproducible (~1 in 10 runs) even after
+// forceCloseConnections, always as a stray "Parse Error: Expected HTTP/,
+// RTSP/ or ICE/" on some unrelated test. Assigning each app its own
+// monotonically increasing port for the lifetime of the test process
+// means no two test apps ever share a port number, removing the reuse
+// race outright rather than narrowing its window.
+const TEST_PORT_BASE = 34_500;
+let nextTestPort = TEST_PORT_BASE;
+/** Exported so a test file that needs to bootstrap its own app outside
+ * createTestApp (e.g. to override EMAIL_OTP_SENDER with something other
+ * than the fake) can still avoid ephemeral-port reuse the same way. */
+export function claimTestPort(): number {
+  const port = nextTestPort;
+  nextTestPort += 1;
+  return port;
+}
+
 /**
  * Boots a real Nest application from AppModule with the EMAIL_OTP_SENDER
  * provider overridden to a fresh FakeEmailOtpSender the caller can read
@@ -35,9 +58,24 @@ export async function createTestApp(
     .useValue(fakeEmailOtpSender)
     .compile();
 
-  const app = moduleFixture.createNestApplication();
+  // forceCloseConnections is required here, not optional. Nest's Express
+  // adapter only destroys lingering sockets on close() when this flag is
+  // set (see ExpressAdapter#trackOpenConnections/closeOpenConnections in
+  // @nestjs/platform-express); without it, close() just calls Node's
+  // plain `httpServer.close()`, which waits for existing connections —
+  // including idle keep-alive ones — to end on their own. Because this
+  // suite creates and destroys a fresh Nest app (and a fresh ephemeral
+  // supertest port) per test, an occasional slow-to-close socket let the
+  // OS hand the next test a port with a stale connection still attached
+  // to it, surfacing as "Parse Error: Expected HTTP/, RTSP/ or ICE/",
+  // spurious 404s on routes that do exist, or a hung request timing out
+  // at 20s — all observed, all on otherwise-unrelated tests, consistent
+  // with connection/port reuse rather than any single test's logic.
+  const app = moduleFixture.createNestApplication({
+    forceCloseConnections: true,
+  });
   configureApplication(app);
-  await app.init();
+  await app.listen(claimTestPort(), '127.0.0.1');
 
   const prisma = app.get(PrismaService);
   // EmailOtpService's per-IP request limit is intentionally backed by the

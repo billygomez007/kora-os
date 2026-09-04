@@ -24,6 +24,13 @@ export interface KoraEnvironment extends Record<string, unknown> {
   OTP_RESEND_COOLDOWN_SECONDS: number;
   OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: number;
   OTP_MAX_REQUESTS_PER_IP_PER_HOUR: number;
+  EMAIL_DELIVERY_MODE?: 'smtp';
+  SMTP_HOST?: string;
+  SMTP_PORT?: number;
+  SMTP_SECURE?: boolean;
+  SMTP_USER?: string;
+  SMTP_PASSWORD?: string;
+  EMAIL_FROM?: string;
 }
 
 export function validateEnvironment(
@@ -119,6 +126,16 @@ export function validateEnvironment(
     20,
   );
 
+  const {
+    emailDeliveryMode,
+    smtpHost,
+    smtpPort,
+    smtpSecure,
+    smtpUser,
+    smtpPassword,
+    emailFrom,
+  } = validateEmailDeliveryConfig(input);
+
   return {
     ...input,
     NODE_ENV: nodeEnvironment as NodeEnvironment,
@@ -136,6 +153,13 @@ export function validateEnvironment(
     OTP_RESEND_COOLDOWN_SECONDS: otpResendCooldownSeconds,
     OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: otpMaxRequestsPerEmailPerHour,
     OTP_MAX_REQUESTS_PER_IP_PER_HOUR: otpMaxRequestsPerIpPerHour,
+    EMAIL_DELIVERY_MODE: emailDeliveryMode,
+    SMTP_HOST: smtpHost,
+    SMTP_PORT: smtpPort,
+    SMTP_SECURE: smtpSecure,
+    SMTP_USER: smtpUser,
+    SMTP_PASSWORD: smtpPassword,
+    EMAIL_FROM: emailFrom,
   };
 }
 
@@ -189,4 +213,108 @@ function requirePositiveInteger(
     throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+interface EmailDeliveryConfig {
+  emailDeliveryMode: 'smtp' | undefined;
+  smtpHost: string | undefined;
+  smtpPort: number | undefined;
+  smtpSecure: boolean | undefined;
+  smtpUser: string | undefined;
+  smtpPassword: string | undefined;
+  emailFrom: string | undefined;
+}
+
+/**
+ * EMAIL_DELIVERY_MODE is the one switch that can turn on real email
+ * delivery, in every environment alike (docs task hardening: "Production
+ * must require an explicitly configured real email delivery mode" —
+ * applied uniformly here rather than as a production-only special case,
+ * so there is no implicit "development gets a working sender for free"
+ * path either). Leaving it unset is always valid and always safe: it
+ * means EmailOtpModule falls back to UnconfiguredEmailOtpSender, which
+ * fails closed rather than pretending to deliver. The only accepted
+ * value is "smtp" — there is deliberately no "console"/"dev"/"fake"
+ * value that configuration could ever select.
+ */
+function validateEmailDeliveryConfig(
+  input: Record<string, unknown>,
+): EmailDeliveryConfig {
+  const rawMode =
+    typeof input.EMAIL_DELIVERY_MODE === 'string'
+      ? input.EMAIL_DELIVERY_MODE.trim()
+      : '';
+  const emailDeliveryMode = rawMode.length > 0 ? rawMode : undefined;
+  if (emailDeliveryMode !== undefined && emailDeliveryMode !== 'smtp') {
+    throw new Error(
+      'EMAIL_DELIVERY_MODE must be "smtp" if set, and left unset to use no email delivery (fails closed)',
+    );
+  }
+
+  const smtpUser = optionalString(input.SMTP_USER);
+  const smtpPassword = optionalString(input.SMTP_PASSWORD);
+
+  if (emailDeliveryMode !== 'smtp') {
+    return {
+      emailDeliveryMode,
+      smtpHost: undefined,
+      smtpPort: undefined,
+      smtpSecure: undefined,
+      smtpUser,
+      smtpPassword,
+      emailFrom: undefined,
+    };
+  }
+
+  const smtpHost = optionalString(input.SMTP_HOST);
+  if (!smtpHost) {
+    throw new Error('SMTP_HOST is required when EMAIL_DELIVERY_MODE=smtp');
+  }
+  const smtpPort = Number(input.SMTP_PORT);
+  if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65_535) {
+    throw new Error(
+      'SMTP_PORT must be an integer between 1 and 65535 when EMAIL_DELIVERY_MODE=smtp',
+    );
+  }
+  const smtpSecure = parseRequiredBoolean(
+    'SMTP_SECURE',
+    input.SMTP_SECURE,
+    'smtp',
+  );
+  const emailFrom = optionalString(input.EMAIL_FROM);
+  if (!emailFrom || !emailFrom.includes('@')) {
+    throw new Error(
+      'EMAIL_FROM must be a non-empty address when EMAIL_DELIVERY_MODE=smtp',
+    );
+  }
+
+  return {
+    emailDeliveryMode,
+    smtpHost,
+    smtpPort,
+    smtpSecure,
+    smtpUser,
+    smtpPassword,
+    emailFrom,
+  };
+}
+
+function optionalString(value: unknown): string | undefined {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseRequiredBoolean(
+  name: string,
+  value: unknown,
+  requiredForMode: string,
+): boolean {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error(
+    `${name} must be "true" or "false" when EMAIL_DELIVERY_MODE=${requiredForMode}`,
+  );
 }

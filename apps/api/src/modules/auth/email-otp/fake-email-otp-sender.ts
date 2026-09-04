@@ -5,11 +5,17 @@ import type {
 } from './email-otp-sender.interface.js';
 
 /**
- * Test double (docs task Phase D: "Tests must use an injected fake
- * sender that captures codes without logging them"). Captures deliveries
- * in memory only — never via `console`/`Logger` — so tests can retrieve
- * the code a real user would have received by email, without that value
- * ever touching application logs.
+ * Test double. Captures deliveries in memory only, inside this test
+ * process — never via `console`/`Logger` and never over a real network
+ * connection — so tests can retrieve the code a real user would have
+ * received by email, without that value ever touching application logs.
+ *
+ * Only `createEmailOtpSender` (email-otp-sender.factory.ts) constructs
+ * this class, and only when NODE_ENV=test; no development or production
+ * configuration can select it. Tests that need to read a code back
+ * should get an instance through that factory path — e.g. via
+ * `EMAIL_OTP_SENDER` — rather than constructing one directly and wiring
+ * it in some other way, so that invariant stays enforced in one place.
  */
 @Injectable()
 export class FakeEmailOtpSender implements EmailOtpSender {

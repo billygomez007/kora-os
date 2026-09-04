@@ -41,4 +41,9 @@ export class ReportsController {
   async commissions(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {
     return this.reportsService.commissions(tenant, query);
   }
+
+  @Get('cash-reconciliation')
+  async cashReconciliation(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {
+    return this.reportsService.cashReconciliation(tenant, query);
+  }
 }

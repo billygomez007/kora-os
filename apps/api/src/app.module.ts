@@ -16,12 +16,15 @@ import { AuthModule } from './modules/auth/auth.module.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
 import { AvailabilityModule } from './modules/availability/availability.module.js';
 import { CheckoutsModule } from './modules/checkouts/checkouts.module.js';
+import { CommissionsModule } from './modules/commissions/commissions.module.js';
 import { CustomerProfileModule } from './modules/customer-profile/customer-profile.module.js';
 import { DiscoveryModule } from './modules/discovery/discovery.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
 import { QueueModule } from './modules/queue/queue.module.js';
+import { ReceiptsModule } from './modules/receipts/receipts.module.js';
+import { ReportsModule } from './modules/reports/reports.module.js';
 import { SchedulingModule } from './modules/scheduling/scheduling.module.js';
 import { ServiceSessionsModule } from './modules/service-sessions/service-sessions.module.js';
 import { ServicesModule } from './modules/services/services.module.js';
@@ -66,8 +69,11 @@ const repositoryRootEnvPath = path.resolve(
     ServiceSessionsModule,
     QueueModule,
     CheckoutsModule,
+    CommissionsModule,
+    ReceiptsModule,
     TransactionsModule,
     PaymentsModule,
+    ReportsModule,
     AuthModule,
     HealthModule,
   ],

@@ -4,6 +4,15 @@ import type { BookableFixture } from './appointment-test-fixtures.js';
 import { authed, signInWithEmailOtp, type TestApp } from './otp-test-helpers.js';
 import { assignSystemRole } from './queue-test-fixtures.js';
 
+export interface PostedTransactionResult {
+  serviceSessionId: string;
+  customerRecordId: string;
+  checkoutId: string;
+  checkoutTotalMinor: number;
+  paymentId: string;
+  transactionId: string;
+}
+
 export interface FinancialActor {
   accessToken: string;
   userId: string;
@@ -113,4 +122,50 @@ export async function createCompletedServiceSession(
     .expect(201);
 
   return { serviceSessionId, queueEntryId, customerRecordId };
+}
+
+/**
+ * The full chain end to end, through the real HTTP API: walk-in ->
+ * start-service -> complete -> checkout -> record a single full-amount
+ * CASH payment -> the assigned provider confirms it, which atomically
+ * posts the Transaction (and, as of the commission/receipt stage, its
+ * CommissionAccrual rows and Receipt). Every commission/receipt/report
+ * e2e test builds on this as its starting point rather than
+ * re-deriving the chain itself.
+ */
+export async function createPostedTransaction(
+  testApp: TestApp,
+  fixture: BookableFixture,
+  receptionistAccessToken: string,
+  cashierAccessToken: string,
+  overrides: { serviceIds?: string[] } = {},
+): Promise<PostedTransactionResult> {
+  const { serviceSessionId, customerRecordId } = await createCompletedServiceSession(
+    testApp,
+    fixture,
+    receptionistAccessToken,
+    overrides,
+  );
+
+  const checkout = await authed(testApp, receptionistAccessToken)
+    .post(`/v1/organizations/${fixture.organizationId}/service-sessions/${serviceSessionId}/checkout`)
+    .expect(201);
+  const checkoutId: string = checkout.body.data.id;
+  const checkoutTotalMinor: number = checkout.body.data.totalMinor;
+
+  const payment = await authed(testApp, cashierAccessToken)
+    .post(`/v1/organizations/${fixture.organizationId}/checkouts/${checkoutId}/payments`)
+    .set('Idempotency-Key', randomUUID())
+    .send({ method: 'CASH', appliedAmountMinor: checkoutTotalMinor, currency: fixture.serviceCurrency })
+    .expect(201);
+  const paymentId: string = payment.body.data.id;
+
+  await authed(testApp, fixture.providerAccessToken)
+    .post(`/v1/organizations/${fixture.organizationId}/payments/${paymentId}/confirm`)
+    .send({})
+    .expect(201);
+
+  const transaction = await testApp.prisma.transaction.findFirstOrThrow({ where: { checkoutId } });
+
+  return { serviceSessionId, customerRecordId, checkoutId, checkoutTotalMinor, paymentId, transactionId: transaction.id };
 }

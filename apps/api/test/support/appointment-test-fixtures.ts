@@ -29,6 +29,7 @@ export interface BookableFixture {
   providerStaffProfileId: string;
   providerUserId: string;
   providerMembershipId: string;
+  providerAccessToken: string;
 }
 
 let counter = 0;
@@ -114,6 +115,18 @@ export async function createBookableFixture(
       isBookable: true,
     },
   });
+  // Gives the provider real permissions (service_sessions.perform,
+  // queue.read, ...) so queue/service-session e2e tests can authenticate
+  // as this same user — appointment tests never did, so this is purely
+  // additive.
+  const serviceProviderRole = await prisma.role.findFirst({
+    where: { organizationId: null, code: 'service_provider' },
+  });
+  if (serviceProviderRole) {
+    await prisma.membershipRole.create({
+      data: { organizationId, membershipId: providerMembership.id, roleId: serviceProviderRole.id },
+    });
+  }
 
   // Every day of the week, 09:00-17:00 local — simple and generous
   // enough that lead-time-bounded "near future" slots are always
@@ -186,6 +199,7 @@ export async function createBookableFixture(
     providerStaffProfileId: providerStaffProfile.id,
     providerUserId: provider.userId,
     providerMembershipId: providerMembership.id,
+    providerAccessToken: provider.accessToken,
   };
 }
 
@@ -219,15 +233,24 @@ function toVisibility(value: 'PUBLIC' | 'LINK_ONLY' | 'PRIVATE'): BusinessProfil
  * request per item) start exceeding the global request throttle once
  * enough uncleaned fixtures had accumulated across a full suite run.
  *
- * Deletion order matters: Appointment holds RESTRICT foreign keys to
- * Branch/CustomerRecord/StaffProfile, so it must be cleared before the
- * cascade from deleting the Organization itself can reach those tables.
+ * Deletion order matters: Appointment, QueueEntry, and ServiceSession all
+ * hold RESTRICT foreign keys to Branch/CustomerRecord/StaffProfile/
+ * OrganizationMembership, so each must be cleared before the cascade
+ * from deleting the Organization itself can reach those tables — and
+ * ServiceSession itself RESTRICTs against QueueEntry and (nullably)
+ * Appointment, so it must go first.
  */
 export async function cleanupAllBookableFixtures(testApp: TestApp): Promise<void> {
   const organizationIds = createdOrganizationIdsByTestApp.get(testApp) ?? [];
   if (organizationIds.length === 0) {
     return;
   }
+  await testApp.prisma.serviceSession.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.queueEntry.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
   await testApp.prisma.appointment.deleteMany({
     where: { organizationId: { in: organizationIds } },
   });

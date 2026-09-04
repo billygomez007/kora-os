@@ -17,5 +17,12 @@ export default defineConfig({
     // multi-request flows (e.g. staff invitation creation + acceptance).
     fileParallelism: false,
     testTimeout: 20_000,
+    // Queue/service-session fixtures (extendWithQueueRoles) add two more
+    // real OTP sign-ins on top of createBookableFixture's own two,
+    // occasionally pushing a `beforeEach` past the default 10s
+    // hookTimeout under load — the same "real requests against a shared
+    // Postgres container" reasoning as testTimeout above, just for setup
+    // rather than test bodies.
+    hookTimeout: 20_000,
   },
 });

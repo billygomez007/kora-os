@@ -153,6 +153,7 @@ const SYSTEM_ROLES: ReadonlyArray<{
       'customers.read',
       'appointments.read',
       'queue.read',
+      'service_sessions.read',
       'transactions.read',
       'transactions.create',
       'payments.read',

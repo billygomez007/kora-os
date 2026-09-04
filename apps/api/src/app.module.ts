@@ -19,7 +19,9 @@ import { CustomerProfileModule } from './modules/customer-profile/customer-profi
 import { DiscoveryModule } from './modules/discovery/discovery.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
+import { QueueModule } from './modules/queue/queue.module.js';
 import { SchedulingModule } from './modules/scheduling/scheduling.module.js';
+import { ServiceSessionsModule } from './modules/service-sessions/service-sessions.module.js';
 import { ServicesModule } from './modules/services/services.module.js';
 import { StaffInvitationsModule } from './modules/staff-invitations/staff-invitations.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
@@ -58,6 +60,8 @@ const repositoryRootEnvPath = path.resolve(
     AvailabilityModule,
     CustomerProfileModule,
     AppointmentsModule,
+    ServiceSessionsModule,
+    QueueModule,
     AuthModule,
     HealthModule,
   ],

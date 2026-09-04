@@ -7,14 +7,20 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { ApiExceptionFilter } from './common/http/api-exception.filter.js';
+import { DomainEventsModule } from './common/events/domain-events.module.js';
 import { validateEnvironment } from './config/environment.js';
 import { DatabaseModule } from './database/database.module.js';
+import { AppointmentsModule } from './modules/appointments/appointments.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard.js';
+import { AvailabilityModule } from './modules/availability/availability.module.js';
+import { CustomerProfileModule } from './modules/customer-profile/customer-profile.module.js';
 import { DiscoveryModule } from './modules/discovery/discovery.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
+import { SchedulingModule } from './modules/scheduling/scheduling.module.js';
+import { ServicesModule } from './modules/services/services.module.js';
 import { StaffInvitationsModule } from './modules/staff-invitations/staff-invitations.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
 
@@ -41,11 +47,17 @@ const repositoryRootEnvPath = path.resolve(
     // apply a stricter per-route @Throttle() limit (see AuthController).
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
     DatabaseModule,
+    DomainEventsModule,
     AuditModule,
     SubscriptionsModule,
     OrganizationsModule,
     StaffInvitationsModule,
     DiscoveryModule,
+    ServicesModule,
+    SchedulingModule,
+    AvailabilityModule,
+    CustomerProfileModule,
+    AppointmentsModule,
     AuthModule,
     HealthModule,
   ],

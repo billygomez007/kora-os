@@ -415,13 +415,14 @@ model Organization {
   appointmentStatusHistory    AppointmentStatusHistory[]
   appointmentIdempotencyKeys  AppointmentIdempotencyKey[]
 
-  branchQueueDays            BranchQueueDay[]
-  queueEntries               QueueEntry[]
-  queueEntryServices         QueueEntryService[]
-  queueEntryStatusHistory    QueueEntryStatusHistory[]
-  queueIntakeIdempotencyKeys QueueIntakeIdempotencyKey[]
-  serviceSessions            ServiceSession[]
-  serviceSessionItems        ServiceSessionItem[]
+  branchQueueDays             BranchQueueDay[]
+  queueEntries                QueueEntry[]
+  queueEntryServices          QueueEntryService[]
+  queueEntryStatusHistory     QueueEntryStatusHistory[]
+  queueIntakeIdempotencyKeys  QueueIntakeIdempotencyKey[]
+  serviceSessions             ServiceSession[]
+  serviceSessionItems         ServiceSessionItem[]
+  serviceSessionStatusHistory ServiceSessionStatusHistory[]
 
   @@map("organizations")
 }
@@ -1761,7 +1762,8 @@ model ServiceSession {
   createdByMembership   OrganizationMembership  @relation("ServiceSessionCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
   completedByMembership OrganizationMembership? @relation("ServiceSessionCompletedBy", fields: [organizationId, completedByMembershipId], references: [organizationId, id], onDelete: Restrict)
 
-  items ServiceSessionItem[]
+  items         ServiceSessionItem[]
+  statusHistory ServiceSessionStatusHistory[]
 
   @@index([organizationId, branchId, status])
   @@index([organizationId, assignedStaffProfileId, status])
@@ -1796,4 +1798,45 @@ model ServiceSessionItem {
 
   @@index([serviceSessionId, displayOrder])
   @@map("service_session_items")
+}
+
+/// Append-only domain lifecycle ledger for one ServiceSession (docs
+/// task "ServiceSession status history" correction) — the ServiceSession
+/// equivalent of QueueEntryStatusHistory/AppointmentStatusHistory, and
+/// deliberately separate from the global AuditEvent trail (section 19):
+/// AuditEvent is the platform-wide, cross-entity security/operational
+/// record every mutation writes to regardless of type; this table is
+/// the typed, queryable lifecycle of *this one aggregate*, structured
+/// for the same kind of reporting/timeline UI the queue and appointment
+/// history tables already support. Both are written on every session
+/// transition — neither replaces the other.
+///
+/// `previousStatus` is null only for the row created alongside session
+/// start (no status before IN_PROGRESS); a CHECK constraint added by
+/// hand in this phase's migration enforces that a row targets
+/// IN_PROGRESS if and only if `previousStatus` is null, since no
+/// transition other than session start ever produces IN_PROGRESS.
+/// `cancelDisposition` is set if and only if `newStatus` is CANCELLED,
+/// also CHECK-enforced. Only ServiceSessionsService ever writes here,
+/// always inside the same transaction as the status-change update
+/// itself — no update or delete path is exposed through application
+/// services, matching QueueEntryStatusHistory/AppointmentStatusHistory.
+model ServiceSessionStatusHistory {
+  id                String                           @id @default(uuid()) @db.Uuid
+  organizationId    String                           @map("organization_id") @db.Uuid
+  serviceSessionId  String                           @map("service_session_id") @db.Uuid
+  previousStatus    ServiceSessionStatus?            @map("previous_status")
+  newStatus         ServiceSessionStatus             @map("new_status")
+  actorUserId       String?                          @map("actor_user_id") @db.Uuid
+  actorMembershipId String?                          @map("actor_membership_id") @db.Uuid
+  reason            String?
+  cancelDisposition ServiceSessionCancelDisposition? @map("cancel_disposition")
+  occurredAt        DateTime                         @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceSession ServiceSession @relation(fields: [serviceSessionId], references: [id], onDelete: Cascade)
+
+  @@index([serviceSessionId, occurredAt])
+  @@index([organizationId, occurredAt])
+  @@map("service_session_status_history")
 }

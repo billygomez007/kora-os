@@ -7,6 +7,7 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
+import { IsIanaTimeZone } from '../../../common/scheduling/iana-timezone.util.js';
 
 class PrimaryBranchDto {
   @IsString()
@@ -40,6 +41,7 @@ export class CreateOrganizationDto {
 
   @IsString()
   @MaxLength(80)
+  @IsIanaTimeZone()
   timeZone!: string;
 
   @IsString()

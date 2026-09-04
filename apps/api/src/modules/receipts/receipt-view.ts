@@ -3,6 +3,11 @@ import type { Prisma } from '../../generated/prisma/client.js';
 export const receiptViewInclude = {
   lineItems: true,
   paymentSummaries: true,
+  // Only ever populated for a corrective receipt; both Receipt and
+  // Transaction are immutable once created, so joining to them at read
+  // time (rather than a further denormalized snapshot column) is safe
+  // and always yields unchanging historical data.
+  originalReceipt: { select: { receiptNumber: true, transaction: { select: { reference: true } } } },
 } satisfies Prisma.ReceiptInclude;
 
 type ReceiptWithRelations = Prisma.ReceiptGetPayload<{ include: typeof receiptViewInclude }>;
@@ -33,6 +38,14 @@ export interface ReceiptView {
   customerRecordId: string;
   receiptNumber: string;
   sequenceNumber: number;
+  /** SALE_RECEIPT, REFUND_RECEIPT, or REVERSAL_RECORD (docs task Phase
+   * 5) — never a statutory tax invoice or credit note. */
+  kind: string;
+  originalReceiptId: string | null;
+  originalReceiptNumber: string | null;
+  originalTransactionReference: string | null;
+  correctionReason: string | null;
+  remainingRefundableMinor: number | null;
   businessName: string;
   branchName: string;
   branchPhone: string | null;
@@ -63,6 +76,12 @@ export function toReceiptView(receipt: ReceiptWithRelations): ReceiptView {
     customerRecordId: receipt.customerRecordId,
     receiptNumber: receipt.receiptNumber,
     sequenceNumber: receipt.sequenceNumber,
+    kind: receipt.kind,
+    originalReceiptId: receipt.originalReceiptId,
+    originalReceiptNumber: receipt.originalReceipt?.receiptNumber ?? null,
+    originalTransactionReference: receipt.originalReceipt?.transaction.reference ?? null,
+    correctionReason: receipt.correctionReason,
+    remainingRefundableMinor: receipt.remainingRefundableMinorSnapshot,
     businessName: receipt.businessNameSnapshot,
     branchName: receipt.branchNameSnapshot,
     branchPhone: receipt.branchPhoneSnapshot,

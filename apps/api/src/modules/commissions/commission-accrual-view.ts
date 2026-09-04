@@ -7,6 +7,13 @@ export interface CommissionAccrualView {
   transactionLineItemId: string;
   staffProfileId: string;
   commissionRuleId: string | null;
+  /** EARNED (a normal sale accrual) or REFUNDED/REVERSED (a corrective
+   * adjustment — docs task Phase 4). Always a non-negative magnitude;
+   * the reporting layer derives the reduction from `kind`. */
+  kind: string;
+  /** The EARNED accrual this row adjusts — set only for REFUNDED/
+   * REVERSED. */
+  originalAccrualId: string | null;
   source: string;
   ruleTypeSnapshot: string | null;
   rateBasisPointsSnapshot: number | null;
@@ -33,6 +40,8 @@ export function toCommissionAccrualView(accrual: CommissionAccrual): CommissionA
     transactionLineItemId: accrual.transactionLineItemId,
     staffProfileId: accrual.staffProfileId,
     commissionRuleId: accrual.commissionRuleId,
+    kind: accrual.kind,
+    originalAccrualId: accrual.originalAccrualId,
     source: accrual.source,
     ruleTypeSnapshot: accrual.ruleTypeSnapshot,
     rateBasisPointsSnapshot: accrual.rateBasisPointsSnapshot,

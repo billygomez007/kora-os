@@ -437,3 +437,147 @@ which fields and which rows are reachable, enforced structurally:
   a profile cannot be published with zero discoverable branches, so a
   customer can never land on a published business with nowhere to
   actually go.
+
+## 30. Service catalogue, availability, and appointment booking
+
+**Kora remains passwordless.** Nothing in this phase's work introduces a
+credential of any kind — a customer books using the same email-OTP
+session as everywhere else in the product (section 6); there is no
+booking-specific password, PIN, or guest-checkout secret.
+
+**Appointment is not a `ServiceSession`, a `Payment`, or a
+`Transaction`.** None of those concepts exist in the schema yet. A
+`CONFIRMED` appointment is a reservation, nothing more — it is never
+treated as evidence that work happened or that revenue was earned. Its
+status can only become `CANCELLED` or `NO_SHOW`; there is deliberately
+no `COMPLETED` value, because completion is a claim only a future
+`ServiceSession` can substantiate. A cancelled or no-show appointment
+must never become verified revenue, and nothing in this phase computes
+revenue from an appointment at all.
+
+**Prices and durations are server-authoritative.** A booking request
+(customer or staff-assisted) carries only a business slug, branch,
+ordered service IDs, an optional specific provider, and a requested
+start time — never a price, a duration, or an end time. Every price and
+duration is resolved server-side from `Service`, any `BranchService`
+branch-level override, and (for duration only) any staff-specific
+override on `StaffServiceAssignment`; a client value for any of these,
+even if somehow supplied, is never read.
+
+**Appointment history uses snapshots.** `AppointmentItem` stores its own
+`service_name_snapshot`/`duration_minutes_snapshot`/
+`price_minor_snapshot`/`currency_snapshot` at booking time. Archiving or
+editing a `Service` afterward never rewrites a past appointment's
+record — verified directly (`test/service-catalogue.e2e-spec.ts`: a
+booked appointment's item snapshot is unchanged after the underlying
+service's name, price, and duration are all edited).
+
+**Availability results are advisory; booking creation is the
+authoritative atomic reservation.** `AvailabilityEngineService`
+(docs/ARCHITECTURE.md section 6) computes a snapshot of currently
+bookable slots from current catalogue, schedule, and appointment state —
+nothing about calling it reserves anything, and its result can be stale
+by the time a booking request arrives. `AppointmentBookingService` never
+trusts a prior availability read: it re-resolves eligibility and
+provider selection, then relies on the database itself — not
+application-level re-checking — as the final word on whether a specific
+slot is actually free.
+
+**Double-booking prevention is database enforced.** A PostgreSQL
+`EXCLUDE` constraint (`appointments_no_staff_double_booking`, requiring
+the `btree_gist` extension for a GiST equality operator class on the
+assigned staff member's `uuid` column, combined with `tstzrange` overlap
+on the *occupied* UTC window — service time plus branch buffers) rejects
+a genuinely conflicting insert or update at the database level,
+regardless of what the application layer believed was free. `[)` range
+bounds mean two exactly back-to-back appointments are adjacent, not
+overlapping, and both are allowed; cancelled appointments are excluded
+from the constraint entirely (it applies only to `CONFIRMED` rows) and
+so never block a slot. Two simultaneous identical booking requests are
+proven to resolve to exactly one success
+(`test/appointment-booking.e2e-spec.ts`: 6 concurrent requests for the
+same provider and time, exactly 1 succeeds, the other 5 receive a
+generic `409 SLOT_UNAVAILABLE` — the underlying PostgreSQL exclusion-
+violation SQLSTATE and constraint name are never included in the
+response; see `isExclusionConstraintViolation` in
+`apps/api/src/common/database/postgres-constraint-error.util.ts`).
+Rescheduling reuses the same constraint inside the same transaction as
+the move itself, so a failed reschedule always leaves the original
+appointment completely unchanged — there is no separate
+revalidate-then-write step for a race to land between.
+
+A client-generated idempotency key (`AppointmentIdempotencyKey`, scoped
+to the authenticated customer, never accepted as a bare identifier from
+an unauthenticated caller) makes a retried or duplicated booking request
+return the original appointment rather than create a second one;
+reusing a key with a materially different request is rejected as a
+conflict rather than silently honored either way.
+
+**Branch-local schedules are converted to UTC**, always server-side and
+always through the branch's own `time_zone` (an IANA identifier,
+format-validated via `Intl.DateTimeFormat` at organization creation —
+`Africa/Accra` is the safe default for existing Ghana development
+branches, not a platform-wide assumption). `BranchBusinessHours`,
+`StaffAvailabilityRule`, and schedule-exception local times are plain
+`"HH:mm"` wall-clock strings with no timezone of their own; every
+conversion to or from a UTC instant happens in one place
+(`apps/api/src/common/scheduling/local-time.util.ts`), verified
+correct across a zone with no DST (`Africa/Accra`), a fixed
+non-UTC-zero offset (`Africa/Johannesburg`), and a DST transition
+(`America/New_York`).
+
+**Customer records are tenant scoped.** `CustomerRecord` — one
+organization's own knowledge of a customer, created automatically on
+that customer's first booking with that organization — is never
+joinable with, or visible to, another organization; there is no
+relationship between two organizations' `CustomerRecord` rows for the
+same person at all, the same structural isolation section 8 describes
+for every other tenant-owned table. A business appointment response
+includes only the customer information necessary to provide the booked
+service (name/contact detail from that organization's own
+`CustomerRecord`) — never full global customer information or
+cross-organization history.
+
+Booking-related permissions (`services.read`/`services.manage`,
+`availability.read`/`availability.manage`, `appointments.read`/
+`appointments.manage`) follow section 9's existing model exactly: fresh
+per-request resolution, no caching, no trust in a token or request
+body. A `READ_ONLY` subscription may read this configuration but not
+mutate it; a `BLOCKED` or `READ_ONLY` subscription rejects a new
+customer booking with a generic `409 SUBSCRIPTION_UNAVAILABLE` (checked
+explicitly for the customer path, since it reaches the organization by
+public slug rather than through `TenantAccessGuard`; the staff-assisted
+path already goes through that guard, which enforces the same rule).
+
+No notification provider is integrated for booking confirmations yet.
+`DomainEventEmitter` (`apps/api/src/common/events/`) emits named,
+in-process events — `ServiceCreated`, `AvailabilityChanged`,
+`AppointmentCreated`, `AppointmentCancelled`, `AppointmentRescheduled`,
+`AppointmentNoShowMarked` — as a documented, real hook point for a
+future notification/outbox subscriber to attach to; emitting is
+fire-and-forget and never a substitute for the durable audit trail
+below, and a listener throwing can never fail the request that
+triggered it.
+
+Every mutation in this section writes an audit event (service/category
+create and edit, branch-service and staff-assignment changes,
+business-hours and availability changes, appointment creation,
+cancellation, rescheduling, no-show marking, and a reschedule that lost
+a database-level conflict) through the same append-only `AuditEvent`
+path as the rest of the platform (section 19) — never a plaintext OTP,
+access token, refresh token, or full raw request body; state changes are
+recorded as compact before/after JSON, not arbitrary object dumps.
+
+**AI will later consume controlled discovery and availability APIs, not
+unrestricted database access** (docs/ROADMAP.md section 17,
+docs/ARCHITECTURE.md section 20): the same public, visibility-filtered
+endpoints this section describes are the intended integration surface
+for a future AI discovery/business-intelligence layer, not a direct
+query path into `services`, `appointments`, or any other table.
+
+Email OTP (section 6) remains Kora's authentication method for booking
+as for everything else, and is not phishing-resistant. Passkeys or
+another device-bound method remain a security-roadmap item for a later
+phase, targeted at sensitive financial and owner-administration actions
+rather than ordinary booking; passwords are not planned as a fallback
+for any of this, booking included.

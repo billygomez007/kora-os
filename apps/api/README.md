@@ -87,6 +87,35 @@ locally, `pnpm db:up` also starts a Mailpit container
 SMTP — read them at http://127.0.0.1:8025 (see `EmailOtpModule` and
 `SmtpEmailOtpSender`).
 
+## Services, availability, and booking in one paragraph
+
+An organization's `Service` catalogue (grouped by `ServiceCategory`) is
+enabled per branch through `BranchService`, which may override price,
+duration, or customer-bookability there — the effective price and
+duration a customer sees is always computed server-side, never accepted
+from a client. `StaffServiceAssignment` connects an eligible,
+branch-assigned staff member to a service. `BranchBusinessHours` /
+`BranchScheduleException` (branch) and `StaffAvailabilityRule` /
+`StaffAvailabilityException` (staff) are deliberately separate — a
+provider is bookable only where both intersect — combined by
+`AvailabilityEngineService` into concrete UTC slots, exposed publicly
+under `/v1/discovery/businesses/:slug/branches/:branchId/*` (respecting
+the same `PUBLIC`/`LINK_ONLY`/`PRIVATE` visibility as the rest of
+discovery) and to authenticated staff under
+`/v1/organizations/:organizationId/branches/:branchId/availability`.
+Availability results are advisory; `POST /v1/me/appointments` (customer)
+and `POST /v1/organizations/:organizationId/branches/:branchId/appointments`
+(staff-assisted) are the atomic reservation, protected by a PostgreSQL
+`EXCLUDE` constraint on the assigned staff member and the occupied UTC
+time range (`btree_gist`) so two concurrent requests for the same
+provider and time can never both succeed, plus a client-generated
+idempotency key so a retried request returns the original appointment
+rather than a duplicate. An `Appointment` is not a `ServiceSession`, a
+`Payment`, or a `Transaction` — a `CONFIRMED` appointment is a
+reservation only, never itself proof that work happened. See
+`docs/ARCHITECTURE.md` section 6 and `docs/SECURITY.md` section 30 for
+the full model.
+
 ## Useful root-level scripts
 
 Run from the repository root (see the root `package.json` for the full

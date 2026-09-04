@@ -116,6 +116,21 @@ Each module owns its application services and persistence access. Modules commun
 
 - PostgreSQL persistence, Redis coordination, job processing, object storage, delivery providers, and observability adapters.
 
+### Service catalogue, availability, and booking
+
+An organization's bookable `Service` catalogue is grouped by `ServiceCategory` and enabled per branch through `BranchService`, which may override a service's price, duration, or customer-bookability at that one branch — the effective price and duration a customer sees is always server-computed from `Service` plus any `BranchService` override, never client-supplied. `StaffServiceAssignment` connects an eligible, actively branch-assigned staff member to a service at a branch, optionally with its own duration override.
+
+`BranchBusinessHours` (recurring weekly) and `BranchScheduleException` (specific-date closures or special hours, which always win) define when a branch is open; `StaffAvailabilityRule` and `StaffAvailabilityException` define the same for one staff member — deliberately separate tables, because a provider is only bookable where both intersect. `BranchBookingPolicy` centralizes the remaining policy knobs (slot interval, minimum lead time, maximum horizon, buffers before/after, cancellation cutoff, whether a customer may pick a specific provider or only "any available") per branch, with safe hardcoded defaults when a branch has not configured one explicitly.
+
+`AvailabilityEngineService` deterministically combines all of the above — plus already-CONFIRMED appointments — into concrete bookable UTC slots for a requested service (or sequential services), branch, date range, and optional specific provider. Its output is advisory only: nothing about calling it reserves anything, and the actual booking command below revalidates from current state rather than trusting a prior availability read.
+
+Booking (`AppointmentBookingService`) is where a slot becomes a real, durable reservation. Two independent mechanisms make that safe under concurrency:
+
+- **Double-booking prevention is enforced by the database**, not only by the availability screen: a PostgreSQL `EXCLUDE` constraint (`appointments_no_staff_double_booking`, requiring the `btree_gist` extension) on the assigned staff member and the *occupied* UTC time range (service time plus buffers) rejects a genuinely overlapping insert or update outright, so two concurrent requests for the same staff member's same time can never both succeed — whichever transaction commits second gets a database-level conflict, translated into a generic `409 SLOT_UNAVAILABLE`, never a raw constraint error.
+- **Idempotency** (`AppointmentIdempotencyKey`, scoped to the authenticated customer and a client-generated key) makes a retried or duplicated booking request return the original appointment instead of creating a second one; reusing a key with a different request is rejected as a conflict.
+
+An appointment's services are stored as `AppointmentItem` snapshots (name, duration, price, currency at booking time) — editing or archiving a `Service` afterward never rewrites a past appointment's record. `Appointment` is not a `ServiceSession`, a `Payment`, or a `Transaction`; a `CONFIRMED` appointment is a reservation, never itself proof that work happened or that revenue was earned (docs/SECURITY.md section 30). `CustomerRecord`, the organization-scoped side of a booking's customer, is created (or reused) automatically on a customer's first booking with that organization and is never visible to, or joinable from, another organization.
+
 ## 7. Identity and session architecture
 
 `User` is the global Kora identity. `OrganizationMembership` connects a user to a business. `StaffProfile` contains employment information within that organization. `CustomerProfile` is the same user acting as a customer — the customer workspace and the business workspace (docs/PRODUCT_REQUIREMENTS.md section 2) share one identity without either being authoritative over the other.
@@ -301,3 +316,4 @@ Initial production deployment consists of:
 - No financial state transition without authorization, idempotency, database transaction, and audit evidence.
 - No notification-provider calls inside core transaction logic.
 - No production feature considered complete while backed only by local demonstration data.
+- No unrestricted database access for AI/business-intelligence features (post-V1 extensions, docs/ROADMAP.md section 17): any future AI layer consumes the same controlled, authorized discovery and availability APIs a client would, never a direct query path.

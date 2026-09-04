@@ -30,7 +30,13 @@ Completed:
 - Passwordless email OTP authentication (Kora OS does not store or support user passwords — a brief development-only password implementation was replaced before any production use; see the `remove_password_authentication` migration): a cryptographically random, at-least-6-digit code stored only as a keyed HMAC-SHA256 digest, scoped to a provider-neutral `AuthIdentity` (ready for phone OTP, email magic-link, Apple, and Google later without a schema change), short-lived JWT access tokens carrying no role/permission claims, rotating opaque refresh tokens with reuse detection that revokes the affected session, and rate limiting by both normalized email and request IP. The request/verify pair is both sign-up and sign-in. Routes: `POST /v1/auth/email-otp/{request,verify}`, `POST /v1/auth/refresh`, `POST /v1/auth/{logout,logout-all}`, `GET /v1/auth/{me,sessions}`, `DELETE /v1/auth/sessions/:sessionId`.
 - Organization-scoped RBAC and subscription enforcement, applied per route via `TenantAccessGuard`: active membership, the union of permissions across every role a membership holds, explicit branch assignment (or the broad `branches.manage` permission), and the organization's subscription access mode (`BLOCKED` denies everything, `READ_ONLY` denies mutations) — all resolved fresh from the database on every request, never cached or trusted from a token or request body.
 - Authenticated organization management (`POST`/`GET /v1/organizations`, `GET /v1/organizations/:organizationId`) and staff invitations (create/view/accept/reject/revoke under `/v1/organizations/:organizationId/staff-invitations` and `/v1/staff-invitations/:token`) — invitation tokens are single-use, hashed, organization- and role-specific, and optionally branch-specific.
-- Public business discovery (`GET /v1/discovery/businesses`, `/businesses/:slug`, `/businesses/:slug/branches`, `/categories`) backed by `PublicBusinessProfile`/`BusinessCategory`/branch discovery fields, plus owner/manager profile-management endpoints under `/v1/organizations/:organizationId/business-profile`. The global customer workspace (`CustomerProfile`, one per user) and the per-organization `CustomerRecord`/`CustomerFavorite` tables are modeled but not yet driven by any booking flow.
+- Public business discovery (`GET /v1/discovery/businesses`, `/businesses/:slug`, `/businesses/:slug/branches`, `/categories`) backed by `PublicBusinessProfile`/`BusinessCategory`/branch discovery fields, plus owner/manager profile-management endpoints under `/v1/organizations/:organizationId/business-profile`.
+- Service catalogue (`ServiceCategory`, `Service`, `BranchService` branch-level overrides, `StaffServiceAssignment`) with full CRUD under `/v1/organizations/:organizationId/service-categories`, `/services`, and `/branches/:branchId/services{,/:serviceId/staff}`, gated by `services.read`/`services.manage`. A service is archived, never hard-deleted, once anything references it; every appointment keeps its own name/duration/price/currency snapshot regardless of later catalogue edits.
+- Branch business hours (`BranchBusinessHours`, weekly recurring), specific-date exceptions (`BranchScheduleException`: closed, special hours, holiday, emergency closure), and a centralized per-branch `BranchBookingPolicy` (slot interval, lead time, horizon, buffers, cancellation cutoff, provider-selection rules) under `/v1/organizations/:organizationId/branches/:branchId/{business-hours,schedule-exceptions,booking-policy}`, gated by the new `availability.read`/`availability.manage` permissions. `Branch.timeZone` (already IANA-identified since the tenancy foundation) is now format-validated at organization creation.
+- Staff availability (`StaffAvailabilityRule` weekly recurring per branch, `StaffAvailabilityException` for time off/sick leave/holiday/added special availability, full- or partial-day) under `.../staff/:staffProfileId/availability-{rules,exceptions}` — deliberately separate from branch hours; a provider is bookable only where both intersect.
+- A deterministic availability engine (`AvailabilityEngineService`) resolving effective price/duration, eligible providers, the branch/staff schedule intersection, exceptions, lead time, horizon, and buffers into concrete UTC slots — exposed publicly (`GET /v1/discovery/businesses/:slug/branches/:branchId/{services,services/:serviceId/providers,availability}`, respecting PUBLIC/LINK_ONLY/PRIVATE visibility the same way the rest of discovery does) and to authenticated staff (`GET /v1/organizations/:organizationId/branches/:branchId/availability`). Results are advisory; booking creation revalidates atomically.
+- The customer workspace is now self-service: `GET`/`PATCH /v1/me/customer-profile` (display name, phone, city/area, and location only when the customer explicitly provided it, with its own consent timestamp).
+- Atomic appointment booking (`Appointment`, `AppointmentItem` snapshots, `AppointmentStatusHistory`, `AppointmentIdempotencyKey`) for both the customer app (`POST`/`GET /v1/me/appointments`, `/:id`, `/:id/cancel`, `/:id/reschedule`) and staff-assisted bookings (`.../branches/:branchId/appointments{,/:id,/:id/cancel,/:id/reschedule,/:id/no-show}`, gated by `appointments.read`/`appointments.manage`). Double-booking is prevented at the database level by a PostgreSQL `EXCLUDE` constraint (`btree_gist`) on the assigned staff member and the occupied UTC time range, not only by the availability screen; a client-generated idempotency key makes repeated/retried booking requests return the original appointment rather than a duplicate. Server-resolved price, duration, staff eligibility, and subscription state are never accepted from the client.
 
 Current limitations:
 
@@ -39,18 +45,18 @@ Current limitations:
 - Role/permission *management* endpoints (creating custom roles, editing a membership's roles or branches) are not implemented; every role assignment today comes from the seeded system roles via staff invitation.
 - Current Android roles are simulated locally and are not security controls, and Android does not yet call this API at all.
 - Payments and subscriptions are not connected to an authoritative backend, and no billing provider is integrated.
-- Services, appointments, walk-ins, and service sessions do not exist yet — discovery shows a business and its branches, but nothing bookable.
-- Android is the only implemented client.
+- Walk-ins/live queue, service sessions, and everything downstream of them (checkout, payments, commissions, receipts) do not exist yet. A CONFIRMED appointment is a reservation only — it is not a ServiceSession, a Payment, or a Transaction, and is never treated as proof that work happened or that revenue was earned; that connection is a future phase's job (docs/SECURITY.md section 30).
+- Android is the only implemented client, and does not yet call any of the service-catalogue, availability, or appointment endpoints above.
 
 ### Implementation sequence for the remaining work
 
-Kept intentionally concise — each item expands into its own phase below once it starts, and is not built ahead of that phase. Items 1–2 (authentication/sessions/staff invitations; organization-scoped RBAC, branch authorization, and subscription enforcement) and public business discovery are done — see "Current baseline" above — so the active boundary starts at item 3:
+Kept intentionally concise — each item expands into its own phase below once it starts, and is not built ahead of that phase. Items 1–3 (authentication/sessions/staff invitations; organization-scoped RBAC, branch authorization, and subscription enforcement; services, staff availability, and customer appointment booking) and public business discovery are done — see "Current baseline" above — so the active boundary starts at item 4:
 
 1. ~~Authentication, sessions, and staff invitations.~~ Done.
 2. ~~Organization-scoped RBAC and branch authorization.~~ Done, including subscription-access-mode enforcement.
-3. Services, customers, and staff availability — the next boundary. `CustomerRecord`/`CustomerProfile` and role/permission management endpoints are the main carry-over pieces from items 1–2 still outstanding.
-4. Appointments, walk-ins, and live queues.
-5. Service sessions representing actual work performed.
+3. ~~Services, staff availability, and atomic customer appointment booking.~~ Done — see "Current baseline" above. Role/permission *management* endpoints (as opposed to RBAC *enforcement*, already done in item 2) remain a carry-over gap.
+4. Walk-ins and live queues — the next boundary. Appointments already exist (item 3); this item is specifically the unscheduled, same-day operational flow and the branch queue built around it.
+5. Service sessions representing actual work performed — the first thing allowed to imply an appointment was fulfilled.
 6. Transactions, line items, and checkout.
 7. Payments, provider verification, and disputes.
 8. Commissions, reconciliation, and receipts.
@@ -174,24 +180,33 @@ Deliverables:
   both exist; authoring custom roles or editing an existing membership's
   roles/branches after acceptance does not yet have an endpoint.
 - Staff profile, services, availability, and time-off. `StaffProfile` is
-  created automatically on invitation acceptance; services, availability,
-  and time-off are not modeled yet.
+  created automatically on invitation acceptance. Services (`Service`,
+  `ServiceCategory`, `BranchService` overrides) and staff availability
+  (`StaffAvailabilityRule` recurring, `StaffAvailabilityException` for
+  time off/sick leave/holiday/special availability) are done. Time-off
+  is the `StaffAvailabilityException` types above, not a separate model.
 - Branch create, update, activate, and deactivate. Branches are created
   once, atomically, during organization onboarding; standalone branch
-  management endpoints do not exist yet. Branch *discovery* fields do
-  have a dedicated update endpoint (`PUT
-  /organizations/:organizationId/branches/:branchId/discovery`).
-- Service categories and service catalog. Not started.
-- Service-provider assignment. Not started (depends on the service catalog).
+  management endpoints do not exist yet. Branch *discovery* fields, and
+  now branch business hours/schedule exceptions/booking policy, do have
+  dedicated update endpoints (see docs/API_SPEC.md sections 10 and 13).
+- Service categories and service catalog. Done —
+  `/v1/organizations/:organizationId/service-categories` and `/services`,
+  archival instead of hard delete, branch-level price/duration/
+  bookability overrides via `/branches/:branchId/services/:serviceId`.
+- Service-provider assignment. Done —
+  `/v1/organizations/:organizationId/branches/:branchId/services/:serviceId/staff`,
+  refused unless the staff member holds an active membership and an
+  explicit assignment to that branch.
 - Initial commission rule configuration. Not started.
 - Android owner and manager configuration flows. Not started.
 
 Critical tests:
 
 - Cashiers cannot edit commission rules. Not yet applicable — no commission rules exist.
-- Branch-restricted staff cannot access another branch. Done (`test/organizations-and-invitations.e2e-spec.ts`), proven against a minimal test-only branch-scoped route since no production domain route is branch-scoped yet; a manager-role invitation with an explicit `branchId` demonstrates the assignment side.
+- Branch-restricted staff cannot access another branch. Done (`test/organizations-and-invitations.e2e-spec.ts`, plus every branch-scoped route added in this phase — `test/service-catalogue.e2e-spec.ts`, `test/scheduling-and-availability.e2e-spec.ts`).
 - Staff and branch entitlement limits cannot be bypassed concurrently. Entitlement resolution itself is done and tested (Phase 5, `EntitlementsService`); enforcing `staff.max`/`branches.max` against invitation acceptance and branch creation is not wired up yet.
-- Historical line-item prices remain unaffected by catalog edits. Not yet applicable — no catalog exists.
+- Historical line-item prices remain unaffected by catalog edits. Done (`test/service-catalogue.e2e-spec.ts`: an `AppointmentItem` snapshot is provably unchanged after the underlying `Service` is edited).
 
 Exit gate:
 
@@ -201,25 +216,49 @@ Exit gate:
 
 Deliverables:
 
-- Organization-scoped customer profiles and search.
-- Provider availability calculation.
-- Appointment create, confirm, check-in, cancel, and no-show.
-- Walk-in creation and live branch queue.
-- Queue call, assign, move, start, complete, and cancel actions.
-- Service-session aggregate and provider attribution.
-- Android operational screens connected to the API with cached reads.
+- Organization-scoped customer profiles and search. `CustomerRecord` is
+  created (or reused) automatically on a customer's first booking with an
+  organization; a dedicated search/list endpoint is not built yet — see
+  docs/ROADMAP.md item 4 (walk-ins/queue) and the future CRM item in
+  post-V1 extensions. The global customer workspace itself
+  (`GET`/`PATCH /v1/me/customer-profile`) is done.
+- Provider availability calculation. Done — `AvailabilityEngineService`
+  (docs/ARCHITECTURE.md section 6), exposed publicly through discovery
+  and to authenticated staff.
+- Appointment create, confirm, check-in, cancel, and no-show. Create is
+  always CONFIRMED (there is no separate unconfirmed/requested state);
+  cancel and no-show are done. Check-in does not exist yet — it belongs
+  to the walk-in/queue phase below, where an appointment's customer
+  actually arrives.
+- Walk-in creation and live branch queue. Not started (item 4 of the
+  implementation sequence).
+- Queue call, assign, move, start, complete, and cancel actions. Not
+  started — depends on the queue above.
+- Service-session aggregate and provider attribution. Not started.
+  Deliberately: a CONFIRMED `Appointment` is a reservation only, never
+  treated as evidence that work happened or that revenue was earned
+  (docs/SECURITY.md section 30) — only a future `ServiceSession` can
+  establish that.
+- Android operational screens connected to the API with cached reads. Not started.
 
 Critical tests:
 
-- Conflicting provider bookings are rejected.
-- Walk-ins work without appointments.
-- Appointments do not require payment records.
-- Service sessions preserve the staff member who performed each item.
-- Concurrent queue changes resolve through revisions or conflicts.
+- Conflicting provider bookings are rejected. Done — a PostgreSQL
+  `EXCLUDE` constraint (`appointments_no_staff_double_booking`,
+  `btree_gist`) on the assigned staff member and the occupied UTC time
+  range, proven under real concurrent requests
+  (`test/appointment-booking.e2e-spec.ts`: 6 simultaneous identical
+  booking requests, exactly 1 succeeds).
+- Walk-ins work without appointments. Not yet applicable — walk-ins do not exist yet.
+- Appointments do not require payment records. Done — `Appointment` has
+  no relationship to any payment/transaction concept, which do not exist
+  yet either.
+- Service sessions preserve the staff member who performed each item. Not yet applicable — service sessions do not exist yet.
+- Concurrent queue changes resolve through revisions or conflicts. Not yet applicable — the queue does not exist yet. (`Appointment.version` already provides the same optimistic-concurrency pattern for reschedule/cancel races.)
 
 Exit gate:
 
-- A receptionist and provider on separate emulator sessions can complete the operational flow through service completion.
+- A receptionist and provider on separate emulator sessions can complete the operational flow through service completion. Blocked on Android API integration (item 14) and the walk-in/queue/service-session work above; the backend booking half (create, cancel, reschedule, no-show, double-booking prevention, idempotency) is done and tested.
 
 ## 10. Phase 6 — Financial core and verification
 
@@ -417,10 +456,14 @@ far requires bounded caching, job queues, or realtime coordination).
 
 Current: the database/tenancy foundation (this document's Phase 2),
 authentication and sessions, organization-scoped RBAC and subscription
-enforcement, staff invitations, and public business discovery are done —
-see "Current baseline" above. The next step is item 3 of the
-implementation sequence: services, customers (`CustomerRecord`), and
-staff availability — the last pieces Phase 4 above needs before
-appointments and booking (item 4) can begin. No further feature module is
-implemented until each prior one's quality gates (tests, lint, build,
-migration status) are green, per this document's delivery principle.
+enforcement, staff invitations, public business discovery, the service
+catalogue, branch/staff scheduling, the availability engine, and atomic
+customer and staff-assisted appointment booking (with database-enforced
+double-booking prevention and idempotent booking commands) are done —
+see "Current baseline" above. The next step is item 4 of the
+implementation sequence: walk-ins and the live branch queue, the last
+piece Phase 5 above needs before service sessions (item 5) — the first
+concept allowed to imply an appointment was actually fulfilled — can
+begin. No further feature module is implemented until each prior one's
+quality gates (tests, lint, build, migration status) are green, per this
+document's delivery principle.

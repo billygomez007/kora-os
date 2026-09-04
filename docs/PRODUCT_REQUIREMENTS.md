@@ -122,6 +122,16 @@ managers and staff. Kora does not store or support user passwords.
 - Prices are captured on transaction line items so historical totals do not
   change when a service price changes later.
 
+The first two lines are implemented: a service catalogue (with
+organization-owned categories, branch-level price/duration/bookability
+overrides, and eligible-provider assignment scoped to an active branch
+assignment) and tenant-scoped `CustomerRecord`s, created automatically on
+a customer's first booking with an organization. A dedicated
+authorized-user customer search/history endpoint, and transaction line
+items (which do not exist yet), remain future work; appointment booking
+already captures its own price/duration snapshot per booked service so a
+later catalogue edit cannot change a past appointment's record.
+
 ### Appointments and operations
 
 - Appointments support requested, confirmed, checked-in, in-service, completed,
@@ -130,6 +140,17 @@ managers and staff. Kora does not store or support user passwords.
 - Walk-ins can be assigned to providers and placed in a branch queue.
 - Queue entries support waiting, called, in-service, completed, and canceled.
 - Actual work is represented by an independent service session.
+
+V1 booking is implemented against the first two lines of this list only:
+a customer- or staff-created appointment is `CONFIRMED` on creation (there
+is no separate "requested" step to confirm later) and can become
+`CANCELLED` or `NO_SHOW`; "checked-in", "in-service", and "completed" are
+not appointment states at all here, since only a future service session
+can establish that work actually happened (docs/SECURITY.md section 30).
+The server-prevented scheduling conflict is a database-enforced
+constraint, not only an application check (docs/ARCHITECTURE.md section
+6). Walk-ins, the branch queue, and service sessions remain future work
+(docs/ROADMAP.md items 4-5).
 
 ### Transactions and payments
 

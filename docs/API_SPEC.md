@@ -310,17 +310,61 @@ Example effective subscription response:
 }
 ```
 
-## 13. Services
+## 13. Services, scheduling, and availability
 
-- `GET /services`
-- `POST /services`
-- `GET /services/{serviceId}`
-- `PATCH /services/{serviceId}`
-- `POST /services/{serviceId}/activate`
-- `POST /services/{serviceId}/deactivate`
-- `GET /service-categories`
-- `POST /service-categories`
-- `PATCH /service-categories/{categoryId}`
+All routes below require organization membership, the named permission,
+and (where a `:branchId` appears) branch scope, exactly like sections 10
+and 11 — enforced by `TenantAccessGuard`. `services.read`/
+`services.manage` gate the service-catalogue routes; the new
+`availability.read`/`availability.manage` permissions gate business
+hours, schedule exceptions, booking policy, and staff availability.
+
+### Service categories
+
+- `GET /organizations/{organizationId}/service-categories`
+- `POST /organizations/{organizationId}/service-categories`
+- `PUT /organizations/{organizationId}/service-categories/{categoryId}`
+- `POST /organizations/{organizationId}/service-categories/{categoryId}/archive`
+- `POST /organizations/{organizationId}/service-categories/{categoryId}/restore`
+
+### Services
+
+- `GET /organizations/{organizationId}/services`
+- `POST /organizations/{organizationId}/services`
+- `PUT /organizations/{organizationId}/services/{serviceId}`
+- `POST /organizations/{organizationId}/services/{serviceId}/archive`
+- `POST /organizations/{organizationId}/services/{serviceId}/restore`
+
+A service is archived, never hard-deleted, once anything references it.
+Price is always integer minor units; duration is always positive whole
+minutes.
+
+### Branch service configuration and staff assignment
+
+- `GET /organizations/{organizationId}/branches/{branchId}/services`
+- `PUT /organizations/{organizationId}/branches/{branchId}/services/{serviceId}` — enable/disable at this branch, and optional price/duration/bookability overrides
+- `GET /organizations/{organizationId}/branches/{branchId}/services/{serviceId}/staff`
+- `POST /organizations/{organizationId}/branches/{branchId}/services/{serviceId}/staff` — assign an eligible staff member (must hold an active membership and branch assignment)
+- `DELETE /organizations/{organizationId}/branches/{branchId}/services/{serviceId}/staff/{staffProfileId}`
+
+### Business hours, schedule exceptions, and booking policy
+
+- `GET`/`PUT /organizations/{organizationId}/branches/{branchId}/business-hours` — `PUT` replaces the branch's full recurring weekly set atomically
+- `GET /organizations/{organizationId}/branches/{branchId}/schedule-exceptions?from=&to=`
+- `POST /organizations/{organizationId}/branches/{branchId}/schedule-exceptions` — closed, special hours, holiday, or emergency closure for one date; always overrides that date's recurring hours
+- `DELETE /organizations/{organizationId}/branches/{branchId}/schedule-exceptions/{exceptionId}`
+- `GET`/`PUT /organizations/{organizationId}/branches/{branchId}/booking-policy` — slot interval, lead time, horizon, buffers, cancellation cutoff, provider-selection rules; `GET` always returns a fully resolved policy (documented defaults when nothing is configured yet)
+
+### Staff availability
+
+- `GET`/`PUT /organizations/{organizationId}/branches/{branchId}/staff/{staffProfileId}/availability-rules` — `PUT` replaces the recurring weekly set for that staff member at that branch atomically
+- `GET /organizations/{organizationId}/branches/{branchId}/staff/{staffProfileId}/availability-exceptions?from=&to=`
+- `POST .../availability-exceptions` — time off, sick leave, holiday, or added special availability, full- or partial-day
+- `DELETE .../availability-exceptions/{exceptionId}`
+
+### Availability (organization-side preview)
+
+- `GET /organizations/{organizationId}/branches/{branchId}/availability?serviceIds=&staffProfileId=&date=` (or `fromDate`/`toDate`, bounded — see section 29) — the same deterministic engine the public discovery endpoints use (section 29), without the discovery-visibility or customer-bookability checks, for staff previewing slots before a staff-assisted booking (section 15).
 
 ## 14. Customers
 
@@ -336,17 +380,55 @@ Search and contact details are always organization-scoped.
 
 ## 15. Appointments
 
-- `GET /appointments`
-- `POST /appointments`
-- `GET /appointments/{appointmentId}`
-- `PATCH /appointments/{appointmentId}`
-- `POST /appointments/{appointmentId}/confirm`
-- `POST /appointments/{appointmentId}/check-in`
-- `POST /appointments/{appointmentId}/cancel`
-- `POST /appointments/{appointmentId}/no-show`
-- `GET /availability`
+Appointment is not a `ServiceSession`, a `Payment`, or a `Transaction` —
+none of those exist yet. A successfully created appointment is always
+`CONFIRMED`; there is no separate unconfirmed/requested state, and no
+`completed` status — completion is a claim about work performed, which
+only a future `ServiceSession` can establish (docs/SECURITY.md section
+20). `CONFIRMED` can become `CANCELLED` or `NO_SHOW` through the
+explicit commands below only.
 
-Appointment commands return `409` when the requested provider and time conflict with current authoritative availability.
+Requests to a business's discovery slug (below) resolve services,
+prices, durations, eligible staff, and availability entirely
+server-side; **prices, durations, end times, eligible staff, and
+subscription eligibility are never accepted from the client.**
+
+### Customer (authenticated Kora session, own appointments only)
+
+- `POST /me/appointments` — `{businessSlug, branchId, serviceIds[], staffProfileId?, startAt, idempotencyKey}`; `staffProfileId` omitted means "any available provider", assigned deterministically and reserved atomically
+- `GET /me/appointments` — cursor-paginated
+- `GET /me/appointments/{appointmentId}`
+- `POST /me/appointments/{appointmentId}/cancel` — `{reason?}`
+- `POST /me/appointments/{appointmentId}/reschedule` — `{startAt, staffProfileId?}`
+
+A different customer's appointment id returns `404`, never `403` — its
+existence is never confirmed to a caller who does not own it.
+
+### Organization (authenticated staff, `appointments.read`/`appointments.manage`, branch-scoped)
+
+- `GET /organizations/{organizationId}/branches/{branchId}/appointments?from=&to=&cursor=&limit=` — bounded date range, cursor-paginated
+- `GET /organizations/{organizationId}/branches/{branchId}/appointments/{appointmentId}`
+- `POST /organizations/{organizationId}/branches/{branchId}/appointments` — staff-assisted booking; `{serviceIds[], staffProfileId, startAt, customerProfileId | newCustomer, idempotencyKey?}` — exactly one of an existing Kora customer or a walk-in-style `newCustomer` (`{name, phoneE164?, email?}`) is required
+- `POST .../appointments/{appointmentId}/cancel`
+- `POST .../appointments/{appointmentId}/reschedule`
+- `POST .../appointments/{appointmentId}/no-show` — only a past `CONFIRMED` appointment
+
+A business appointment response includes only the customer information
+necessary to provide the booked service — never full global customer
+information or cross-organization history.
+
+### Idempotency and conflicts
+
+Repeating a customer booking request with the same `idempotencyKey` and
+identical payload returns the original appointment (`201`, not a
+duplicate); reusing the key with a different payload returns `409
+IDEMPOTENCY_KEY_REUSED`. A genuine scheduling conflict — the requested
+staff member and occupied time overlap an existing `CONFIRMED`
+appointment, enforced by a database `EXCLUDE` constraint, never only by
+a prior availability read — returns the standard error envelope with
+`409 SLOT_UNAVAILABLE` and never a raw database error. A failed
+reschedule leaves the original appointment completely unchanged
+(docs/ARCHITECTURE.md section 6).
 
 ## 16. Walk-ins and queue
 
@@ -533,6 +615,7 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 - `staff.read`, `staff.manage`, `staff.invite`
 - `roles.read`, `roles.manage`
 - `services.read`, `services.manage`
+- `availability.read`, `availability.manage`
 - `customers.read`, `customers.manage`
 - `appointments.read`, `appointments.manage`
 - `queue.read`, `queue.manage`
@@ -579,6 +662,40 @@ platform, and docs/DATA_MODEL.md's discovery section for the underlying
   discoverable branches (`Branch.isDiscoverable = true`) only.
 - `GET /discovery/categories` — the seeded category vocabulary.
 
+### Services and availability, per business branch
+
+Reachable the same way as the routes above — public, no session, subject
+to the same `PUBLIC`/`LINK_ONLY`/`PRIVATE` visibility rule (a `LINK_ONLY`
+or `PUBLIC` business's branch works; a `PRIVATE` one, or an unpublished
+one, returns `404` identically to an unknown slug or branch).
+
+- `GET /discovery/businesses/{slug}/branches/{branchId}/services` — the
+  branch's customer-bookable services (name, description, effective
+  price/duration accounting for any branch override, currency, pricing
+  type, category id).
+- `GET .../services/{serviceId}/providers` — eligible, active providers
+  for that service at that branch (id and display name only — no
+  membership, role, or other internal detail).
+- `GET .../availability?serviceIds=&staffProfileId=&date=` (or
+  `fromDate`/`toDate`) — the deterministic availability engine
+  (docs/ARCHITECTURE.md section 6): resolves the business, verifies
+  visibility, verifies the branch and every requested service, resolves
+  effective price/duration, resolves eligible providers, intersects
+  branch hours with staff availability, applies exceptions, lead time,
+  horizon, and buffers, and removes occupied time — returning only
+  slots that are genuinely bookable right now. `serviceIds` is an
+  ordered, comma-separated list (sequential services, one provider).
+  Omitting `staffProfileId` means "any available provider"; each
+  returned slot still names the specific provider it is for. A date
+  range is capped at a safe maximum (currently 14 days) regardless of
+  the branch's own configured booking horizon.
+
+**These results are advisory only.** They reflect current state at query
+time; nothing about calling this endpoint reserves anything. Creating an
+appointment (section 15) revalidates everything from scratch, atomically,
+against a database-enforced double-booking constraint — a slot shown
+here can still fail at booking time if another request wins the race.
+
 Collection responses use the standard cursor shape (section 4): `page`
 is a sibling of `data`, not nested inside it. The cursor is an opaque,
 `id`-ordered value — stable (a page never skips or repeats a result as
@@ -595,10 +712,10 @@ is anticipated by this slug design but not implemented in this phase —
 no website is being built.
 
 `organizationId` and each branch's `branchId` in these responses are the
-same stable internal identifiers used everywhere else in the API. A
-future booking flow reads a business by slug for display, then uses
-these IDs (plus a service ID, once services exist) to actually create an
-appointment — see section 30.
+same stable internal identifiers used everywhere else in the API. The
+booking flow (section 15) reads a business by slug for display, then
+uses these IDs — plus the service IDs from "Services and availability"
+above — to actually create an appointment; see section 30.
 
 Authorized management (owner/manager, via the `business_profile.manage`
 permission):
@@ -620,11 +737,13 @@ permission):
 
 One Kora account, two workspaces:
 
-- **Customer workspace**: discover businesses (section 29), and in a
-  later phase, book appointments, view receipts, and manage favorites.
-  Grounded in `CustomerProfile` — one row per `User`, created the first
-  time that user acts as a customer. No organization membership is
-  required to use it.
+- **Customer workspace**: discover businesses (section 29) and book
+  appointments (section 15) — receipts and richer favorites/CRM remain a
+  later phase. Grounded in `CustomerProfile` — one row per `User`,
+  created the first time that user acts as a customer, with a
+  self-service `GET`/`PATCH /me/customer-profile` (display name, phone,
+  city/area, and location only when explicitly provided, with its own
+  consent timestamp). No organization membership is required to use it.
 - **Business workspace**: operate one or more organizations as an owner
   or staff member. Grounded in `OrganizationMembership` — see section 8.
 
@@ -635,12 +754,13 @@ business, and a business's internal data is never visible through
 discovery (section 29 and docs/SECURITY.md).
 
 `CustomerRecord` — one organization's private, per-organization knowledge
-of a customer, for future booking/CRM history — is modeled
-(docs/DATA_MODEL.md) but nothing creates one yet, since there is no
-booking or walk-in flow. When that flow exists, it will follow this
-reference chain: `Organization` → `Branch` (from section 29's discovery
-response, or an authenticated staff listing once branches have their own
-endpoint) → `CustomerRecord`/`CustomerProfile` → `Service` (not modeled
-yet) → the appointment itself. That chain, not any new identity concept,
-is the next phase's data-model boundary: Services → Availability →
-Booking → Walk-in/Queue → Service Session (docs/ROADMAP.md).
+of a customer (docs/DATA_MODEL.md) — is created (or reused) automatically
+on a customer's first booking with that organization; no separate
+creation endpoint exists or is needed. The booking reference chain is:
+`Organization` → `Branch` (from section 29's discovery response) →
+`Service` (section 13, resolved through section 29's per-branch
+services/availability) → `CustomerRecord`/`CustomerProfile` → the
+`Appointment` itself (section 15), reserved atomically against a
+database-enforced double-booking constraint with a client-generated
+idempotency key. That chain is done; the next data-model boundary is
+Walk-in/Queue → Service Session (docs/ROADMAP.md).

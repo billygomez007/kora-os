@@ -337,52 +337,150 @@ when set), then mark the invitation accepted. An invitation that is not
 at accept time, not by a background sweep, so `status` can remain
 `pending` past `expires_at` until the next access attempt.
 
-### `staff_services`
+### `staff_service_assignments`
 
-- `organization_id`, `staff_profile_id`, `service_id`
-- `active`, `created_at`
+Connects an eligible staff provider to one service at one branch — a
+staff member may offer different services at different branches.
+Creation is refused (at the application layer, not by a database
+constraint — see the model comment in `prisma/schema.prisma`) unless the
+staff member holds an active membership and an explicit
+`membership_branch_assignments` row for that branch.
 
-Unique: `(staff_profile_id, service_id)`.
+- `id`, `organization_id`, `staff_profile_id`, `branch_id`, `service_id`
+- `is_bookable`, `duration_override_minutes` nullable
+- `created_at`, `updated_at`
+
+Unique: `(staff_profile_id, branch_id, service_id)`.
 
 ### `staff_availability_rules`
 
+One recurring weekly interval for a staff member at one branch — the
+staff-side counterpart to `branch_business_hours` below. Deliberately a
+separate table: a provider is bookable only where the branch's hours and
+the staff member's own availability intersect.
+
 - `id`, `organization_id`, `staff_profile_id`, `branch_id`
-- `day_of_week`, `starts_local_time`, `ends_local_time`
-- `effective_from`, `effective_until` nullable
+- `day_of_week` (0=Sunday..6=Saturday), `start_local_time`, `end_local_time` ("HH:mm", branch-timezone wall-clock, not `time`/`timestamptz` — see `branch_business_hours` below for why)
+- `effective_from`, `effective_until` nullable dates
+- `is_active`, `created_at`, `updated_at`
 
-### `staff_time_off`
+### `staff_availability_exceptions`
 
-- `id`, `organization_id`, `staff_profile_id`
-- `starts_at`, `ends_at`, `reason`, `status`
+A specific-date override to a staff member's recurring availability:
+time off, sick leave, holiday, or added special availability, full- or
+partial-day. `TIME_OFF`/`SICK_LEAVE`/`HOLIDAY` remove availability for
+their window; `SPECIAL_AVAILABILITY` adds it. `branch_id` is required
+(matching `staff_availability_rules`) so `date` is always unambiguous
+under exactly one branch's timezone.
+
+- `id`, `organization_id`, `staff_profile_id`, `branch_id`
+- `date`, `type`: time_off, sick_leave, holiday, special_availability
+- `is_full_day`, `start_local_time`/`end_local_time` nullable (required together only when not full-day)
+- `reason` nullable, `created_at`, `updated_at`
 
 ## 6. Catalog, customers, and public discovery
 
-`service_categories` and `services` below are still schema for a future
-phase (not yet created by any migration); `customer_profiles` through
-`public_business_profiles` are implemented now.
+### `service_categories`
 
-### `service_categories` (future)
+An organization-owned grouping for its own bookable services (e.g.
+"Haircuts", "Braiding") — separate from `business_categories` below,
+which is the platform-seeded taxonomy public discovery search filters
+by.
 
-- `id`, `organization_id`, `name`, `sort_order`
-- `active`, `created_at`, `updated_at`
+- `id`, `organization_id`, `name`, `description` nullable, `sort_order`
+- `created_at`, `updated_at`, `archived_at` nullable
 
-### `services` (future)
+### `services`
 
-- `id`, `organization_id`, `category_id` nullable
+One organization's catalogue entry. Never hard-deleted once any
+`appointment_items` row references it — `archived_at` is the only
+removal path, and a historical appointment keeps its own name/duration/
+price snapshot regardless of later catalogue edits (see
+`appointment_items` below).
+
+- `id`, `organization_id`, `service_category_id` nullable
 - `name`, `description` nullable
-- `duration_minutes`
-- `price_minor`, `currency`
-- `deposit_required`, `deposit_minor` nullable
-- `active`, `created_at`, `updated_at`, `archived_at`
+- `duration_minutes` — positive whole minutes
+- `price_minor`, `currency` — integer minor units, never a float; format-validated ISO 4217, not restricted to a single country's currency
+- `pricing_type`: fixed, from
+- `is_bookable_by_customer`, `sort_order`
+- `created_at`, `updated_at`, `archived_at` nullable
+
+### `branch_services`
+
+A service can be offered at one branch and unavailable at another — a
+missing row for a (branch, service) pair means the service is not
+offered there at all (opt-in, not opt-out). The effective price and
+duration a customer sees is always this row's override (when present)
+falling back to `services`, computed server-side — never accepted from a
+client.
+
+- `id`, `organization_id`, `branch_id`, `service_id`
+- `is_enabled`, `price_override_minor` nullable, `duration_override_minutes` nullable, `is_bookable_by_customer_override` nullable (tri-state: null inherits `services.is_bookable_by_customer`)
+- `created_at`, `updated_at`
+
+Unique: `(branch_id, service_id)`.
+
+### `branch_business_hours`
+
+One recurring weekly opening interval for a branch — a missing row for a
+given `day_of_week` means the branch is closed that day (opt-in, the
+same convention `branch_services` uses). `start_local_time`/
+`end_local_time` are wall-clock `"HH:mm"` strings interpreted under
+`branches.time_zone` — deliberately not a `time` column (Prisma maps
+that to a JS `Date` with a meaningless 1970-01-01 date part) and not a
+UTC instant (a recurring weekly rule has no single date to convert
+against; the branch-local → UTC conversion happens per requested date,
+in the availability engine).
+
+- `id`, `organization_id`, `branch_id`
+- `day_of_week` (0=Sunday..6=Saturday), `start_local_time`, `end_local_time`
+- `created_at`, `updated_at`
+
+### `branch_schedule_exceptions`
+
+A specific-date override to `branch_business_hours`: closed, special
+hours, holiday, or emergency closure. Always wins over the recurring
+weekly rule for that one local date. `intervals` is a JSON array of
+`{start, end}` `"HH:mm"` pairs, required and non-empty only when `type`
+is `special_hours`; every other type means the branch is fully closed
+that date.
+
+- `id`, `organization_id`, `branch_id`
+- `date`, `type`: closed, special_hours, holiday, emergency_closure
+- `intervals` nullable JSON, `reason` nullable
+- `created_at`, `updated_at`
+
+Unique: `(branch_id, date)`.
+
+### `branch_booking_policies`
+
+Centralized, per-branch editable booking policy. A branch with no row
+here uses documented hardcoded defaults (docs/SECURITY.md section 30)
+rather than failing — every field is still `NOT NULL` once a row exists,
+so a stored policy is always fully resolved, never partially defaulted
+at read time.
+
+- `id`, `organization_id`, `branch_id` unique
+- `slot_interval_minutes`, `min_booking_lead_time_minutes`, `max_booking_horizon_days`
+- `buffer_before_minutes`, `buffer_after_minutes`, `cancellation_cutoff_minutes`
+- `allow_customer_provider_selection`, `allow_any_provider`
+- `created_at`, `updated_at`
 
 ### `customer_profiles`
 
 The customer workspace's identity: one row per `user_id`, created the
-first time that user acts as a customer. Distinct from
-`organization_memberships`, which is the business-workspace side of the
-same global `users` row (section 3).
+first time that user acts as a customer (favoriting a business, or now,
+booking one). Distinct from `organization_memberships`, which is the
+business-workspace side of the same global `users` row (section 3). The
+minimum information a booking needs beyond the verified identity itself
+(`users.email_normalized`) lives here — never accepted as an arbitrary
+request-body identity, always the authenticated session's own user.
 
 - `id`, `user_id` unique
+- `phone_e164` nullable, `city` nullable, `area` nullable
+- `latitude`/`longitude` nullable — stored only once the customer has explicitly provided them
+- `location_consented_at` nullable — set the moment location is (re-)provided, never client-supplied directly
 - `created_at`, `updated_at`
 
 ### `customer_records`
@@ -391,13 +489,12 @@ One organization's private knowledge of a customer — the tenant-scoped
 equivalent of what earlier drafts of this document called `customers`,
 renamed to avoid colliding with the platform-wide `customer_profiles`
 above. `customer_profile_id` is nullable because a staff-entered walk-in
-customer may not hold a Kora account at all. Only ever created when that
-customer actually interacts with the organization (a future booking,
-walk-in, or approved import) — nothing creates one yet, since booking and
-walk-in do not exist. One business's `customer_records` rows are never
-joined against another's; there is no relationship between them at all,
-which is what makes the isolation structural rather than just
-policy-enforced.
+customer may not hold a Kora account at all. Created (or reused, if one
+already exists for that organization + customer profile) automatically
+on a customer's first booking with an organization. One business's
+`customer_records` rows are never joined against another's; there is no
+relationship between them at all, which is what makes the isolation
+structural rather than just policy-enforced.
 
 - `id`, `organization_id`, `customer_profile_id` nullable
 - `name`, `phone_e164` nullable, `email_normalized` nullable
@@ -473,22 +570,75 @@ not have.
 
 ### `appointments`
 
-- `id`, `organization_id`, `branch_id`, `customer_id`
-- `reference`
-- `status`: requested, confirmed, checked_in, in_service, completed, canceled, no_show
-- `starts_at`, `ends_at`
-- `notes` nullable
-- `created_by_membership_id`
-- `canceled_at`, `cancel_reason` nullable
+One booked appointment. `start_at`/`end_at` are the service time itself;
+`occupied_start_at`/`occupied_end_at` additionally include the branch's
+buffer-before/buffer-after and are what the double-booking exclusion
+constraint (section 12) actually guards. `branch_time_zone` snapshots
+`branches.time_zone` at creation time so a later branch timezone change
+never reinterprets an already-booked appointment's local meaning.
+`version` supports optimistic concurrency for reschedule/cancel commands
+issued concurrently with a staff-side edit. Status is deliberately small
+for V1 — `confirmed`, `cancelled`, `no_show` — there is no `completed`
+value: completion is a claim about work actually performed, which only a
+future `service_sessions` row can prove; an appointment alone is never
+treated as evidence that a service happened.
+
+- `id`, `organization_id`, `branch_id`, `reference` unique
+- `customer_profile_id` nullable (null for a staff-entered walk-in with no Kora account), `customer_record_id`
+- `assigned_staff_profile_id`
+- `start_at`, `end_at`, `occupied_start_at`, `occupied_end_at`, `branch_time_zone`
+- `status`: confirmed, cancelled, no_show
+- `source`: customer_app, business_staff
+- `currency`, `total_price_minor`
+- `idempotency_key` nullable
+- `cancelled_at`/`cancelled_reason`/`cancelled_by_membership_id` nullable
+- `no_show_marked_at`/`no_show_marked_by_membership_id` nullable
+- `created_by_user_id`/`created_by_membership_id` nullable, `version`
 - `created_at`, `updated_at`
 
-### `appointment_services`
+### `appointment_items`
+
+One sequential service within a V1 appointment (one or more services,
+same provider, in order). The snapshot fields are the historical record;
+`service_id` is kept only to navigate back to the current catalogue
+entry and is never used to recompute a past appointment's price or
+duration.
 
 - `id`, `organization_id`, `appointment_id`, `service_id`
-- `staff_profile_id` nullable
-- `service_name_snapshot`
-- `duration_minutes_snapshot`
-- `price_minor_snapshot`, `currency`
+- `service_name_snapshot`, `duration_minutes_snapshot`, `price_minor_snapshot`, `currency_snapshot`
+- `display_order`, `created_at`
+
+### `appointment_status_history`
+
+Append-only status transition log. `previous_status` is null only for
+the row created alongside the appointment itself (confirmed, nothing
+before it).
+
+- `id`, `organization_id`, `appointment_id`
+- `previous_status` nullable, `new_status`
+- `actor_user_id`/`actor_membership_id` nullable, `reason` nullable
+- `occurred_at`
+
+### `appointment_idempotency_keys`
+
+Guarantees a client-generated idempotency key is honored. Scoped per
+customer, not global — a key only needs to be unique within one
+customer's own request stream, and a lookup is always filtered by the
+*authenticated* customer's own id, never accepted bare from a request.
+The row and its appointment are created together, in the same
+transaction, so there is no "reserved but not yet resolved" state to
+leak a stale key into.
+
+- `id`, `organization_id`, `customer_profile_id`, `idempotency_key`
+- `request_fingerprint` — a hash of the normalized booking request, so reusing a key with a *different* payload is rejected as a conflict rather than silently honored
+- `appointment_id`, `created_at`
+
+Unique: `(customer_profile_id, idempotency_key)`.
+
+`queue_entries`, `service_sessions`, and `service_session_items` below
+remain schema for a future phase (not yet created by any migration) —
+the walk-in/live-queue and service-session boundary docs/ROADMAP.md
+items 4-5 describe.
 
 ### `queue_entries`
 
@@ -620,6 +770,14 @@ Only one open cash session per cashier and branch is permitted.
 
 ### `idempotency_records`
 
+Still schema for a future, generic, cross-domain idempotency mechanism —
+not yet created by any migration. Appointment booking (section 7) has
+its own narrower, purpose-built `appointment_idempotency_keys` table
+instead, scoped to one customer and one booking command rather than
+built as this general `scope`/`user_id`-keyed mechanism; a future
+financial-command idempotency need (Phase 6) may still want this
+generic table, or may follow the same narrower pattern — undecided.
+
 - `id`, `organization_id` nullable, `user_id`
 - `scope`, `idempotency_key`, `request_fingerprint`
 - `response_status`, `response_body` nullable
@@ -691,7 +849,7 @@ Every foreign key is indexed where join direction requires it. Additional high-v
 
 - All line totals and transaction totals are non-negative except explicit adjustment or reversal types.
 - Currency codes on a transaction and its normal line items and payments must agree unless currency conversion is deliberately introduced later.
-- Appointment and service-session end times must be after start times.
+- Appointment and service-session end times must be after start times. For appointments this is enforced by a `CHECK` constraint (`end_at > start_at`, and separately that the occupied window contains the service window); double-booking itself is enforced by a PostgreSQL `EXCLUDE` constraint (`appointments_no_staff_double_booking`, requiring the `btree_gist` extension) on the assigned staff member and the occupied UTC time range, restricted to `CONFIRMED` appointments — not only by the availability screen. `[)` range bounds mean two exactly back-to-back appointments are adjacent, not overlapping, and are allowed.
 - Payment verification references the responsible provider and the same tenant as its payment and transaction.
 - Commission records cannot become finalized before a confirmed verification outcome.
 - Subscription trial and billing period end times must be after their corresponding start times.

@@ -142,6 +142,26 @@ export class DiscoveryService {
     }));
   }
 
+  /**
+   * The same PUBLIC/LINK_ONLY-published visibility check `getBySlug` and
+   * `getBranches` already apply, exposed for other modules (the
+   * availability engine's public endpoints — docs task Phase 15 steps
+   * 1-2: "Resolve the business through its published discovery profile
+   * ... Verify the profile visibility allows direct access") that need
+   * the underlying organizationId rather than the public-shaped summary
+   * DTO those two methods return.
+   */
+  async resolveAccessibleOrganizationBySlug(slug: string): Promise<{ organizationId: string }> {
+    const profile = await this.prisma.publicBusinessProfile.findUnique({
+      where: { slug },
+      select: { organizationId: true, visibility: true, publishedAt: true },
+    });
+    if (!profile || profile.visibility === BusinessProfileVisibility.PRIVATE || !profile.publishedAt) {
+      throw new NotFoundException('Business not found');
+    }
+    return { organizationId: profile.organizationId };
+  }
+
   async listCategories() {
     const categories = await this.prisma.businessCategory.findMany({
       where: { active: true },

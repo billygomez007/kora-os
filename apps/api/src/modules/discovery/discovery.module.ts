@@ -9,5 +9,6 @@ import { DiscoveryService } from './discovery.service.js';
   imports: [AuthorizationModule],
   controllers: [DiscoveryController, BusinessProfileController],
   providers: [DiscoveryService, BusinessProfileService],
+  exports: [DiscoveryService],
 })
 export class DiscoveryModule {}

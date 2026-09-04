@@ -88,9 +88,17 @@ never result in a payment.
 
 ### Identity and organizations
 
-- Users can register, sign in, sign out, and recover access.
+Kora OS uses passwordless email OTP authentication for customers, owners,
+managers and staff. Kora does not store or support user passwords.
+
+- Users sign in by entering an email address, receiving a one-time code
+  by email, and entering that code — the same flow for a first-time
+  sign-up and a returning sign-in; there is no separate password-based
+  registration.
 - Owners can create organizations and branches.
-- Owners invite staff without creating or sharing staff passwords.
+- Owners invite staff without creating or sharing any password — an
+  invited staff member signs in with the same passwordless email OTP
+  flow as everyone else and accepts the invitation once authenticated.
 - One identity may belong to multiple isolated organizations.
 - Every business record is scoped to an organization.
 - Staff access can be restricted to assigned branches.

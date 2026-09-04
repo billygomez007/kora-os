@@ -118,7 +118,7 @@ Each module owns its application services and persistence access. Modules commun
 
 ## 7. Identity and session architecture
 
-`User` is the global Kora identity. `OrganizationMembership` connects a user to a business. `StaffProfile` contains employment information within that organization.
+`User` is the global Kora identity. `OrganizationMembership` connects a user to a business. `StaffProfile` contains employment information within that organization. `CustomerProfile` is the same user acting as a customer — the customer workspace and the business workspace (docs/PRODUCT_REQUIREMENTS.md section 2) share one identity without either being authoritative over the other.
 
 ```mermaid
 flowchart TD
@@ -126,9 +126,10 @@ flowchart TD
     M --> S[Staff profile]
     M --> R[Roles and permissions]
     M --> B[Branch assignments]
+    U --> C[Customer profile]
 ```
 
-Access tokens are short-lived. Refresh credentials rotate and are revocable per device. Mobile secrets use operating-system secure storage. Passwords, if managed by Kora, use a modern password hashing function and never appear in logs.
+Kora OS uses passwordless email OTP authentication for customers, owners, managers and staff. Kora does not store or support user passwords. A user signs in by requesting a one-time code by email and submitting it back — the same flow for a first sign-up and every later sign-in. `AuthIdentity` maps a user to a provider (`EMAIL_OTP` today; `GOOGLE`, `APPLE`, `PHONE_OTP`, and `EMAIL_MAGIC_LINK` are reserved for later) without ever holding a persisted password credential — an OTP challenge is short-lived and lives in its own table, not on the identity or the user. Access tokens are short-lived and carry no role or permission claims. Refresh credentials rotate on every use, are revocable per device, and reusing an already-rotated one revokes the whole session. Mobile secrets use operating-system secure storage. OTP codes are stored only as a keyed digest and never appear in logs.
 
 ## 8. Tenant isolation and authorization
 
@@ -258,7 +259,7 @@ Realtime updates improve dashboards and queues but are not the source of truth. 
 
 Audit events are append-only from application code and separate from diagnostic logs. They include organization, optional branch, actor, action, entity, request ID, timestamp, safe before/after metadata, and source device where known.
 
-Operational telemetry includes structured logs, metrics, traces, job status, notification delivery status, request IDs, and error monitoring. Logs redact tokens, passwords, payment credentials, and sensitive customer content.
+Operational telemetry includes structured logs, metrics, traces, job status, notification delivery status, request IDs, and error monitoring. Logs redact tokens, OTP codes, payment credentials, and sensitive customer content — Kora has no passwords to redact, since it does not store or support them.
 
 ## 17. Security boundaries
 

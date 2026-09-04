@@ -131,24 +131,42 @@ Default and maximum limits are server-controlled. Filters use documented query p
 
 ## 8. Authentication endpoints
 
-One Kora identity (`User`) carries both workspaces at once — see section
-2 of `docs/DATA_MODEL.md` for how `OrganizationMembership` (business
-workspace) and `CustomerProfile` (customer workspace) both hang off the
-same `User` without either being the "real" account. `PASSWORD` is the
-only implemented provider; `AuthIdentity.provider` reserves `GOOGLE`,
-`APPLE`, `PHONE_OTP`, and `EMAIL_MAGIC_LINK` for later without any schema
-change when they arrive.
+Kora OS uses passwordless email OTP authentication for customers,
+owners, managers and staff. Kora does not store or support user
+passwords. One Kora identity (`User`) carries both workspaces at once —
+see section 2 of `docs/DATA_MODEL.md` for how `OrganizationMembership`
+(business workspace) and `CustomerProfile` (customer workspace) both
+hang off the same `User` without either being the "real" account.
+`EMAIL_OTP` is the only implemented provider; `AuthIdentity.provider`
+reserves `GOOGLE`, `APPLE`, `PHONE_OTP`, and `EMAIL_MAGIC_LINK` for later
+without any schema change when they arrive.
 
 ### Public
 
-- `POST /auth/register`
-- `POST /auth/login`
+- `POST /auth/email-otp/request` — body `{ email }`. Creates and emails a
+  one-time code, invalidating any still-active code already outstanding
+  for that email. Returns `{ challengeId, expiresAt }` — **identically
+  shaped whether or not `email` already has an account**, and never
+  returns the code itself. Rate-limited by both normalized email (a
+  resend cooldown, plus a per-hour cap) and by request IP; either limit
+  returns `429`.
+- `POST /auth/email-otp/verify` — body `{ challengeId, code,
+  deviceLabel? }`. The same request/verify pair is both sign-up and
+  sign-in: on success, creates the `User` if `email` is new or reuses the
+  existing one, marks the email verified, and returns the same session
+  response `POST /auth/refresh` returns (section immediately below). An
+  expired, already-consumed, invalidated, or locked challenge — and a
+  wrong code — all return the same generic `401`; a challenge locks after
+  a configured number of wrong attempts (`OTP_MAX_ATTEMPTS`, default 5),
+  after which even the correct code is rejected. Verification and
+  consumption are atomic, so two concurrent requests for the same code
+  can never both succeed.
 - `POST /auth/refresh`
 
-Password reset and email/phone verification endpoints are not
-implemented yet — Kora has no email or SMS delivery provider integrated
-(see docs/ROADMAP.md). `User.emailVerifiedAt` stays null after
-registration until that flow exists; accounts are usable in the meantime.
+Email/phone verification beyond what OTP itself proves (an SMS-based
+phone flow, for instance) is not implemented — Kora has no SMS delivery
+provider integrated (see docs/ROADMAP.md). There is no password-reset
+endpoint and none is planned; there is no password to reset.
 
 ### Authenticated
 

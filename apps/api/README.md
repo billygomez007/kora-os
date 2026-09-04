@@ -22,6 +22,7 @@ signing secrets, which are never committed and have no default value:
 ```bash
 openssl rand -base64 48   # JWT_ACCESS_SECRET
 openssl rand -base64 48   # REFRESH_TOKEN_PEPPER
+openssl rand -base64 48   # OTP_PEPPER
 ```
 
 Then apply the schema and seed reference data (permissions, system roles,
@@ -57,17 +58,26 @@ Prisma. Each spec file tracks and deletes the rows it creates.
 
 ## Authentication in one paragraph
 
-A Kora account (`User`) is global — the same account can hold business
-memberships (`OrganizationMembership`, one business workspace per
-organization) and a customer profile (`CustomerProfile`, the single
-customer workspace) at once. Register/login return a short-lived signed
-access token and a long-lived opaque refresh token; the refresh token
-rotates on every use, and reusing an already-rotated one revokes the
-whole session. Send the access token as `Authorization: Bearer <token>`.
-Organization-scoped requests additionally need either an
-`X-Kora-Organization-Id` header or an `:organizationId` route param — that
-ID only *selects* which membership to check, it never grants access by
-itself. See `docs/API_SPEC.md` and `docs/SECURITY.md` for the full model.
+Kora OS uses passwordless email OTP authentication for customers,
+owners, managers and staff. Kora does not store or support user
+passwords. `POST /v1/auth/email-otp/request` emails a one-time code;
+`POST /v1/auth/email-otp/verify` (challenge ID + code) is both sign-up
+and sign-in — it creates the account on first use and signs the same
+account in every time after — and returns a short-lived signed access
+token plus a long-lived opaque refresh token. A Kora account (`User`) is
+global: the same account can hold business memberships
+(`OrganizationMembership`, one business workspace per organization) and
+a customer profile (`CustomerProfile`, the single customer workspace) at
+once. The refresh token rotates on every use, and reusing an
+already-rotated one revokes the whole session. Send the access token as
+`Authorization: Bearer <token>`. Organization-scoped requests
+additionally need either an `X-Kora-Organization-Id` header or an
+`:organizationId` route param — that ID only *selects* which membership
+to check, it never grants access by itself. See `docs/API_SPEC.md` and
+`docs/SECURITY.md` for the full model. There is no real email provider
+wired in yet — locally, a sign-in code is printed to the terminal
+running `pnpm api:dev` (clearly labeled, development-only, never enabled
+in production; see `EmailOtpModule`).
 
 ## Useful root-level scripts
 

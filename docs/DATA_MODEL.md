@@ -35,25 +35,81 @@ account; both hang off this table.
 - `created_at`, `updated_at`
 
 At least one usable identity method is required before activation
-(enforced by a `CHECK` constraint, not just application code). There is
-no `password_hash` column here — see `auth_identities` below for why.
+(enforced by a `CHECK` constraint, not just application code).
+
+Kora OS uses passwordless email OTP authentication for customers,
+owners, managers and staff. Kora does not store or support user
+passwords — there is no `password_hash` column here, and there never has
+been one in any released state of this schema (an earlier development
+revision briefly added and then removed one before any production use;
+see the `remove_password_authentication` migration).
 
 ### `auth_identities`
 
-Maps a user to an authentication provider. `PASSWORD` is the only
+Maps a user to an authentication provider. `EMAIL_OTP` is the only
 implemented provider; `GOOGLE`, `APPLE`, `PHONE_OTP`, and
 `EMAIL_MAGIC_LINK` are reserved enum values so adding one later never
-requires a schema change to this table or to `users`.
+requires a schema change to this table or to `users`. No provider stores
+a persisted secret here: an OTP challenge is short-lived and lives in
+`email_otp_challenges` below, not on the identity, and a future OAuth
+provider would be re-verified against that provider on every sign-in
+rather than against anything Kora stores.
 
 - `id`, `user_id`
-- `provider`: password, google, apple, phone_otp, email_magic_link
-- `provider_subject` — the normalized email for `password`; that
+- `provider`: email_otp, google, apple, phone_otp, email_magic_link
+- `provider_subject` — the normalized email for `email_otp`; that
   provider's external user ID for anything else
-- `password_hash` nullable (Argon2id; only set when `provider = password`)
-- `password_algorithm` nullable, defaults to `argon2id`
 - `created_at`, `updated_at`, `last_used_at` nullable
 
 Unique: `(provider, provider_subject)`.
+
+### `email_otp_challenges`
+
+One issued (or re-sent) one-time code. The only credential-adjacent
+secret Kora stores, and even this is short-lived and single-use rather
+than a persisted account credential.
+
+- `id`
+- `email_normalized`
+- `purpose`: authenticate (the only value today; reserved for e.g. a
+  future step-up-verification purpose on sensitive actions — see
+  docs/SECURITY.md section 29)
+- `code_digest` — HMAC-SHA256(`OTP_PEPPER`, challenge id + normalized
+  email + code), keyed so a database-only leak cannot be brute-forced
+  offline without the server-side pepper, and salted per-challenge (via
+  the id and email) so the same code never produces the same digest
+  twice. The plaintext code is never persisted anywhere, including here.
+- `status`: active, consumed, invalidated, locked (there is no stored
+  "expired" value — expiry is always computed from `expires_at` at the
+  moment a challenge is checked, so there is no background sweep to keep
+  correct and no window where a stale `active` row is wrongly treated as
+  still usable)
+- `attempt_count`, `max_attempts` (a snapshot of the configured limit at
+  creation time, so a later configuration change never retroactively
+  changes the rules for an in-flight challenge)
+- `created_at`, `expires_at`
+- `consumed_at` nullable, `invalidated_at` nullable
+- `request_ip_hash` nullable, `request_user_agent` nullable — abuse-
+  prevention metadata only, a salted hash of the caller's address (same
+  pattern as `sessions.ip_hash`), never the address itself, and no other
+  personal data
+- `replaces_challenge_id` nullable — resend/replacement lineage: a new
+  request while an active challenge exists for the same
+  `(email_normalized, purpose)` invalidates the old row and links the
+  new one to it, purely for traceability; the actual invalidation is
+  `status`/`invalidated_at` on the old row, not this link
+
+Verification and consumption happen in one atomic `UPDATE` guarded by
+`status = 'active'`, so two concurrent verification requests for the
+same challenge can never both succeed. A wrong code increments
+`attempt_count`; reaching `max_attempts` sets `status = 'locked'`, after
+which even the correct code is rejected. Requesting a new code for an
+email that already has an active one invalidates the old one — but the
+ability to request a code at all is independently rate-limited (by
+normalized email and by request IP, both counted from this table, not
+from any single challenge's own attempt counter), so repeatedly
+requesting fresh codes can never be used to reset accumulated abuse
+limits for free.
 
 ### `sessions`
 
@@ -74,10 +130,10 @@ to it rather than being restructured.
 
 One row per issued refresh token; rotation creates a new row rather than
 mutating the old one, so a session's full chain of rotated tokens is
-recoverable. `token_hash` is a fast SHA-256 hash, not Argon2id — the raw
-token is already a high-entropy random value, not a human-guessable
-secret, so a slow password-hashing function would only add latency
-without adding security.
+recoverable. `token_hash` is a fast SHA-256 hash: the raw token is
+already a high-entropy random value, not a human-guessable secret, so a
+slow memory-hard hashing function (the kind a password would need — Kora
+has none) would add latency without adding security.
 
 - `id`, `session_id`
 - `token_hash` unique
@@ -596,11 +652,20 @@ Unique: `(scope, user_id, idempotency_key)`.
 ### `audit_events`
 
 - `id`, `organization_id` nullable, `branch_id` nullable
-- `actor_user_id`, `actor_membership_id` nullable
+- `actor_user_id` nullable, `actor_membership_id` nullable
 - `action`, `entity_type`, `entity_id`
 - `request_id`, `source`, `source_device_id` nullable
 - `previous_state`, `new_state`, `metadata` nullable
 - `occurred_at`
+
+`actor_user_id` is nullable for the same reason `organization_id` is —
+"platform-level actions that are not scoped to a single organization"
+applies equally to a pre-authentication action with no resolved user:
+requesting an OTP for an email with no Kora account yet has no user to
+attribute the event to (the account, if any, is only created on
+successful verification). `entity_type`/`entity_id` (e.g.
+`email_otp_challenge`/the challenge id) carry the subject of such an
+event instead.
 
 Application roles have insert and read permissions according to policy but no update or delete permission on audit records.
 

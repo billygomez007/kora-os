@@ -45,7 +45,7 @@ All data crossing a trust boundary is authenticated where appropriate, validated
 - Privilege escalation within an organization.
 - Stolen or replayed sessions.
 - Account enumeration and automated login abuse.
-- Forged invitations, password-reset links, or billing webhooks.
+- Forged invitations, OTP challenges, or billing webhooks.
 - Duplicate or altered financial commands.
 - Unauthorized changes to service prices, commissions, or reconciliation.
 - Sensitive data exposure through logs, backups, notifications, or local storage.
@@ -55,24 +55,68 @@ All data crossing a trust boundary is authenticated where appropriate, validated
 
 ## 6. Authentication
 
-- Registration and recovery verify control of the selected email address or phone number.
-- Passwords, when supported directly, are hashed with a modern memory-hard password hashing function using reviewed parameters.
-- Password policy favors length and breached-password rejection over arbitrary composition rules.
-- Authentication responses do not reveal whether a specific account exists when that disclosure creates abuse risk.
-- Login, verification, invitation, and recovery routes use layered rate limits.
-- Verification and recovery tokens are random, single-use, purpose-bound, short-lived, and stored as hashes.
-- High-risk account changes require recent authentication or step-up verification.
-- Owners and platform administrators must support stronger authentication before production financial use.
+Kora OS uses passwordless email OTP authentication for customers,
+owners, managers and staff. Kora does not store or support user
+passwords — there is no password field anywhere in the schema, no
+password hashing, and no password-reset flow; a locked-out user simply
+requests a new code the same way they always sign in.
 
-Implemented: email-and-password registration and login (Argon2id
-hashing), auth-route rate limiting (a stricter per-route limit than the
-platform-wide default; IP-based, so it cannot distinguish a real account
-from a nonexistent one), and identical error text/shape between a wrong
-password and a non-existent email. Not yet implemented: phone/email
-verification delivery, password reset, breached-password rejection, and
-step-up verification — Kora has no email or SMS provider integrated yet
-(docs/ROADMAP.md), so registration leaves `email_verified_at` null
-rather than gating the account on a step that cannot be completed.
+- A user signs in by entering an email address, receiving a one-time
+  code by email, and entering that code. The same request/verify pair is
+  both sign-up and sign-in — there is no separate password-style
+  registration flow, and completing it always leaves the email verified
+  (a successful OTP verification is proof of control over the address).
+- A one-time code is at least six digits, generated with a
+  cryptographically secure random generator (`crypto.randomInt`, not
+  `Math.random`), and stored only as a keyed digest —
+  HMAC-SHA256(`OTP_PEPPER`, challenge id + normalized email + code) —
+  never in plaintext, in any table, log, or response.
+- A code is short-lived (`OTP_EXPIRY_MINUTES`, default 10), single-use
+  (verification and consumption are one atomic database update, so
+  concurrent verification requests can never both succeed with the same
+  code), and locks after a bounded number of wrong attempts
+  (`OTP_MAX_ATTEMPTS`, default 5) — after which even the correct code is
+  rejected.
+- Requesting a new code invalidates whatever code is still active for
+  that email, but the ability to request a code at all is independently
+  rate-limited by both normalized email (a resend cooldown, plus a
+  per-hour cap, `OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR`) and by request IP
+  (`OTP_MAX_REQUESTS_PER_IP_PER_HOUR`) — a resend can never be used to
+  reset an account's accumulated failed-attempt or request-rate limits
+  for free, since obtaining a fresh challenge at all is itself bounded.
+- Comparing a submitted code against its stored digest uses a
+  constant-time comparison (`crypto.timingSafeEqual`).
+- Authentication responses do not reveal whether a specific email
+  already has an account: `POST /auth/email-otp/request` returns the
+  identical response shape either way, and a request/delivery failure is
+  reported distinctly from "check your email" rather than folded into
+  the same generic response (a genuine infrastructure problem is not an
+  account-existence signal, so it is safe, and more useful, to surface
+  separately).
+- `OTP_PEPPER` must be an explicit, strong value in production — the
+  same policy `JWT_ACCESS_SECRET` and `REFRESH_TOKEN_PEPPER` already
+  follow (docs/API_SPEC.md, `.env.example`).
+- High-risk account changes and owner/platform-administrator actions
+  eventually need step-up verification beyond a single OTP — see the
+  passkey/device-bound roadmap note at the end of this section.
+
+Email delivery itself goes through a provider-neutral `EmailOtpSender`
+port (docs/ARCHITECTURE.md section 6): tests inject an in-memory fake
+that never logs a code; local development uses a clearly-labeled,
+stdout-only sender that refuses to run when `NODE_ENV=production`;
+production has no real provider connected yet and fails closed (a
+`503`) rather than silently pretending a code was sent — see
+docs/ROADMAP.md for where a real provider integration lands.
+
+Email OTP is Kora's chosen initial authentication method, but it is not
+phishing-resistant — a sufficiently well-crafted lookalike site can
+still relay a code an attacker requests through it. Passwordless
+passkeys or another device-bound authentication method are a security
+roadmap item for a later phase, targeted specifically at sensitive
+financial and owner-administration actions rather than replacing email
+OTP for ordinary sign-in. Passwords are not planned as a fallback for
+any of this — if email OTP proves insufficient for a given action, the
+next step is a stronger passwordless method, not a weaker password one.
 
 ## 7. Sessions
 
@@ -91,10 +135,10 @@ access token is a JWT carrying only a user ID and session ID (`sub`,
 goes into a token, so a permission change takes effect on a caller's very
 next request rather than waiting for their token to expire. A refresh
 token is a `crypto.randomBytes(32)` value; the server stores only its
-SHA-256 hash (a fast hash, deliberately not Argon2id — the token is
-already high-entropy and unguessable, so a slow password-hashing function
-would add latency without adding security; see docs/DATA_MODEL.md's
-`refresh_tokens` entry). Every refresh marks the presented token `used`
+SHA-256 hash (a fast hash is appropriate here — the token is already
+high-entropy and unguessable, unlike a password, so a slow memory-hard
+hashing function would add latency without adding security; see
+docs/DATA_MODEL.md's `refresh_tokens` entry). Every refresh marks the presented token `used`
 and issues a new one for the same session; presenting an already-used or
 already-revoked token revokes that whole session — not just the reused
 token — which is the "security event" this document originally
@@ -249,8 +293,8 @@ Audit events contain actor, tenant, optional branch, action, entity, request ID,
 
 Logs and audit metadata never contain:
 
-- Passwords or password hashes.
-- Access, refresh, verification, reset, or invitation tokens.
+- Plaintext OTP codes (Kora has no passwords or password hashes to leak — see section 6).
+- Access, refresh, or invitation tokens.
 - Full payment credentials or provider secrets.
 - Private encryption keys.
 - Unnecessary customer notes or message content.

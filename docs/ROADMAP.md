@@ -27,7 +27,7 @@ Completed:
 - Prisma 7 foundation: `prisma.config.ts`, the full identity/tenancy/workforce/subscription/audit schema, the first migration (`foundation_identity_tenancy_subscriptions`), and an idempotent seed for permissions, system roles, entitlement definitions, and the Starter/Growth/Business/Enterprise plan shells (no commercial prices set).
 - `/v1/readiness` reports real database connectivity alongside API liveness.
 - Internal tenancy services (organization onboarding, entitlement resolution, subscription access-mode resolution, append-only audit/subscription-event recording) now sit behind real authenticated, authorized HTTP endpoints — see the next three items.
-- Email-and-password authentication: Argon2id-hashed credentials scoped to a provider-neutral `AuthIdentity` (ready for phone OTP, email magic-link, Apple, and Google later without a schema change), short-lived JWT access tokens carrying no role/permission claims, rotating opaque refresh tokens with reuse detection that revokes the affected session, and per-route rate limiting. Routes: `POST /v1/auth/{register,login,refresh,logout,logout-all}`, `GET /v1/auth/{me,sessions}`, `DELETE /v1/auth/sessions/:sessionId`.
+- Passwordless email OTP authentication (Kora OS does not store or support user passwords — a brief development-only password implementation was replaced before any production use; see the `remove_password_authentication` migration): a cryptographically random, at-least-6-digit code stored only as a keyed HMAC-SHA256 digest, scoped to a provider-neutral `AuthIdentity` (ready for phone OTP, email magic-link, Apple, and Google later without a schema change), short-lived JWT access tokens carrying no role/permission claims, rotating opaque refresh tokens with reuse detection that revokes the affected session, and rate limiting by both normalized email and request IP. The request/verify pair is both sign-up and sign-in. Routes: `POST /v1/auth/email-otp/{request,verify}`, `POST /v1/auth/refresh`, `POST /v1/auth/{logout,logout-all}`, `GET /v1/auth/{me,sessions}`, `DELETE /v1/auth/sessions/:sessionId`.
 - Organization-scoped RBAC and subscription enforcement, applied per route via `TenantAccessGuard`: active membership, the union of permissions across every role a membership holds, explicit branch assignment (or the broad `branches.manage` permission), and the organization's subscription access mode (`BLOCKED` denies everything, `READ_ONLY` denies mutations) — all resolved fresh from the database on every request, never cached or trusted from a token or request body.
 - Authenticated organization management (`POST`/`GET /v1/organizations`, `GET /v1/organizations/:organizationId`) and staff invitations (create/view/accept/reject/revoke under `/v1/organizations/:organizationId/staff-invitations` and `/v1/staff-invitations/:token`) — invitation tokens are single-use, hashed, organization- and role-specific, and optionally branch-specific.
 - Public business discovery (`GET /v1/discovery/businesses`, `/businesses/:slug`, `/businesses/:slug/branches`, `/categories`) backed by `PublicBusinessProfile`/`BusinessCategory`/branch discovery fields, plus owner/manager profile-management endpoints under `/v1/organizations/:organizationId/business-profile`. The global customer workspace (`CustomerProfile`, one per user) and the per-organization `CustomerRecord`/`CustomerFavorite` tables are modeled but not yet driven by any booking flow.
@@ -35,7 +35,7 @@ Completed:
 Current limitations:
 
 - Room is still the only working data store on Android and contains demonstration-oriented local behavior.
-- Account verification (email/phone), password reset, and any external identity provider remain unimplemented — no email or SMS delivery provider is integrated yet.
+- No real email delivery provider is integrated yet (`EmailOtpSender` fails closed in production and uses a local-only stdout catcher in development — see docs/SECURITY.md section 6); phone OTP and any external identity provider (Apple, Google) remain unimplemented.
 - Role/permission *management* endpoints (creating custom roles, editing a membership's roles or branches) are not implemented; every role assignment today comes from the seeded system roles via staff invitation.
 - Current Android roles are simulated locally and are not security controls, and Android does not yet call this API at all.
 - Payments and subscriptions are not connected to an authoritative backend, and no billing provider is integrated.
@@ -145,8 +145,8 @@ ahead of a client that would consume it).
 
 Deliverables:
 
-- Registration, login, refresh, logout, and rotating revocable sessions. Done.
-- ~~Recovery~~ and ~~verification~~ flows. Not done — no email/SMS provider integrated yet.
+- Passwordless email OTP sign-up/sign-in, refresh, logout, and rotating revocable sessions. Done — see docs/SECURITY.md section 6; there is no password-based registration or login, and none is planned.
+- Real email delivery for the OTP code. Not done — `EmailOtpSender` fails closed in production until a provider is integrated (no email/SMS provider integrated yet).
 - Owner organization creation transaction. Done.
 - First branch, owner membership, roles, and eligible trial created atomically. Done.
 - Staff invitation creation, acceptance, decline (implemented as reject), revoke, and expiry. Done.

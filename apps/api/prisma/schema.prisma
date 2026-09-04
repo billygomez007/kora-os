@@ -424,6 +424,17 @@ model Organization {
   serviceSessionItems         ServiceSessionItem[]
   serviceSessionStatusHistory ServiceSessionStatusHistory[]
 
+  checkouts                     Checkout[]
+  checkoutLineItems             CheckoutLineItem[]
+  checkoutAdjustments           CheckoutAdjustment[]
+  paymentRecords                PaymentRecord[]
+  paymentVerificationEvents     PaymentVerificationEvent[]
+  paymentDisputes               PaymentDispute[]
+  transactions                  Transaction[]
+  transactionLineItems          TransactionLineItem[]
+  transactionPaymentAllocations TransactionPaymentAllocation[]
+  financialIdempotencyKeys      FinancialIdempotencyKey[]
+
   @@map("organizations")
 }
 
@@ -474,6 +485,10 @@ model Branch {
   queueEntries    QueueEntry[]
   serviceSessions ServiceSession[]
 
+  checkouts      Checkout[]
+  paymentRecords PaymentRecord[]
+  transactions   Transaction[]
+
   @@unique([organizationId, code])
   @@unique([organizationId, id])
   @@index([organizationId])
@@ -509,6 +524,14 @@ model OrganizationMembership {
   queueEntriesCreated      QueueEntry[]
   serviceSessionsCreated   ServiceSession[] @relation("ServiceSessionCreatedBy")
   serviceSessionsCompleted ServiceSession[] @relation("ServiceSessionCompletedBy")
+
+  checkoutsCreated        Checkout[]       @relation("CheckoutCreatedBy")
+  checkoutsVoided         Checkout[]       @relation("CheckoutVoidedBy")
+  paymentRecordsRecorded  PaymentRecord[]  @relation("PaymentRecordedBy")
+  paymentRecordsConfirmed PaymentRecord[]  @relation("PaymentConfirmedBy")
+  paymentRecordsVoided    PaymentRecord[]  @relation("PaymentVoidedBy")
+  paymentDisputesOpened   PaymentDispute[] @relation("PaymentDisputeOpenedBy")
+  paymentDisputesResolved PaymentDispute[] @relation("PaymentDisputeResolvedBy")
 
   @@unique([organizationId, userId])
   @@unique([organizationId, id])
@@ -645,6 +668,12 @@ model StaffProfile {
   queueEntriesAssigned QueueEntry[]
   serviceSessions      ServiceSession[]
   serviceSessionItems  ServiceSessionItem[]
+
+  checkoutsAssigned              Checkout[]
+  checkoutLineItems              CheckoutLineItem[]
+  paymentRecordsConfirmationOwed PaymentRecord[]
+  transactionsAssigned           Transaction[]
+  transactionLineItems           TransactionLineItem[]
 
   @@unique([organizationId, membershipId])
   // Lets StaffServiceAssignment and Appointment hold a composite tenant
@@ -936,6 +965,8 @@ model CustomerRecord {
   appointments    Appointment[]
   queueEntries    QueueEntry[]
   serviceSessions ServiceSession[]
+  checkouts       Checkout[]
+  transactions    Transaction[]
 
   @@unique([organizationId, id])
   @@index([organizationId, customerProfileId])
@@ -1129,13 +1160,15 @@ model Service {
   updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   archivedAt           DateTime?          @map("archived_at") @db.Timestamptz(6)
 
-  organization        Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  serviceCategory     ServiceCategory?         @relation(fields: [organizationId, serviceCategoryId], references: [organizationId, id], onDelete: Restrict)
-  branchServices      BranchService[]
-  staffAssignments    StaffServiceAssignment[]
-  appointmentItems    AppointmentItem[]
-  queueEntryServices  QueueEntryService[]
-  serviceSessionItems ServiceSessionItem[]
+  organization         Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceCategory      ServiceCategory?         @relation(fields: [organizationId, serviceCategoryId], references: [organizationId, id], onDelete: Restrict)
+  branchServices       BranchService[]
+  staffAssignments     StaffServiceAssignment[]
+  appointmentItems     AppointmentItem[]
+  queueEntryServices   QueueEntryService[]
+  serviceSessionItems  ServiceSessionItem[]
+  checkoutLineItems    CheckoutLineItem[]
+  transactionLineItems TransactionLineItem[]
 
   @@unique([organizationId, id])
   @@index([organizationId, archivedAt])
@@ -1764,7 +1797,16 @@ model ServiceSession {
 
   items         ServiceSessionItem[]
   statusHistory ServiceSessionStatusHistory[]
+  checkout      Checkout?
+  transaction   Transaction?
 
+  // Lets Checkout and Transaction hold a composite tenant FK to a
+  // specific service session by id (docs task "Completed ServiceSession
+  // -> Checkout -> Manual payment recording -> Provider confirmation or
+  // dispute -> Manager resolution -> Immutable verified Transaction"),
+  // the same pattern every other tenant-owned aggregate root in this
+  // schema already establishes.
+  @@unique([organizationId, id])
   @@index([organizationId, branchId, status])
   @@index([organizationId, assignedStaffProfileId, status])
   @@index([organizationId, queueEntryId])
@@ -1791,10 +1833,12 @@ model ServiceSessionItem {
   displayOrder            Int      @map("display_order")
   createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  serviceSession ServiceSession @relation(fields: [serviceSessionId], references: [id], onDelete: Cascade)
-  service        Service        @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
-  staffProfile   StaffProfile   @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceSession       ServiceSession        @relation(fields: [serviceSessionId], references: [id], onDelete: Cascade)
+  service              Service               @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile         StaffProfile          @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  checkoutLineItems    CheckoutLineItem[]
+  transactionLineItems TransactionLineItem[]
 
   @@index([serviceSessionId, displayOrder])
   @@map("service_session_items")
@@ -1839,4 +1883,467 @@ model ServiceSessionStatusHistory {
   @@index([serviceSessionId, occurredAt])
   @@index([organizationId, occurredAt])
   @@map("service_session_status_history")
+}
+
+// ---------------------------------------------------------------------------
+// Checkout, manual payment recording, provider verification/disputes, and
+// posted transactions (docs task "Completed ServiceSession -> Checkout ->
+// Manual payment recording -> Provider confirmation or dispute -> Manager
+// resolution -> Immutable verified Transaction").
+//
+// Locked domain separation, kept strict throughout this section:
+// - ServiceSession proves that work occurred (section above).
+// - Checkout calculates the amount due for that completed work.
+// - PaymentRecord is a *claim* that money was received — never itself
+//   verified revenue.
+// - Transaction is the immutable, posted commercial record — created only
+//   once a Checkout is fully covered by CONFIRMED PaymentRecords, and the
+//   only thing later reporting may ever count as business revenue.
+// Kora does not hold, transfer, or settle customer money in this phase —
+// every PaymentRecord is a manually-recorded staff claim, never a live
+// payment-gateway callback. Customer service payments (this section) and
+// organization subscription payments (OrganizationSubscription, above) are
+// completely separate domains with no shared table or code path.
+//
+// Every tenant-owned model below that references another tenant-owned
+// model by id does so through a composite (organizationId, ...) foreign
+// key, continuing the pattern the rest of this schema establishes — a
+// cross-tenant reference is rejected by the database itself.
+//
+// Money is always integer minor units plus a three-character ISO currency
+// code, matching Service.priceMinor/AppointmentItem.priceMinorSnapshot
+// elsewhere in this schema. `adjustmentTotalMinor` is a *signed* net value
+// (positive for a net surcharge, negative for a net discount) so that
+// `totalMinor = subtotalMinor + adjustmentTotalMinor` always holds exactly
+// — enforced by a CHECK constraint added by hand in this phase's
+// migration, the same way the double-booking exclusion constraint and the
+// service-session partial unique indexes were added by hand in earlier
+// phases.
+// ---------------------------------------------------------------------------
+
+enum CheckoutStatus {
+  OPEN
+  AWAITING_VERIFICATION
+  DISPUTED
+  SETTLED
+  VOIDED
+
+  @@map("checkout_status")
+}
+
+enum CheckoutAdjustmentType {
+  DISCOUNT
+  SURCHARGE
+
+  @@map("checkout_adjustment_type")
+}
+
+/// Recording categories only (docs task Phase 2: "Do not connect
+/// Paystack, Hubtel, Flutterwave, Stripe, banks, card processors or
+/// mobile-money APIs") — no provider integration exists behind any of
+/// these values.
+enum PaymentMethod {
+  CASH
+  MOBILE_MONEY
+  CARD
+  BANK_TRANSFER
+  OTHER
+
+  @@map("payment_method")
+}
+
+/// RECORDED is a claim only. CONFIRMED is the only state a PaymentRecord
+/// can contribute toward posting a Transaction. DISPUTED and VOIDED are
+/// both terminal-adjacent: DISPUTED must be resolved (to CONFIRMED or
+/// VOIDED) by an owner/manager; VOIDED cannot be reopened in this phase.
+enum PaymentRecordStatus {
+  RECORDED
+  CONFIRMED
+  DISPUTED
+  VOIDED
+
+  @@map("payment_record_status")
+}
+
+enum PaymentVerificationAction {
+  RECORDED
+  CONFIRMED
+  DISPUTED
+  RESOLVED_CONFIRMED
+  RESOLVED_REJECTED
+  VOIDED
+
+  @@map("payment_verification_action")
+}
+
+enum PaymentDisputeStatus {
+  OPEN
+  RESOLVED_CONFIRMED
+  RESOLVED_REJECTED
+
+  @@map("payment_dispute_status")
+}
+
+enum PaymentDisputeResolution {
+  CONFIRM_PAYMENT
+  REJECT_PAYMENT
+
+  @@map("payment_dispute_resolution")
+}
+
+/// A single status for this phase — POSTED. Reversal/refund concepts are
+/// explicitly deferred to a future phase (docs task: "Reserve
+/// reversal/refund concepts for a future phase; do not implement them
+/// now").
+enum TransactionStatus {
+  POSTED
+
+  @@map("transaction_status")
+}
+
+/// The narrow, open vocabulary of financial commands that require
+/// idempotency in this phase — see FinancialIdempotencyKey.
+enum FinancialIdempotencyOperation {
+  CREATE_CHECKOUT
+  RECORD_PAYMENT
+
+  @@map("financial_idempotency_operation")
+}
+
+/// The amount due for one COMPLETED ServiceSession (docs task Phase 1).
+/// Exactly one Checkout may exist per ServiceSession, enforced by the
+/// unique constraint on `serviceSessionId` below — not only an
+/// application check. Once any PaymentRecord exists against this
+/// checkout, `items`/`adjustments` become locked (enforced in
+/// CheckoutService, which refuses further line-item or adjustment
+/// mutations once `payments` is non-empty); once SETTLED or VOIDED, the
+/// entire row is immutable. `subtotalMinor` is the sum of
+/// CheckoutLineItem snapshots; `adjustmentTotalMinor` is the signed net
+/// of every CheckoutAdjustment; `totalMinor = subtotalMinor +
+/// adjustmentTotalMinor` always (CHECK-enforced).
+model Checkout {
+  id                     String         @id @default(uuid()) @db.Uuid
+  organizationId         String         @map("organization_id") @db.Uuid
+  branchId               String         @map("branch_id") @db.Uuid
+  serviceSessionId       String         @unique @map("service_session_id") @db.Uuid
+  customerRecordId       String         @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId String         @map("assigned_staff_profile_id") @db.Uuid
+  reference              String         @unique
+  status                 CheckoutStatus @default(OPEN)
+  currency               String         @db.Char(3)
+  subtotalMinor          Int            @map("subtotal_minor")
+  adjustmentTotalMinor   Int            @default(0) @map("adjustment_total_minor")
+  totalMinor             Int            @map("total_minor")
+  version                Int            @default(1)
+  createdByMembershipId  String         @map("created_by_membership_id") @db.Uuid
+  createdAt              DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  settledAt              DateTime?      @map("settled_at") @db.Timestamptz(6)
+  voidedAt               DateTime?      @map("voided_at") @db.Timestamptz(6)
+  voidedByMembershipId   String?        @map("voided_by_membership_id") @db.Uuid
+  voidReason             String?        @map("void_reason")
+
+  organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  serviceSession       ServiceSession          @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord          @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile            @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  createdByMembership  OrganizationMembership  @relation("CheckoutCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  voidedByMembership   OrganizationMembership? @relation("CheckoutVoidedBy", fields: [organizationId, voidedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  items       CheckoutLineItem[]
+  adjustments CheckoutAdjustment[]
+  payments    PaymentRecord[]
+  transaction Transaction?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, serviceSessionId])
+  @@index([organizationId, branchId, status])
+  @@index([organizationId, assignedStaffProfileId, status])
+  @@index([organizationId, customerRecordId])
+  @@map("checkouts")
+}
+
+/// An immutable snapshot of one ServiceSessionItem at checkout-creation
+/// time (docs task Phase 1: "Never recalculate an existing checkout from
+/// the current Service catalogue"). `serviceSessionItemId` is kept only
+/// to navigate back to the session's own record; every financial value
+/// used by this checkout comes from the snapshot columns here, never a
+/// live join.
+model CheckoutLineItem {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  checkoutId              String   @map("checkout_id") @db.Uuid
+  serviceSessionItemId    String   @map("service_session_item_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  staffProfileId          String   @map("staff_profile_id") @db.Uuid
+  serviceNameSnapshot     String   @map("service_name_snapshot")
+  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
+  priceMinorSnapshot      Int      @map("price_minor_snapshot")
+  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
+  displayOrder            Int      @map("display_order")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  checkout           Checkout           @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+  serviceSessionItem ServiceSessionItem @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
+  service            Service            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile       StaffProfile       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([checkoutId, displayOrder])
+  @@map("checkout_line_items")
+}
+
+/// An append-only discount or surcharge against one Checkout (docs task
+/// Phase 1: "Adjustments are append-only. Corrections must use a
+/// compensating adjustment instead of editing or deleting an old
+/// adjustment"). `amountMinor` is always a positive magnitude; `type`
+/// determines whether it subtracts (DISCOUNT) or adds (SURCHARGE) when
+/// CheckoutService recomputes `Checkout.adjustmentTotalMinor`. A
+/// discount can never take the running total below zero (validated in
+/// CheckoutService before the row is written, not only trusted from a
+/// CHECK constraint, since the *combined* effect of all adjustments —
+/// not this one row alone — is what must stay non-negative).
+model CheckoutAdjustment {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  organizationId        String                 @map("organization_id") @db.Uuid
+  checkoutId            String                 @map("checkout_id") @db.Uuid
+  type                  CheckoutAdjustmentType
+  amountMinor           Int                    @map("amount_minor")
+  reason                String
+  createdByMembershipId String                 @map("created_by_membership_id") @db.Uuid
+  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  checkout     Checkout     @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+
+  @@index([checkoutId, createdAt])
+  @@map("checkout_adjustments")
+}
+
+/// A staff member's *claim* that money was received against one Checkout
+/// (docs task Phase 2) — never itself verified revenue. Amount, method,
+/// and currency become immutable immediately after creation (enforced in
+/// PaymentRecordsService, which exposes no update path for them at all —
+/// only status-transition commands); a mistake is corrected by voiding
+/// and creating a replacement, never editing. `confirmationRequiredByStaffProfileId`
+/// snapshots which provider must verify this specific payment — the
+/// ServiceSession's assigned provider at recording time — so a later
+/// (impossible, since Checkout/ServiceSession are themselves immutable
+/// by this point) change could never silently redirect who must confirm
+/// it. `tenderedAmountMinor` is only ever meaningful for CASH (the
+/// change given back is derived, never itself stored or treated as
+/// revenue).
+model PaymentRecord {
+  id                                   String              @id @default(uuid()) @db.Uuid
+  organizationId                       String              @map("organization_id") @db.Uuid
+  branchId                             String              @map("branch_id") @db.Uuid
+  checkoutId                           String              @map("checkout_id") @db.Uuid
+  reference                            String              @unique
+  method                               PaymentMethod
+  status                               PaymentRecordStatus @default(RECORDED)
+  appliedAmountMinor                   Int                 @map("applied_amount_minor")
+  tenderedAmountMinor                  Int?                @map("tendered_amount_minor")
+  currency                             String              @db.Char(3)
+  externalReference                    String?             @map("external_reference")
+  note                                 String?
+  recordedByMembershipId               String              @map("recorded_by_membership_id") @db.Uuid
+  confirmationRequiredByStaffProfileId String              @map("confirmation_required_by_staff_profile_id") @db.Uuid
+  confirmedByMembershipId              String?             @map("confirmed_by_membership_id") @db.Uuid
+  recordedAt                           DateTime            @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  confirmedAt                          DateTime?           @map("confirmed_at") @db.Timestamptz(6)
+  disputedAt                           DateTime?           @map("disputed_at") @db.Timestamptz(6)
+  voidedAt                             DateTime?           @map("voided_at") @db.Timestamptz(6)
+  voidedByMembershipId                 String?             @map("voided_by_membership_id") @db.Uuid
+  voidReason                           String?             @map("void_reason")
+  version                              Int                 @default(1)
+  createdAt                            DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                            DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization                       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                             Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  checkout                           Checkout                @relation(fields: [organizationId, checkoutId], references: [organizationId, id], onDelete: Restrict)
+  recordedByMembership               OrganizationMembership  @relation("PaymentRecordedBy", fields: [organizationId, recordedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  confirmationRequiredByStaffProfile StaffProfile            @relation(fields: [organizationId, confirmationRequiredByStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  confirmedByMembership              OrganizationMembership? @relation("PaymentConfirmedBy", fields: [organizationId, confirmedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  voidedByMembership                 OrganizationMembership? @relation("PaymentVoidedBy", fields: [organizationId, voidedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  verificationEvents PaymentVerificationEvent[]
+  dispute            PaymentDispute?
+  allocations        TransactionPaymentAllocation[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, checkoutId, status])
+  @@index([organizationId, confirmationRequiredByStaffProfileId, status])
+  @@map("payment_records")
+}
+
+/// Append-only verification lifecycle log for one PaymentRecord (docs
+/// task Phase 3) — the PaymentRecord equivalent of
+/// ServiceSessionStatusHistory, and likewise distinct from the global
+/// AuditEvent trail. No update or delete path is exposed through
+/// application services.
+model PaymentVerificationEvent {
+  id                String                    @id @default(uuid()) @db.Uuid
+  organizationId    String                    @map("organization_id") @db.Uuid
+  paymentRecordId   String                    @map("payment_record_id") @db.Uuid
+  action            PaymentVerificationAction
+  previousStatus    PaymentRecordStatus?      @map("previous_status")
+  newStatus         PaymentRecordStatus       @map("new_status")
+  actorUserId       String?                   @map("actor_user_id") @db.Uuid
+  actorMembershipId String?                   @map("actor_membership_id") @db.Uuid
+  reason            String?
+  occurredAt        DateTime                  @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentRecord PaymentRecord @relation(fields: [paymentRecordId], references: [id], onDelete: Cascade)
+
+  @@index([paymentRecordId, occurredAt])
+  @@index([organizationId, occurredAt])
+  @@map("payment_verification_events")
+}
+
+/// At most one dispute per PaymentRecord (docs task Phase 3) — a
+/// terminal CONFIRMED or VOIDED record cannot be reopened in this
+/// phase, so a payment never needs a second dispute row. `resolution`
+/// and `resolvedAt`/`resolvedByMembershipId` are set together, only
+/// once, only by an owner/manager holding `payments.resolve`
+/// (CHECK-enforced shape in this phase's migration).
+model PaymentDispute {
+  id                     String                    @id @default(uuid()) @db.Uuid
+  organizationId         String                    @map("organization_id") @db.Uuid
+  paymentRecordId        String                    @unique @map("payment_record_id") @db.Uuid
+  status                 PaymentDisputeStatus      @default(OPEN)
+  reason                 String
+  openedByMembershipId   String                    @map("opened_by_membership_id") @db.Uuid
+  openedAt               DateTime                  @default(now()) @map("opened_at") @db.Timestamptz(6)
+  resolvedByMembershipId String?                   @map("resolved_by_membership_id") @db.Uuid
+  resolvedAt             DateTime?                 @map("resolved_at") @db.Timestamptz(6)
+  resolution             PaymentDisputeResolution?
+  resolutionNote         String?                   @map("resolution_note")
+
+  organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentRecord        PaymentRecord           @relation(fields: [organizationId, paymentRecordId], references: [organizationId, id], onDelete: Cascade)
+  openedByMembership   OrganizationMembership  @relation("PaymentDisputeOpenedBy", fields: [organizationId, openedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  resolvedByMembership OrganizationMembership? @relation("PaymentDisputeResolvedBy", fields: [organizationId, resolvedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, paymentRecordId])
+  @@index([organizationId, status])
+  @@map("payment_disputes")
+}
+
+/// The immutable, posted commercial record (docs task Phase 4) — the
+/// only thing a future reporting phase may ever count as business
+/// revenue. Created exactly once per Checkout (unique constraint below),
+/// only when confirmed PaymentRecord applied amounts exactly equal
+/// `Checkout.totalMinor` (TransactionsService, inside the same
+/// transaction that confirms or resolves the final required payment —
+/// see that service for the row-locking strategy). No update or delete
+/// path is exposed through any public service. A single `POSTED` status
+/// exists in this phase; reversal/refund concepts are deliberately
+/// deferred.
+model Transaction {
+  id                     String            @id @default(uuid()) @db.Uuid
+  organizationId         String            @map("organization_id") @db.Uuid
+  branchId               String            @map("branch_id") @db.Uuid
+  checkoutId             String            @unique @map("checkout_id") @db.Uuid
+  serviceSessionId       String            @unique @map("service_session_id") @db.Uuid
+  customerRecordId       String            @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId String            @map("assigned_staff_profile_id") @db.Uuid
+  reference              String            @unique
+  status                 TransactionStatus @default(POSTED)
+  currency               String            @db.Char(3)
+  subtotalMinor          Int               @map("subtotal_minor")
+  adjustmentTotalMinor   Int               @map("adjustment_total_minor")
+  totalMinor             Int               @map("total_minor")
+  postedAt               DateTime          @default(now()) @map("posted_at") @db.Timestamptz(6)
+  createdAt              DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization         Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch         @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  checkout             Checkout       @relation(fields: [organizationId, checkoutId], references: [organizationId, id], onDelete: Restrict)
+  serviceSession       ServiceSession @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile   @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+
+  items       TransactionLineItem[]
+  allocations TransactionPaymentAllocation[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, checkoutId])
+  @@unique([organizationId, serviceSessionId])
+  @@index([organizationId, branchId, postedAt])
+  @@index([organizationId, assignedStaffProfileId, postedAt])
+  @@map("transactions")
+}
+
+/// An immutable snapshot copied from CheckoutLineItem at posting time
+/// (docs task Phase 4: "Never recompute a historical Transaction from
+/// mutable catalogue data").
+model TransactionLineItem {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  transactionId           String   @map("transaction_id") @db.Uuid
+  serviceSessionItemId    String   @map("service_session_item_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  staffProfileId          String   @map("staff_profile_id") @db.Uuid
+  serviceNameSnapshot     String   @map("service_name_snapshot")
+  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
+  priceMinorSnapshot      Int      @map("price_minor_snapshot")
+  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
+  displayOrder            Int      @map("display_order")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction        Transaction        @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  serviceSessionItem ServiceSessionItem @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
+  service            Service            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile       StaffProfile       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([transactionId, displayOrder])
+  @@map("transaction_line_items")
+}
+
+/// Which CONFIRMED PaymentRecord(s) — and how much of each — funded one
+/// posted Transaction. Immutable once created.
+model TransactionPaymentAllocation {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organizationId     String   @map("organization_id") @db.Uuid
+  transactionId      String   @map("transaction_id") @db.Uuid
+  paymentRecordId    String   @map("payment_record_id") @db.Uuid
+  appliedAmountMinor Int      @map("applied_amount_minor")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction   Transaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  paymentRecord PaymentRecord @relation(fields: [organizationId, paymentRecordId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([transactionId, paymentRecordId])
+  @@index([organizationId, paymentRecordId])
+  @@map("transaction_payment_allocations")
+}
+
+/// Generic financial-command idempotency (docs task Phase 5) — covers
+/// both Checkout creation and PaymentRecord creation, the two
+/// replay-sensitive commands in this phase, under one reusable shape
+/// rather than one narrowly-scoped table per command. Scoped per acting
+/// membership (not globally), matching QueueIntakeIdempotencyKey's own
+/// reasoning: both commands here are staff-initiated. `resourceType`/
+/// `resourceId` let a single lookup resolve back to whichever row the
+/// original request created, regardless of operation.
+model FinancialIdempotencyKey {
+  id                 String                        @id @default(uuid()) @db.Uuid
+  organizationId     String                        @map("organization_id") @db.Uuid
+  membershipId       String                        @map("membership_id") @db.Uuid
+  operation          FinancialIdempotencyOperation
+  idempotencyKey     String                        @map("idempotency_key")
+  requestFingerprint String                        @map("request_fingerprint")
+  resourceType       String                        @map("resource_type")
+  resourceId         String                        @map("resource_id") @db.Uuid
+  createdAt          DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, operation, idempotencyKey])
+  @@map("financial_idempotency_keys")
 }

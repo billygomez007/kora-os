@@ -238,13 +238,32 @@ function toVisibility(value: 'PUBLIC' | 'LINK_ONLY' | 'PRIVATE'): BusinessProfil
  * OrganizationMembership, so each must be cleared before the cascade
  * from deleting the Organization itself can reach those tables — and
  * ServiceSession itself RESTRICTs against QueueEntry and (nullably)
- * Appointment, so it must go first.
+ * Appointment, so it must go first. Transaction, PaymentRecord, and
+ * Checkout (the financial-integrity stage) sit one layer further out
+ * still — each RESTRICTs against ServiceSession/Branch/CustomerRecord/
+ * StaffProfile/OrganizationMembership too — so they must go before even
+ * ServiceSession does, in this order: Transaction (its own
+ * TransactionLineItem/TransactionPaymentAllocation rows cascade away
+ * with it) before PaymentRecord (whose PaymentVerificationEvent/
+ * PaymentDispute rows cascade away with it, and which
+ * TransactionPaymentAllocation itself RESTRICTs against) before Checkout
+ * (whose CheckoutLineItem/CheckoutAdjustment rows cascade away with it,
+ * and which PaymentRecord itself RESTRICTs against).
  */
 export async function cleanupAllBookableFixtures(testApp: TestApp): Promise<void> {
   const organizationIds = createdOrganizationIdsByTestApp.get(testApp) ?? [];
   if (organizationIds.length === 0) {
     return;
   }
+  await testApp.prisma.transaction.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.paymentRecord.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.checkout.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
   await testApp.prisma.serviceSession.deleteMany({
     where: { organizationId: { in: organizationIds } },
   });

@@ -737,3 +737,102 @@ did **not** implement any of the above — its name is historical and
 narrower than it sounds (docs/DATA_MODEL.md section 15). This phase's
 actual walk-in/queue/service-session tables were added by
 `add_walk_in_queue_and_service_sessions`.
+
+## 32. ServiceSession status history and least-privilege service-session access
+
+**`ServiceSessionStatusHistory` is the domain lifecycle ledger for one
+session, distinct from `AuditEvent`.** `AuditEvent` (section 19) is the
+platform-wide, cross-entity record every mutation in Kora writes to
+regardless of type — actor, tenant, branch, action, entity, request ID.
+`ServiceSessionStatusHistory` is narrower and typed: the queryable
+transition history of *one aggregate*, the same role
+`QueueEntryStatusHistory`/`AppointmentStatusHistory` already play for
+theirs. Both are written on every transition, inside the same database
+transaction as the status-change update itself — neither replaces the
+other, and a failed transition (a stale optimistic-concurrency version,
+a losing concurrent race, an already-terminal session) leaves neither
+behind, proven under real concurrency
+(`test/service-session-status-history-and-permissions.e2e-spec.ts`:
+several simultaneous completion attempts on the same session resolve
+to exactly one successful transition and exactly one appended
+`COMPLETED` history row). `previousStatus` is null only for the row
+written alongside session start; a `CHECK` constraint enforces that a
+row targets `IN_PROGRESS` if and only if `previousStatus` is null, and
+that `cancelDisposition` is set if and only if `newStatus` is
+`CANCELLED` — the same shape-constraint pattern `ServiceSession.
+cancelDisposition` itself already establishes (section 31). No update
+or delete path is exposed through application services. No customer
+PII is ever written to a history row — only identifiers, statuses,
+actor references, and a staff-entered reason string.
+
+**`service_sessions.start` is a new, narrower permission** completing
+the least-privilege model section 31 began. The four service-session
+permissions now carry four different scopes, checked in
+`ServiceSessionsService` (`assertStartAuthorized`,
+`apps/api/src/modules/service-sessions/service-session-start-
+authorization.util.ts` — a pure, independently unit-tested function
+taking every fact it needs as an explicit argument rather than reaching
+into request state itself):
+
+- `service_sessions.manage` (owner, manager): unrestricted.
+- `service_sessions.perform` (service provider): may start, complete,
+  cancel, and edit only a session whose `assignedStaffProfileId` is
+  their own `StaffProfile` — resolved fresh from the database via the
+  caller's own `organizationId`+`membershipId` on every call, never
+  cached or trusted from a token.
+- `service_sessions.start` (receptionist, manager, owner): may start
+  service only for the provider *already assigned* to the queue entry;
+  redirecting the work to a *different* provider at start time
+  additionally requires `queue.manage`. Grants nothing else — no
+  ability to replace items, complete, or cancel the resulting session,
+  and no ability to act as its assigned provider.
+- `service_sessions.read`: view only, on every role that holds it
+  (owner, manager, receptionist, service provider, cashier).
+
+**The route-level gate and the fine-grained rule are deliberately two
+different layers.** `start-service` is guarded by a new
+`@RequireAnyPermission('service_sessions.start', '.perform', '.manage')`
+decorator on `TenantAccessGuard` (`apps/api/src/common/authorization/
+decorators/require-any-permission.decorator.ts`) — the OR counterpart
+to the existing `@RequirePermissions`' AND-only semantics, unit-tested
+directly on the guard (`tenant-access.guard.spec.ts`). That decorator
+is only ever the coarse "holds at least one of these three codes" gate;
+`assertStartAuthorized` is the actual fine-grained rule once past it.
+Neither layer is a substitute for the other, and neither can be
+bypassed by holding an unrelated permission — `service_sessions.
+start` alone can never reach `complete`, `cancel`, or `PUT .../items`,
+which remain gated by `service_sessions.perform` **or** `.manage` only,
+exactly as before this correction (docs/API_SPEC.md section 17).
+
+**Ineligibility and branch-assignment checks are unconditional,
+regardless of which permission the caller holds.** A `.start`-only
+receptionist who also happens to hold `queue.manage` (the seeded
+default) can select a different provider at start time, but the
+underlying eligibility check (`resolveEligibleProviders` — active
+membership, branch assignment, a `StaffServiceAssignment` for every
+requested service) and `assertMembershipHasBranchAccess` still run
+unconditionally before any session is created; the least-privilege
+grant never widens what counts as a *valid* provider, only who is
+allowed to invoke the command. Proven directly: a receptionist cannot
+start service with a staff member who has no service assignment
+(`400`, same as any other caller), and cannot start service for a
+branch they have no `BranchAssignment` for even though `service_
+sessions.start` itself carries no branch scope in its name (`403`).
+
+**`READ_ONLY` and `BLOCKED` subscription behavior is unchanged and
+still enforced entirely by `TenantAccessGuard`** (section 10): every
+mutating service-session route — `start-service` included, now behind
+the any-of decorator — is still a non-`GET` method, so `READ_ONLY`
+blocks it by HTTP method exactly as before this correction, with no
+additional service-layer subscription check required; `GET` reads
+remain permitted. `BLOCKED` denies everything. Proven directly under a
+`READ_ONLY` subscription: reading a session still succeeds, starting
+and completing one both return `403`.
+
+Cross-tenant and cross-branch safety are unchanged in mechanism from
+section 31 (composite tenant foreign keys, `assertMembershipHasBranch
+Access` on every id-scoped route) and are re-verified here for the new
+permission surface specifically: starting service for a queue entry in
+another organization returns `404` regardless of which of the three
+permissions the caller holds, never confirming the entry's existence
+to a caller who cannot reach it.

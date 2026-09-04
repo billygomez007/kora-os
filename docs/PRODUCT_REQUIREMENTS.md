@@ -58,12 +58,17 @@ and loyalty remain future work per the "Future" list above.
 - Owner: subscriptions, branches, staff, services, reports, and disputes.
 - Manager: permitted branch operations and selected financial controls.
 - Cashier: checkout, payment recording, receipts, and reconciliation.
-- Receptionist: customers, appointments, walk-ins, and queues.
-- Service provider: assigned work, service completion, and payment verification.
+- Receptionist: customers, appointments, walk-ins, and queues. Can start service for a queue entry's already-assigned provider, but never complete, cancel, or edit a service session, and never act as its assigned provider.
+- Service provider: assigned work, service completion, and payment verification — restricted to sessions assigned to that provider's own StaffProfile; never another provider's.
 - Accountant: authorized reports, commissions, refunds, and reconciliation.
 
 A person may hold multiple roles. Access is determined by organization
 membership, branch assignment, roles, and permissions—not one role string.
+The receptionist's ability to start a queue entry's service without also
+being able to complete or cancel it is a deliberate least-privilege
+example of this: one workflow step, two different permissions
+(`service_sessions.start` vs. `.perform`/`.manage`), each independently
+enforced server-side (docs/SECURITY.md section 32).
 
 ## 4. Core lifecycle
 

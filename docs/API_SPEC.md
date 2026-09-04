@@ -489,23 +489,49 @@ on this resource.
 - `POST /organizations/{organizationId}/service-sessions/{serviceSessionId}/complete`
 - `POST /organizations/{organizationId}/service-sessions/{serviceSessionId}/cancel` — `{reason, disposition}`; `disposition` is `RETURN_TO_QUEUE` (returns the queue entry to `WAITING`, releasing the provider for another session) or `CANCEL_VISIT` (cancels the queue entry too); both fields required
 
-`start-service` (section 16), `PUT .../items`, `complete`, and `cancel`
-are gated by `service_sessions.perform` **or** `service_sessions.manage`
-— a `.perform`-only caller may only act on their own assigned session;
-a provider can never complete or cancel another provider's session
-without `.manage`.
+`start-service` (section 16) is gated by `service_sessions.start` **or**
+`service_sessions.perform` **or** `service_sessions.manage` — an any-of
+permission set (`@RequireAnyPermission`, the OR counterpart to the
+usual AND-only `@RequirePermissions`); `PUT .../items`, `complete`, and
+`cancel` are gated by `service_sessions.perform` **or**
+`service_sessions.manage` only (`.start` reaches `start-service` alone,
+nothing else). Each permission carries a different scope once past
+that coarse gate:
+
+- `service_sessions.manage` (owner, manager): unrestricted — may start
+  service for any provider, and complete/cancel/edit any session.
+- `service_sessions.perform` (service provider): may start, complete,
+  cancel, and edit only a session whose `assignedStaffProfileId` is
+  their own `StaffProfile` — never another provider's.
+- `service_sessions.start` (receptionist, manager, owner): may start
+  service only for the provider *already assigned* to the queue entry
+  (via `queue.manage`'s `assign` command); redirecting the work to a
+  *different* provider at start time additionally requires
+  `queue.manage`. Grants no ability to complete, cancel, or edit the
+  resulting session, or act as its assigned provider.
+
+A provider can never complete or cancel another provider's session
+without `.manage`, and a `.start`-only caller can never complete or
+cancel any session at all.
 
 State machine: `IN_PROGRESS -> COMPLETED` (via `complete`, requiring at
 least one item) or `IN_PROGRESS -> CANCELLED` (via `cancel`). Starting a
 session atomically claims the queue entry, resolves and validates the
-provider, snapshots items, moves the queue entry to `IN_SERVICE`, and
-writes queue history — a failed attempt (`409 QUEUE_ENTRY_ALREADY_IN_
-SERVICE` or `409 STAFF_ALREADY_SERVING`, backed by two PostgreSQL
-partial unique indexes, docs/DATA_MODEL.md section 12) leaves the queue
-entry completely unchanged, the same all-or-nothing guarantee
-appointment booking and reschedule already provide. Completion
-atomically freezes the total and moves the queue entry to `COMPLETED`;
-a queue entry is never manually marked `COMPLETED`.
+provider, snapshots items, moves the queue entry to `IN_SERVICE`, writes
+queue history, and appends the session's own initial
+`ServiceSessionStatusHistory` row (`previousStatus: null, newStatus:
+IN_PROGRESS`) — a failed attempt (`409 QUEUE_ENTRY_ALREADY_IN_SERVICE`
+or `409 STAFF_ALREADY_SERVING`, backed by two PostgreSQL partial unique
+indexes, docs/DATA_MODEL.md section 12) leaves the queue entry and
+session history completely unchanged, the same all-or-nothing guarantee
+appointment booking and reschedule already provide. Completion and
+cancellation each atomically append their own history row the same
+way — an append-only domain lifecycle ledger per session, separate
+from the platform-wide audit trail (docs/DATA_MODEL.md section 7/10,
+docs/SECURITY.md section 31). Replacing items never appends a history
+row — only an actual status transition does. Completion atomically
+freezes the total and moves the queue entry to `COMPLETED`; a queue
+entry is never manually marked `COMPLETED`.
 
 ## 18. Checkout and transactions
 
@@ -672,7 +698,7 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 - `customers.read`, `customers.manage`
 - `appointments.read`, `appointments.manage`
 - `queue.read`, `queue.manage`
-- `service_sessions.read`, `service_sessions.perform`, `service_sessions.manage`
+- `service_sessions.read`, `service_sessions.start`, `service_sessions.perform`, `service_sessions.manage`
 - `transactions.read`, `transactions.create`, `transactions.cancel`
 - `payments.read`, `payments.record`, `payments.void`, `payments.refund`
 - `verifications.read`, `verifications.respond`, `verifications.resolve`

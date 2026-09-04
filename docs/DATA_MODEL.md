@@ -755,6 +755,32 @@ owning session is `completed`.
 - `service_name_snapshot`, `duration_minutes_snapshot`, `price_minor_snapshot`, `currency_snapshot`
 - `display_order`, `created_at`
 
+### `service_session_status_history`
+
+Append-only domain lifecycle ledger for one `service_sessions` row —
+the same role `appointment_status_history`/`queue_entry_status_history`
+play for their own aggregates, and deliberately separate from the
+platform-wide `audit_events` trail (section 10): `audit_events` is the
+cross-entity security/operational record every mutation writes to
+regardless of type; this table is the typed, queryable lifecycle of
+*this one aggregate*. Both are written on every transition — neither
+replaces the other. `previous_status` is null only for the row created
+alongside session start (no status precedes `in_progress`) — a `CHECK`
+constraint enforces a row targets `in_progress` if and only if
+`previous_status` is null, since no transition other than session
+start ever produces it. `cancel_disposition` is set if and only if
+`new_status` is `cancelled`, also `CHECK`-enforced (the same shape
+pattern `service_sessions.cancel_disposition` itself already
+establishes). No update or delete path is exposed through application
+services. No customer PII is ever stored here — only identifiers and
+safe operational values.
+
+- `id`, `organization_id`, `service_session_id`
+- `previous_status` nullable, `new_status`
+- `actor_user_id`/`actor_membership_id` nullable, `reason` nullable
+- `cancel_disposition` nullable
+- `occurred_at`
+
 ## 8. Transactions and payments
 
 ### `transactions`
@@ -927,6 +953,7 @@ Every foreign key is indexed where join direction requires it. Additional high-v
 - Appointment provider and time range for conflict checks.
 - Queue entries by `(organization_id, branch_id, business_date, status)`, by `(organization_id, assigned_staff_profile_id, status)`, and by `(organization_id, customer_record_id)`.
 - Service sessions by `(organization_id, branch_id, status)`, `(organization_id, assigned_staff_profile_id, status)`, and `(organization_id, queue_entry_id)`.
+- Service session status history by `(service_session_id, occurred_at)` and by `(organization_id, occurred_at)`.
 - Transactions by `(organization_id, branch_id, created_at)` and status.
 - Payments and verifications by transaction and status.
 - Commission records by staff and finalized date.
@@ -940,6 +967,7 @@ Every foreign key is indexed where join direction requires it. Additional high-v
 - Currency codes on a transaction and its normal line items and payments must agree unless currency conversion is deliberately introduced later.
 - Appointment and service-session end times must be after start times. For appointments this is enforced by a `CHECK` constraint (`end_at > start_at`, and separately that the occupied window contains the service window); double-booking itself is enforced by a PostgreSQL `EXCLUDE` constraint (`appointments_no_staff_double_booking`, requiring the `btree_gist` extension) on the assigned staff member and the occupied UTC time range, restricted to `CONFIRMED` appointments — not only by the availability screen. `[)` range bounds mean two exactly back-to-back appointments are adjacent, not overlapping, and are allowed.
 - A staff profile cannot hold more than one `IN_PROGRESS` service session at once, and a queue entry cannot have more than one active service session, each enforced by a partial `UNIQUE` index (`service_sessions_one_active_per_staff` on `assigned_staff_profile_id`, and `service_sessions_one_active_per_queue_entry` on `queue_entry_id`, both `WHERE status = 'IN_PROGRESS'`) — not only by an application check-then-insert. Ticket numbers are issued through a single atomic `INSERT ... ON CONFLICT DO UPDATE` on `branch_queue_days`, backed by its own unique constraint plus `queue_entries`' `(branch_id, business_date, ticket_number)` unique constraint as a second line of defense.
+- `service_session_status_history.previous_status` is null if and only if `new_status = 'IN_PROGRESS'`, and `cancel_disposition` is set if and only if `new_status = 'CANCELLED'` — both `CHECK`-enforced. Every history row is written inside the same transaction as the status-change update it records, so a failed transition (a stale version, a losing concurrent race, an already-terminal session) never leaves a history row behind.
 - Payment verification references the responsible provider and the same tenant as its payment and transaction.
 - Commission records cannot become finalized before a confirmed verification outcome.
 - Subscription trial and billing period end times must be after their corresponding start times.

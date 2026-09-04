@@ -145,6 +145,8 @@ Starting a service (`ServiceSessionsService.start`) is one database transaction:
 
 A provider may act on their own session (`service_sessions.perform`) but not another provider's without the broader `service_sessions.manage` permission — checked in the service layer, since NestJS's declarative permission guard only expresses "all of these required," not "either of these, then check ownership."
 
+Every transition also appends a `ServiceSessionStatusHistory` row, inside the same transaction as the status-change update — the session's own typed, append-only lifecycle ledger, distinct from the platform-wide `AuditEvent` trail (section 16) both are still written to. `service_sessions.start` is a fourth, narrower permission (receptionist, manager, owner) that reaches `start-service` only — it may start service for a queue entry's *already-assigned* provider, but never complete, cancel, or edit the resulting session, and never redirect the work to a different provider without also holding `queue.manage`. Because `start-service` now legitimately accepts three different permissions with three different scopes (`.start`, `.perform`, `.manage`), the route itself is guarded by a new `@RequireAnyPermission` decorator on `TenantAccessGuard` (section 8) — the coarse "holds at least one of these" gate — while `ServiceSessionsService`'s own `assertStartAuthorized` (a pure, unit-tested function) applies the specific rule each permission actually carries once past it.
+
 ## 7. Identity and session architecture
 
 `User` is the global Kora identity. `OrganizationMembership` connects a user to a business. `StaffProfile` contains employment information within that organization. `CustomerProfile` is the same user acting as a customer — the customer workspace and the business workspace (docs/PRODUCT_REQUIREMENTS.md section 2) share one identity without either being authoritative over the other.
@@ -170,9 +172,10 @@ Authorization evaluates:
 2. Active organization membership.
 3. Membership status.
 4. Subscription access mode and entitlement where relevant.
-5. Required permission.
-6. Branch scope.
-7. Resource ownership and current state.
+5. Required permission — every named code (`@RequirePermissions`, AND semantics).
+6. Any-of permission — at least one named code (`@RequireAnyPermission`, OR semantics), for a route more than one permission legitimately reaches with different downstream scope (e.g. `ServiceSessionsController`'s `start-service`).
+7. Branch scope.
+8. Resource ownership and current state.
 
 Database queries include organization scope. Unique constraints that represent business uniqueness include `organizationId` when appropriate. Automated tests attempt cross-tenant reads and mutations for every sensitive module.
 

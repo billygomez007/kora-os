@@ -37,7 +37,7 @@ Completed:
 - A deterministic availability engine (`AvailabilityEngineService`) resolving effective price/duration, eligible providers, the branch/staff schedule intersection, exceptions, lead time, horizon, and buffers into concrete UTC slots — exposed publicly (`GET /v1/discovery/businesses/:slug/branches/:branchId/{services,services/:serviceId/providers,availability}`, respecting PUBLIC/LINK_ONLY/PRIVATE visibility the same way the rest of discovery does) and to authenticated staff (`GET /v1/organizations/:organizationId/branches/:branchId/availability`). Results are advisory; booking creation revalidates atomically.
 - The customer workspace is now self-service: `GET`/`PATCH /v1/me/customer-profile` (display name, phone, city/area, and location only when the customer explicitly provided it, with its own consent timestamp).
 - Atomic appointment booking (`Appointment`, `AppointmentItem` snapshots, `AppointmentStatusHistory`, `AppointmentIdempotencyKey`) for both the customer app (`POST`/`GET /v1/me/appointments`, `/:id`, `/:id/cancel`, `/:id/reschedule`) and staff-assisted bookings (`.../branches/:branchId/appointments{,/:id,/:id/cancel,/:id/reschedule,/:id/no-show}`, gated by `appointments.read`/`appointments.manage`). Double-booking is prevented at the database level by a PostgreSQL `EXCLUDE` constraint (`btree_gist`) on the assigned staff member and the occupied UTC time range, not only by the availability screen; a client-generated idempotency key makes repeated/retried booking requests return the original appointment rather than a duplicate. Server-resolved price, duration, staff eligibility, and subscription state are never accepted from the client.
-- Walk-in intake, appointment check-in, a live branch queue, and service sessions (`BranchQueueDay`, `QueueEntry`, `QueueEntryService`, `QueueEntryStatusHistory`, `ServiceSession`, `ServiceSessionItem`) under `/v1/organizations/:organizationId/branches/:branchId/queue/walk-ins`, `.../appointments/:appointmentId/check-in`, `.../queue`, `.../queue-entries/:id/*`, and `.../service-sessions{,/:id,/:id/items,/:id/complete,/:id/cancel}` (docs/API_SPEC.md sections 16-17), gated by `queue.read`/`queue.manage` and `service_sessions.read`/`.perform`/`.manage`. Ticket numbers are issued atomically per branch-local business date; at most one active service session per staff member and per queue entry is enforced by two partial PostgreSQL unique indexes, not only an application check. `Appointment` is a reservation, `QueueEntry` is a customer present at a branch, and `ServiceSession` is work actually performed — kept strictly separate, with no `Payment`, `Transaction`, `Receipt`, or `Commission` concept anywhere in this phase (docs/SECURITY.md section 31).
+- Walk-in intake, appointment check-in, a live branch queue, and service sessions (`BranchQueueDay`, `QueueEntry`, `QueueEntryService`, `QueueEntryStatusHistory`, `ServiceSession`, `ServiceSessionItem`, `ServiceSessionStatusHistory`) under `/v1/organizations/:organizationId/branches/:branchId/queue/walk-ins`, `.../appointments/:appointmentId/check-in`, `.../queue`, `.../queue-entries/:id/*`, and `.../service-sessions{,/:id,/:id/items,/:id/complete,/:id/cancel}` (docs/API_SPEC.md sections 16-17), gated by `queue.read`/`queue.manage` and `service_sessions.read`/`.start`/`.perform`/`.manage`. Ticket numbers are issued atomically per branch-local business date; at most one active service session per staff member and per queue entry is enforced by two partial PostgreSQL unique indexes, not only an application check. `ServiceSessionStatusHistory` is the session's own append-only lifecycle ledger, distinct from and complementing the platform-wide `AuditEvent` trail. `service_sessions.start` lets a receptionist start service for a queue entry's already-assigned provider without granting the ability to complete, cancel, or edit that session — a least-privilege permission checked via a new `@RequireAnyPermission` guard mechanism plus a fine-grained service-layer rule. `Appointment` is a reservation, `QueueEntry` is a customer present at a branch, and `ServiceSession` is work actually performed — kept strictly separate, with no `Payment`, `Transaction`, `Receipt`, or `Commission` concept anywhere in this phase (docs/SECURITY.md sections 31-32).
 
 Current limitations:
 
@@ -245,7 +245,17 @@ Deliverables:
   session in V1, snapshotted name/duration/price/currency per item,
   immutable once `COMPLETED`. A CONFIRMED `Appointment` remains a
   reservation only; only `ServiceSession` completion establishes that
-  work happened (docs/SECURITY.md section 30/31).
+  work happened (docs/SECURITY.md section 30/31). Every transition
+  additionally appends a `ServiceSessionStatusHistory` row, the
+  session's own append-only lifecycle ledger complementing (not
+  replacing) the platform-wide `AuditEvent` trail (docs/SECURITY.md
+  section 32).
+- Least-privilege receptionist access to service sessions. Done —
+  `service_sessions.start` lets a receptionist start service for a
+  queue entry's already-assigned provider without granting the
+  ability to complete, cancel, or edit that session; a service
+  provider (`service_sessions.perform`) remains restricted to their
+  own assigned session (docs/SECURITY.md section 32).
 - Android operational screens connected to the API with cached reads. Not started.
 
 Critical tests:
@@ -264,6 +274,8 @@ Critical tests:
   yet either.
 - Service sessions preserve the staff member who performed each item. Done — `ServiceSessionItem.staffProfileId` is snapshotted per item at start/replace time.
 - Concurrent queue changes resolve through revisions or conflicts. Done — `BranchQueueDay.revision` bumps atomically on every mutation; two partial PostgreSQL unique indexes (`WHERE status = 'IN_PROGRESS'`) prove at most one active session per staff member and per queue entry under real concurrent requests (`test/service-sessions.e2e-spec.ts`).
+- Concurrent completion attempts append exactly one history row. Done — several simultaneous completion requests on the same session resolve to exactly one successful transition and exactly one appended `COMPLETED` `ServiceSessionStatusHistory` row (`test/service-session-status-history-and-permissions.e2e-spec.ts`).
+- Receptionist least-privilege access is enforced server-side. Done — a receptionist can read a session and start it for its already-assigned provider, but cannot complete, cancel, or replace its items, and cannot use the start permission to bypass provider eligibility or branch assignment (`test/service-session-status-history-and-permissions.e2e-spec.ts`).
 
 Exit gate:
 

@@ -3,10 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { EmailDeliveryUnavailableError } from './unconfigured-email-otp-sender.js';
 
 const sendMail = vi.fn();
-const createTransport = vi.fn(() => ({ sendMail }));
+const createTransport = vi.fn((_options: unknown) => ({ sendMail }));
 
 vi.mock('nodemailer', () => ({
-  default: { createTransport: (...args: unknown[]) => createTransport(...args) },
+  default: { createTransport: (options: unknown) => createTransport(options) },
 }));
 
 const { SmtpEmailOtpSender } = await import('./smtp-email-otp-sender.js');

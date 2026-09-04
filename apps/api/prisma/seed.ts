@@ -50,6 +50,8 @@ const PERMISSIONS: ReadonlyArray<{ code: string; description: string }> = [
   { code: 'roles.manage', description: 'Create and update roles and permission assignments.' },
   { code: 'services.read', description: 'View the service catalog.' },
   { code: 'services.manage', description: 'Manage the service catalog.' },
+  { code: 'availability.read', description: 'View branch business hours, booking policy, and staff availability.' },
+  { code: 'availability.manage', description: 'Manage branch business hours, booking policy, and staff availability.' },
   { code: 'customers.read', description: 'View customer profiles and history.' },
   { code: 'customers.manage', description: 'Create and update customer profiles.' },
   { code: 'appointments.read', description: 'View appointments.' },
@@ -112,6 +114,8 @@ const SYSTEM_ROLES: ReadonlyArray<{
       'roles.read',
       'services.read',
       'services.manage',
+      'availability.read',
+      'availability.manage',
       'customers.read',
       'customers.manage',
       'appointments.read',
@@ -165,6 +169,7 @@ const SYSTEM_ROLES: ReadonlyArray<{
     permissionCodes: [
       'branches.read',
       'services.read',
+      'availability.read',
       'customers.read',
       'customers.manage',
       'appointments.read',
@@ -179,6 +184,7 @@ const SYSTEM_ROLES: ReadonlyArray<{
     description: 'Assigned work, service completion, and payment verification.',
     permissionCodes: [
       'customers.read',
+      'availability.read',
       'appointments.read',
       'queue.read',
       'service_sessions.read',

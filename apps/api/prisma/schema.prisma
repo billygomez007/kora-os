@@ -401,6 +401,20 @@ model Organization {
   customerRecords     CustomerRecord[]
   customerFavorites   CustomerFavorite[]
 
+  serviceCategories           ServiceCategory[]
+  services                    Service[]
+  branchServices              BranchService[]
+  staffServiceAssignments     StaffServiceAssignment[]
+  branchBusinessHours         BranchBusinessHours[]
+  branchScheduleExceptions    BranchScheduleException[]
+  branchBookingPolicies       BranchBookingPolicy[]
+  staffAvailabilityRules      StaffAvailabilityRule[]
+  staffAvailabilityExceptions StaffAvailabilityException[]
+  appointments                Appointment[]
+  appointmentItems            AppointmentItem[]
+  appointmentStatusHistory    AppointmentStatusHistory[]
+  appointmentIdempotencyKeys  AppointmentIdempotencyKey[]
+
   @@map("organizations")
 }
 
@@ -437,6 +451,15 @@ model Branch {
   organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branchAssignments BranchAssignment[]
   staffInvitations  StaffInvitation[]
+
+  branchServices              BranchService[]
+  staffServiceAssignments     StaffServiceAssignment[]
+  businessHours               BranchBusinessHours[]
+  scheduleExceptions          BranchScheduleException[]
+  bookingPolicy               BranchBookingPolicy?
+  staffAvailabilityRules      StaffAvailabilityRule[]
+  staffAvailabilityExceptions StaffAvailabilityException[]
+  appointments                Appointment[]
 
   @@unique([organizationId, code])
   @@unique([organizationId, id])
@@ -597,7 +620,17 @@ model StaffProfile {
   organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   membership   OrganizationMembership @relation(fields: [organizationId, membershipId], references: [organizationId, id], onDelete: Cascade)
 
+  staffServiceAssignments     StaffServiceAssignment[]
+  staffAvailabilityRules      StaffAvailabilityRule[]
+  staffAvailabilityExceptions StaffAvailabilityException[]
+  appointments                Appointment[]
+
   @@unique([organizationId, membershipId])
+  // Lets StaffServiceAssignment and Appointment hold a composite tenant
+  // FK to a specific staff profile by id, the same pattern Branch and
+  // OrganizationMembership already use — see the module header note in
+  // the services/availability/appointments section below.
+  @@unique([organizationId, id])
   @@map("staff_profiles")
 }
 
@@ -838,9 +871,23 @@ model CustomerProfile {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  // Minimum booking information (docs task Phase 16). Display name and
+  // verified email/phone come from the linked User (see auth.service's
+  // `me()`/`updateCustomerProfile`) rather than being duplicated here.
+  // Location is stored only once the customer has explicitly provided
+  // it — `locationConsentedAt` records exactly when, and is null
+  // whenever both coordinates are null.
+  phoneE164           String?   @map("phone_e164")
+  city                String?
+  area                String?
+  latitude            Decimal?  @db.Decimal(9, 6)
+  longitude           Decimal?  @db.Decimal(9, 6)
+  locationConsentedAt DateTime? @map("location_consented_at") @db.Timestamptz(6)
+
   user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   favorites       CustomerFavorite[]
   customerRecords CustomerRecord[]
+  appointments    Appointment[]
 
   @@map("customer_profiles")
 }
@@ -865,7 +912,9 @@ model CustomerRecord {
 
   organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customerProfile CustomerProfile? @relation(fields: [customerProfileId], references: [id], onDelete: SetNull)
+  appointments    Appointment[]
 
+  @@unique([organizationId, id])
   @@index([organizationId, customerProfileId])
   @@index([organizationId, phoneE164])
   @@index([organizationId, emailNormalized])
@@ -945,4 +994,455 @@ model PublicBusinessProfile {
   // composite index's intended query shape.
   @@index([visibility, publishedAt])
   @@map("public_business_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Service catalogue, staff assignment, business hours, staff availability,
+// and appointments (docs task "Service Catalogue -> Staff-Service
+// Assignments -> Business Hours -> Staff Availability -> Appointment
+// Availability -> Customer Booking").
+//
+// Every tenant-owned model below that references another tenant-owned
+// model by id (Branch, Service, StaffProfile, CustomerRecord) does so
+// through a *composite* foreign key of (organizationId, id) rather than a
+// plain id — the same pattern BranchAssignment/MembershipRole/
+// StaffInvitation already use — so a cross-tenant reference is rejected
+// by the database itself, not just application logic.
+//
+// A confirmed appointment's actual double-booking protection is a
+// PostgreSQL EXCLUDE constraint on Appointment, added by hand in this
+// phase's migration (Prisma has no first-class way to declare one) — see
+// that migration's header comment and docs/SECURITY.md section 30.
+// ---------------------------------------------------------------------------
+
+enum ServicePricingType {
+  FIXED
+  FROM
+
+  @@map("service_pricing_type")
+}
+
+enum BranchScheduleExceptionType {
+  CLOSED
+  SPECIAL_HOURS
+  HOLIDAY
+  EMERGENCY_CLOSURE
+
+  @@map("branch_schedule_exception_type")
+}
+
+enum StaffAvailabilityExceptionType {
+  TIME_OFF
+  SICK_LEAVE
+  HOLIDAY
+  SPECIAL_AVAILABILITY
+
+  @@map("staff_availability_exception_type")
+}
+
+enum AppointmentSource {
+  CUSTOMER_APP
+  BUSINESS_STAFF
+
+  @@map("appointment_source")
+}
+
+/// Deliberately small for V1 (docs task Phase 17): a confirmed booking can
+/// only become CANCELLED or NO_SHOW. There is no COMPLETED value here —
+/// completion is a claim about work actually performed, which only a
+/// future ServiceSession can prove; an Appointment alone is never treated
+/// as evidence that a service happened.
+enum AppointmentStatus {
+  CONFIRMED
+  CANCELLED
+  NO_SHOW
+
+  @@map("appointment_status")
+}
+
+/// An organization-owned grouping for its own bookable services (e.g.
+/// "Haircuts", "Braiding"). Deliberately separate from BusinessCategory,
+/// which is the platform-seeded taxonomy public discovery search filters
+/// by — a tenant's internal catalogue structure and the public taxonomy
+/// it is discovered under are different concerns.
+model ServiceCategory {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  description    String?
+  sortOrder      Int       @default(0) @map("sort_order")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  services     Service[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt])
+  @@map("service_categories")
+}
+
+/// One organization's catalogue entry. Never hard-deleted once any
+/// AppointmentItem references it (docs task Phase 11: "Do not permanently
+/// delete a service ... Use archival/deactivation") — `archivedAt` is the
+/// only removal path, and historical appointments keep their own
+/// name/duration/price snapshot on AppointmentItem regardless of later
+/// catalogue edits, so archiving or editing a service never rewrites
+/// history.
+model Service {
+  id                   String             @id @default(uuid()) @db.Uuid
+  organizationId       String             @map("organization_id") @db.Uuid
+  serviceCategoryId    String?            @map("service_category_id") @db.Uuid
+  name                 String
+  description          String?
+  durationMinutes      Int                @map("duration_minutes")
+  priceMinor           Int                @map("price_minor")
+  currency             String             @db.Char(3)
+  pricingType          ServicePricingType @default(FIXED) @map("pricing_type")
+  isBookableByCustomer Boolean            @default(true) @map("is_bookable_by_customer")
+  sortOrder            Int                @default(0) @map("sort_order")
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt           DateTime?          @map("archived_at") @db.Timestamptz(6)
+
+  organization     Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceCategory  ServiceCategory?         @relation(fields: [organizationId, serviceCategoryId], references: [organizationId, id], onDelete: Restrict)
+  branchServices   BranchService[]
+  staffAssignments StaffServiceAssignment[]
+  appointmentItems AppointmentItem[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt])
+  @@index([organizationId, serviceCategoryId])
+  @@map("services")
+}
+
+/// Per-branch availability and overrides for one Service (docs task
+/// Phase 11: "A service can be offered at one branch and unavailable at
+/// another"). A missing row for a (branch, service) pair means the
+/// service is not offered at that branch at all — this table is
+/// opt-in, not opt-out. `isBookableByCustomerOverride` is a tri-state
+/// override: null inherits Service.isBookableByCustomer, true/false
+/// pins it at this branch regardless of the service-level default.
+model BranchService {
+  id                           String   @id @default(uuid()) @db.Uuid
+  organizationId               String   @map("organization_id") @db.Uuid
+  branchId                     String   @map("branch_id") @db.Uuid
+  serviceId                    String   @map("service_id") @db.Uuid
+  isEnabled                    Boolean  @default(true) @map("is_enabled")
+  priceOverrideMinor           Int?     @map("price_override_minor")
+  durationOverrideMinutes      Int?     @map("duration_override_minutes")
+  isBookableByCustomerOverride Boolean? @map("is_bookable_by_customer_override")
+  createdAt                    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  service      Service      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([branchId, serviceId])
+  @@index([organizationId, branchId])
+  @@map("branch_services")
+}
+
+/// Connects an eligible staff provider to one service at one branch
+/// (docs task Phase 11: "A staff member may offer different services at
+/// different branches"). Creation must be refused unless the staff
+/// member holds an active membership in the organization *and* an
+/// explicit BranchAssignment for this branch — enforced in
+/// StaffServiceAssignmentService, not by a DB constraint, because
+/// membership/branch-assignment state changes independently over time
+/// and a later removal must not retroactively corrupt this row; the
+/// service layer re-checks eligibility at read/booking time instead.
+model StaffServiceAssignment {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  staffProfileId          String   @map("staff_profile_id") @db.Uuid
+  branchId                String   @map("branch_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  isBookable              Boolean  @default(true) @map("is_bookable")
+  durationOverrideMinutes Int?     @map("duration_override_minutes")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffProfile StaffProfile @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  service      Service      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([staffProfileId, branchId, serviceId])
+  @@index([organizationId, branchId, serviceId])
+  @@map("staff_service_assignments")
+}
+
+/// One recurring weekly opening interval for a branch (docs task Phase
+/// 13). A branch with no rows for a given `dayOfWeek` is closed that day
+/// — this table is opt-in, the same convention BranchService uses.
+/// `startLocalTime`/`endLocalTime` are wall-clock "HH:mm" strings
+/// interpreted under Branch.timeZone, deliberately not a `@db.Time`
+/// column (Prisma maps that to a JS Date with a meaningless 1970-01-01
+/// date part) and deliberately not a UTC instant (a recurring weekly rule
+/// has no single date to convert against — see AvailabilityService for
+/// where the branch-local -> UTC conversion actually happens, per
+/// requested date).
+model BranchBusinessHours {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  branchId       String   @map("branch_id") @db.Uuid
+  dayOfWeek      Int      @map("day_of_week")
+  startLocalTime String   @map("start_local_time") @db.VarChar(5)
+  endLocalTime   String   @map("end_local_time") @db.VarChar(5)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, branchId, dayOfWeek])
+  @@map("branch_business_hours")
+}
+
+/// A specific-date override to BranchBusinessHours (docs task Phase 13):
+/// closed, special hours, holiday, or emergency closure. Always wins over
+/// the recurring weekly rule for that one local date. `intervals` is a
+/// JSON array of `{start, end}` "HH:mm" pairs (the same small-structured-
+/// list use of Json that PlanEntitlement.value and AuditEvent.metadata
+/// already establish in this schema) — required and non-empty only when
+/// `type` is SPECIAL_HOURS; every other type means the branch is fully
+/// closed that date and `intervals` stays null.
+model BranchScheduleException {
+  id             String                      @id @default(uuid()) @db.Uuid
+  organizationId String                      @map("organization_id") @db.Uuid
+  branchId       String                      @map("branch_id") @db.Uuid
+  date           DateTime                    @db.Date
+  type           BranchScheduleExceptionType
+  intervals      Json?
+  reason         String?
+  createdAt      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([branchId, date])
+  @@index([organizationId, branchId, date])
+  @@map("branch_schedule_exceptions")
+}
+
+/// Centralized, per-branch editable booking policy (docs task Phase 13).
+/// A branch with no row here uses the documented hardcoded defaults (see
+/// BranchBookingPolicyService) rather than failing — every field is
+/// still NOT NULL once a row exists, so a stored policy is always fully
+/// resolved, never partially defaulted at read time.
+model BranchBookingPolicy {
+  id                             String   @id @default(uuid()) @db.Uuid
+  organizationId                 String   @map("organization_id") @db.Uuid
+  branchId                       String   @map("branch_id") @db.Uuid
+  slotIntervalMinutes            Int      @map("slot_interval_minutes")
+  minBookingLeadTimeMinutes      Int      @map("min_booking_lead_time_minutes")
+  maxBookingHorizonDays          Int      @map("max_booking_horizon_days")
+  bufferBeforeMinutes            Int      @map("buffer_before_minutes")
+  bufferAfterMinutes             Int      @map("buffer_after_minutes")
+  cancellationCutoffMinutes      Int      @map("cancellation_cutoff_minutes")
+  allowCustomerProviderSelection Boolean  @map("allow_customer_provider_selection")
+  allowAnyProvider               Boolean  @map("allow_any_provider")
+  createdAt                      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([organizationId, branchId])
+  @@map("branch_booking_policies")
+}
+
+/// One recurring weekly availability interval for a staff member at one
+/// branch (docs task Phase 14). Branch opening hours and staff
+/// availability are deliberately separate tables — a provider is
+/// bookable only where both intersect (see AvailabilityService).
+model StaffAvailabilityRule {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  staffProfileId String    @map("staff_profile_id") @db.Uuid
+  branchId       String    @map("branch_id") @db.Uuid
+  dayOfWeek      Int       @map("day_of_week")
+  startLocalTime String    @map("start_local_time") @db.VarChar(5)
+  endLocalTime   String    @map("end_local_time") @db.VarChar(5)
+  effectiveFrom  DateTime? @map("effective_from") @db.Date
+  effectiveUntil DateTime? @map("effective_until") @db.Date
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffProfile StaffProfile @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, staffProfileId, branchId, dayOfWeek])
+  @@map("staff_availability_rules")
+}
+
+/// A specific-date override to a staff member's recurring availability
+/// (docs task Phase 14): time off, sick leave, holiday, or special
+/// (added) availability, full-day or partial. TIME_OFF/SICK_LEAVE/HOLIDAY
+/// always *remove* availability for their window; SPECIAL_AVAILABILITY
+/// *adds* availability on top of (or in place of) the recurring rule.
+/// `branchId` is required, matching StaffAvailabilityRule, so this row's
+/// `date` is always unambiguous under exactly one branch's timeZone — a
+/// staff member off across several branches on the same date gets one
+/// exception row per branch.
+model StaffAvailabilityException {
+  id             String                         @id @default(uuid()) @db.Uuid
+  organizationId String                         @map("organization_id") @db.Uuid
+  staffProfileId String                         @map("staff_profile_id") @db.Uuid
+  branchId       String                         @map("branch_id") @db.Uuid
+  date           DateTime                       @db.Date
+  type           StaffAvailabilityExceptionType
+  isFullDay      Boolean                        @default(true) @map("is_full_day")
+  startLocalTime String?                        @map("start_local_time") @db.VarChar(5)
+  endLocalTime   String?                        @map("end_local_time") @db.VarChar(5)
+  reason         String?
+  createdAt      DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffProfile StaffProfile @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, staffProfileId, branchId, date])
+  @@map("staff_availability_exceptions")
+}
+
+/// One booked appointment. `startAt`/`endAt` are the service time itself;
+/// `occupiedStartAt`/`occupiedEndAt` additionally include the branch's
+/// buffer-before/buffer-after (docs task Phase 17/18) and are what the
+/// double-booking exclusion constraint actually guards — see this
+/// phase's migration. `branchTimeZone` snapshots Branch.timeZone at
+/// creation time so a later branch timezone change never reinterprets an
+/// already-booked appointment's local meaning. `version` supports
+/// optimistic concurrency for reschedule/cancel commands issued
+/// concurrently with a staff-side edit.
+///
+/// Appointment is not a ServiceSession, a Payment, or a Transaction —
+/// none of those exist yet. A CONFIRMED appointment is a reservation, not
+/// proof that work happened or that revenue was earned; only a future
+/// ServiceSession can establish that (docs/SECURITY.md section 30).
+model Appointment {
+  id                         String            @id @default(uuid()) @db.Uuid
+  organizationId             String            @map("organization_id") @db.Uuid
+  branchId                   String            @map("branch_id") @db.Uuid
+  reference                  String            @unique
+  // Nullable: a staff-assisted booking for a walk-in-style customer with
+  // no Kora account has no CustomerProfile at all (the same reasoning
+  // CustomerRecord.customerProfileId already documents). customerRecordId
+  // is always required — every appointment has an organization-scoped
+  // customer relationship, even when that customer holds no Kora account.
+  customerProfileId          String?           @map("customer_profile_id") @db.Uuid
+  customerRecordId           String            @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId     String            @map("assigned_staff_profile_id") @db.Uuid
+  startAt                    DateTime          @map("start_at") @db.Timestamptz(6)
+  endAt                      DateTime          @map("end_at") @db.Timestamptz(6)
+  occupiedStartAt            DateTime          @map("occupied_start_at") @db.Timestamptz(6)
+  occupiedEndAt              DateTime          @map("occupied_end_at") @db.Timestamptz(6)
+  branchTimeZone             String            @map("branch_time_zone")
+  status                     AppointmentStatus @default(CONFIRMED)
+  source                     AppointmentSource
+  currency                   String            @db.Char(3)
+  totalPriceMinor            Int               @map("total_price_minor")
+  idempotencyKey             String?           @map("idempotency_key")
+  cancelledAt                DateTime?         @map("cancelled_at") @db.Timestamptz(6)
+  cancelledReason            String?           @map("cancelled_reason")
+  cancelledByMembershipId    String?           @map("cancelled_by_membership_id") @db.Uuid
+  noShowMarkedAt             DateTime?         @map("no_show_marked_at") @db.Timestamptz(6)
+  noShowMarkedByMembershipId String?           @map("no_show_marked_by_membership_id") @db.Uuid
+  createdByUserId            String?           @map("created_by_user_id") @db.Uuid
+  createdByMembershipId      String?           @map("created_by_membership_id") @db.Uuid
+  version                    Int               @default(1)
+  createdAt                  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization         Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch                     @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  customerProfile      CustomerProfile?           @relation(fields: [customerProfileId], references: [id], onDelete: SetNull)
+  customerRecord       CustomerRecord             @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile               @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  items                AppointmentItem[]
+  statusHistory        AppointmentStatusHistory[]
+
+  @@index([organizationId, branchId, startAt])
+  @@index([organizationId, assignedStaffProfileId, startAt])
+  @@index([customerProfileId, startAt])
+  @@map("appointments")
+}
+
+/// One sequential service within a V1 appointment (docs task Phase 17: "one
+/// or more sequential services performed by the same provider"). The
+/// snapshot fields are the historical record; `service` is kept only to
+/// let operational tooling navigate back to the current catalogue entry
+/// and is never used to recompute a past appointment's price or
+/// duration.
+model AppointmentItem {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  appointmentId           String   @map("appointment_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  serviceNameSnapshot     String   @map("service_name_snapshot")
+  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
+  priceMinorSnapshot      Int      @map("price_minor_snapshot")
+  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
+  displayOrder            Int      @map("display_order")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointment  Appointment  @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  service      Service      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([appointmentId, displayOrder])
+  @@map("appointment_items")
+}
+
+/// Append-only status transition log for one appointment (docs task
+/// Phase 17/21). `previousStatus` is null only for the row created
+/// alongside the appointment itself (CONFIRMED, nothing before it).
+model AppointmentStatusHistory {
+  id                String             @id @default(uuid()) @db.Uuid
+  organizationId    String             @map("organization_id") @db.Uuid
+  appointmentId     String             @map("appointment_id") @db.Uuid
+  previousStatus    AppointmentStatus? @map("previous_status")
+  newStatus         AppointmentStatus  @map("new_status")
+  actorUserId       String?            @map("actor_user_id") @db.Uuid
+  actorMembershipId String?            @map("actor_membership_id") @db.Uuid
+  reason            String?
+  occurredAt        DateTime           @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointment  Appointment  @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@index([appointmentId, occurredAt])
+  @@map("appointment_status_history")
+}
+
+/// Guarantees a client-generated idempotency key is honored (docs task
+/// Phase 19). Scoped per customer, not global, both because a key only
+/// needs to be unique within one customer's own request stream and so a
+/// lookup is always filtered by the *authenticated* customer's own id —
+/// never accepted bare from a request. `appointmentId` and this row are
+/// created together, in the same transaction as the appointment itself
+/// (see AppointmentBookingService), so a row only ever exists once
+/// fully resolved; there is no "reserved but not yet resolved" state to
+/// leak a stale key into.
+model AppointmentIdempotencyKey {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organizationId     String   @map("organization_id") @db.Uuid
+  customerProfileId  String   @map("customer_profile_id") @db.Uuid
+  idempotencyKey     String   @map("idempotency_key")
+  requestFingerprint String   @map("request_fingerprint")
+  appointmentId      String   @map("appointment_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([customerProfileId, idempotencyKey])
+  @@map("appointment_idempotency_keys")
 }

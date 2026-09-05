@@ -225,7 +225,7 @@ function buildOrganizationFilter(
   return filters.length === 1 ? filters[0] : { AND: filters };
 }
 
-function toSummary(profile: {
+export function toSummary(profile: {
   organizationId: string;
   slug: string;
   displayName: string;

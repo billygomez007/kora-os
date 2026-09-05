@@ -21,6 +21,7 @@ import { CommissionsModule } from './modules/commissions/commissions.module.js';
 import { CorrectionsModule } from './modules/corrections/corrections.module.js';
 import { CustomerProfileModule } from './modules/customer-profile/customer-profile.module.js';
 import { DiscoveryModule } from './modules/discovery/discovery.module.js';
+import { FavoritesModule } from './modules/favorites/favorites.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
@@ -33,6 +34,7 @@ import { ServicesModule } from './modules/services/services.module.js';
 import { StaffInvitationsModule } from './modules/staff-invitations/staff-invitations.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
 import { TransactionsModule } from './modules/transactions/transactions.module.js';
+import { WorkspacesModule } from './modules/workspaces/workspaces.module.js';
 
 // The monorepo keeps a single local `.env` at the repository root rather
 // than one per package. Resolving it relative to this file (instead of
@@ -67,6 +69,8 @@ const repositoryRootEnvPath = path.resolve(
     SchedulingModule,
     AvailabilityModule,
     CustomerProfileModule,
+    FavoritesModule,
+    WorkspacesModule,
     AppointmentsModule,
     ServiceSessionsModule,
     QueueModule,

@@ -64,6 +64,7 @@ async function onboardOrganization(
 ) {
   const response = await authed(testApp, accessToken)
     .post('/v1/organizations')
+    .set('Idempotency-Key', randomUUID())
     .send({
       name: overrides.name ?? `Kora Test Org ${unique()}`,
       slug: overrides.slug ?? unique(),
@@ -438,6 +439,449 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
 
       await authed(testApp, mismatchedUser.accessToken)
         .post(`/v1/staff-invitations/${created.body.data.rawToken}/accept`)
+        .expect(403);
+    });
+
+    it('lists every assignable role except owner, for a client to build a role picker without hard-coded ids', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      const response = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/staff-invitations/assignable-roles`)
+        .expect(200);
+
+      const codes = response.body.data.map((role: { code: string }) => role.code);
+      expect(codes).toEqual(expect.arrayContaining(['manager', 'cashier', 'receptionist']));
+      expect(codes).not.toContain('owner');
+    });
+
+    it('never permits granting the owner role through an invitation', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const ownerRole = roles.find((r) => r.code === 'owner')!;
+
+      const response = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: `${unique()}@example.test`, roleId: ownerRole.id })
+        .expect(403);
+      expect(response.body.error.code).toBe('OWNER_ROLE_NOT_INVITABLE');
+    });
+
+    it('lists every invitation for the organization, filterable by status, without ever exposing a token', async () => {
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId, invitee.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const cashierRole = roles.find((r) => r.code === 'cashier')!;
+
+      const created = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: invitee.email, roleId: cashierRole.id })
+        .expect(201);
+
+      const list = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .expect(200);
+      expect(list.body.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: created.body.data.invitation.id, status: 'PENDING' }),
+        ]),
+      );
+      expect(JSON.stringify(list.body.data)).not.toMatch(/tokenHash|rawToken/i);
+
+      const pendingOnly = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/staff-invitations?status=REVOKED`)
+        .expect(200);
+      expect(pendingOnly.body.data).toHaveLength(0);
+    });
+
+    async function createLimitedPlan(staffMax: number): Promise<string> {
+      const staffMaxEntitlement = await prisma.entitlementDefinition.findUniqueOrThrow({
+        where: { code: 'staff.max' },
+      });
+      const plan = await prisma.subscriptionPlan.create({
+        data: { code: `staff-limit-test-${unique()}`, name: 'Staff Limit Test Plan', status: 'ACTIVE' },
+      });
+      await prisma.planEntitlement.create({
+        data: { planId: plan.id, entitlementId: staffMaxEntitlement.id, value: staffMax },
+      });
+      return plan.id;
+    }
+
+    it('rejects an invitation once the plan staff limit is reached', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      // The owner's own membership already occupies the only seat.
+      const limitedPlanId = await createLimitedPlan(1);
+      await prisma.organizationSubscription.update({
+        where: { organizationId: org.organization.id },
+        data: { planId: limitedPlanId },
+      });
+
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const cashierRole = roles.find((r) => r.code === 'cashier')!;
+      const response = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: `${unique()}@example.test`, roleId: cashierRole.id })
+        .expect(409);
+      expect(response.body.error.code).toBe('STAFF_LIMIT_REACHED');
+    });
+
+    it('never lets concurrent invitation creates together exceed the staff limit', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      // Owner occupies 1 of 2 seats -- exactly one more invitation may succeed.
+      const limitedPlanId = await createLimitedPlan(2);
+      await prisma.organizationSubscription.update({
+        where: { organizationId: org.organization.id },
+        data: { planId: limitedPlanId },
+      });
+
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const cashierRole = roles.find((r) => r.code === 'cashier')!;
+      const attempts = await Promise.all(
+        [0, 1].map(() =>
+          authed(testApp, owner.accessToken)
+            .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+            .send({ email: `${unique()}@example.test`, roleId: cashierRole.id }),
+        ),
+      );
+
+      const succeeded = attempts.filter((r) => r.status === 201);
+      const rejected = attempts.filter((r) => r.status === 409);
+      expect(succeeded).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0].body.error.code).toBe('STAFF_LIMIT_REACHED');
+
+      const pendingCount = await prisma.staffInvitation.count({
+        where: { organizationId: org.organization.id, status: 'PENDING' },
+      });
+      expect(pendingCount).toBe(1);
+    });
+  });
+
+  describe('organization onboarding idempotency', () => {
+    let testApp: TestApp;
+    beforeEach(async () => {
+      testApp = await createTestApp([BranchScopedTestModule]);
+    });
+    afterEach(async () => {
+      await testApp.app.close();
+    });
+
+    it('rejects a creation request with no Idempotency-Key header', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+
+      await authed(testApp, owner.accessToken)
+        .post('/v1/organizations')
+        .send({
+          name: `Kora Test Org ${unique()}`,
+          slug: unique(),
+          businessType: 'salon',
+          defaultCurrency: 'GHS',
+          timeZone: 'Africa/Accra',
+          countryCode: 'GH',
+          primaryBranch: { name: 'Main branch', code: 'MAIN' },
+        })
+        .expect(400);
+    });
+
+    it('replays the original result for a repeated identical request, creating only one organization', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const idempotencyKey = randomUUID();
+      const body = {
+        name: `Kora Test Org ${unique()}`,
+        slug: unique(),
+        businessType: 'salon',
+        defaultCurrency: 'GHS',
+        timeZone: 'Africa/Accra',
+        countryCode: 'GH',
+        primaryBranch: { name: 'Main branch', code: 'MAIN' },
+      };
+
+      const first = await authed(testApp, owner.accessToken)
+        .post('/v1/organizations')
+        .set('Idempotency-Key', idempotencyKey)
+        .send(body)
+        .expect(201);
+      createdOrganizationIds.push(first.body.data.organization.id);
+
+      const second = await authed(testApp, owner.accessToken)
+        .post('/v1/organizations')
+        .set('Idempotency-Key', idempotencyKey)
+        .send(body)
+        .expect(201);
+
+      expect(second.body.data.organization.id).toBe(first.body.data.organization.id);
+      const count = await prisma.organization.count({ where: { slug: body.slug } });
+      expect(count).toBe(1);
+    });
+
+    it('rejects a reused Idempotency-Key with a different request body', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const idempotencyKey = randomUUID();
+      const first = await authed(testApp, owner.accessToken)
+        .post('/v1/organizations')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          name: `Kora Test Org ${unique()}`,
+          slug: unique(),
+          businessType: 'salon',
+          defaultCurrency: 'GHS',
+          timeZone: 'Africa/Accra',
+          countryCode: 'GH',
+          primaryBranch: { name: 'Main branch', code: 'MAIN' },
+        })
+        .expect(201);
+      createdOrganizationIds.push(first.body.data.organization.id);
+
+      const conflict = await authed(testApp, owner.accessToken)
+        .post('/v1/organizations')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          name: `Kora Different Org ${unique()}`,
+          slug: unique(),
+          businessType: 'salon',
+          defaultCurrency: 'GHS',
+          timeZone: 'Africa/Accra',
+          countryCode: 'GH',
+          primaryBranch: { name: 'Main branch', code: 'MAIN' },
+        })
+        .expect(409);
+      expect(conflict.body.error.code).toBe('IDEMPOTENCY_CONFLICT');
+    });
+
+    it('rejects a duplicate slug with a clean conflict, not a raw server error', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const slug = unique();
+      const first = await onboardOrganization(testApp, owner.accessToken, { slug });
+      createdOrganizationIds.push(first.organization.id);
+
+      const second = await registerAndLogin(testApp);
+      createdUserIds.push(second.userId);
+      const response = await authed(testApp, second.accessToken)
+        .post('/v1/organizations')
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          name: `Kora Test Org ${unique()}`,
+          slug,
+          businessType: 'salon',
+          defaultCurrency: 'GHS',
+          timeZone: 'Africa/Accra',
+          countryCode: 'GH',
+          primaryBranch: { name: 'Main branch', code: 'MAIN' },
+        })
+        .expect(409);
+      expect(response.body.error.code).toBe('ORGANIZATION_SLUG_TAKEN');
+    });
+  });
+
+  describe('organization setup status', () => {
+    let testApp: TestApp;
+    beforeEach(async () => {
+      testApp = await createTestApp([BranchScopedTestModule]);
+    });
+    afterEach(async () => {
+      await testApp.app.close();
+    });
+
+    it('computes every checklist step from real database state, never a client-declared flag', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      const initial = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/setup-status`)
+        .expect(200);
+      expect(initial.body.data).toMatchObject({
+        organizationCreated: true,
+        firstBranchCreated: true,
+        businessProfileConfigured: false,
+        serviceCreated: false,
+        branchHoursConfigured: false,
+        staffInvitationSent: false,
+        profilePublicationEligible: false,
+      });
+
+      await prisma.publicBusinessProfile.create({
+        data: {
+          organizationId: org.organization.id,
+          slug: unique(),
+          displayName: 'Test Business',
+          visibility: 'PRIVATE',
+        },
+      });
+      const afterProfile = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/setup-status`)
+        .expect(200);
+      expect(afterProfile.body.data.businessProfileConfigured).toBe(true);
+      // A profile with no discoverable branch is still not publication-eligible.
+      expect(afterProfile.body.data.profilePublicationEligible).toBe(false);
+
+      await prisma.branch.update({
+        where: { id: org.primaryBranch.id },
+        data: { isDiscoverable: true },
+      });
+      const afterDiscoverable = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/setup-status`)
+        .expect(200);
+      expect(afterDiscoverable.body.data.profilePublicationEligible).toBe(true);
+    });
+
+    it('does not let a member of another organization view this organization setup status', async () => {
+      const owner = await registerAndLogin(testApp);
+      const outsider = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId, outsider.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      await authed(testApp, outsider.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/setup-status`)
+        .expect(403);
+    });
+  });
+
+  describe('team directory', () => {
+    let testApp: TestApp;
+    beforeEach(async () => {
+      testApp = await createTestApp([BranchScopedTestModule]);
+    });
+    afterEach(async () => {
+      await testApp.app.close();
+    });
+
+    it('lists active staff with roles and branches, excludes inactive memberships, and never exposes another organization', async () => {
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
+      const outsider = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId, invitee.userId, outsider.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const cashierRole = roles.find((r) => r.code === 'cashier')!;
+      const invitation = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: invitee.email, roleId: cashierRole.id, branchId: org.primaryBranch.id })
+        .expect(201);
+      await authed(testApp, invitee.accessToken)
+        .post(`/v1/staff-invitations/${invitation.body.data.rawToken}/accept`)
+        .expect(201);
+
+      // A removed membership must never appear in the directory.
+      const removedUser = await registerAndLogin(testApp);
+      createdUserIds.push(removedUser.userId);
+      await prisma.organizationMembership.create({
+        data: {
+          organizationId: org.organization.id,
+          userId: removedUser.userId,
+          status: 'REMOVED',
+        },
+      });
+
+      const list = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/staff`)
+        .expect(200);
+
+      const displayNames = list.body.data.map((entry: { userId: string }) => entry.userId);
+      expect(displayNames).toEqual(expect.arrayContaining([owner.userId, invitee.userId]));
+      expect(displayNames).not.toContain(removedUser.userId);
+
+      const inviteeEntry = list.body.data.find((entry: { userId: string }) => entry.userId === invitee.userId);
+      expect(inviteeEntry.roleCodes).toContain('cashier');
+      expect(inviteeEntry.branches).toEqual(
+        expect.arrayContaining([expect.objectContaining({ branchId: org.primaryBranch.id })]),
+      );
+
+      await authed(testApp, outsider.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/staff`)
+        .expect(403);
+    });
+  });
+
+  describe('subscription detail', () => {
+    let testApp: TestApp;
+    beforeEach(async () => {
+      testApp = await createTestApp([BranchScopedTestModule]);
+    });
+    afterEach(async () => {
+      await testApp.app.close();
+    });
+
+    it('exposes plan, trial, access mode, and usage-vs-limit figures computed from the database', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      const detail = await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/subscription`)
+        .expect(200);
+      expect(detail.body.data).toMatchObject({
+        planCode: 'starter',
+        status: 'TRIALING',
+        accessMode: 'FULL',
+        usage: { branchesUsed: 1, staffUsed: 1 },
+      });
+      expect(detail.body.data.entitlements['staff.max']).toBe(5);
+      expect(detail.body.data.trialEndsAt).toEqual(expect.any(String));
+    });
+
+    it('reflects a BLOCKED subscription in the exposed access mode', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      await prisma.organizationSubscription.update({
+        where: { organizationId: org.organization.id },
+        data: { status: SubscriptionStatus.EXPIRED },
+      });
+
+      // BLOCKED denies every protected request, including this one.
+      await authed(testApp, owner.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/subscription`)
+        .expect(403);
+    });
+
+    it('does not let a member without subscriptions.read view the subscription detail', async () => {
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId, invitee.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const receptionistRole = roles.find((r) => r.code === 'receptionist')!;
+      const invitation = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: invitee.email, roleId: receptionistRole.id })
+        .expect(201);
+      await authed(testApp, invitee.accessToken)
+        .post(`/v1/staff-invitations/${invitation.body.data.rawToken}/accept`)
+        .expect(201);
+
+      await authed(testApp, invitee.accessToken)
+        .get(`/v1/organizations/${org.organization.id}/subscription`)
         .expect(403);
     });
   });

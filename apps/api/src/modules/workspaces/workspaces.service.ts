@@ -16,6 +16,7 @@ export interface WorkspaceOrganizationView {
   name: string;
   slug: string;
   logoUrl: string | null;
+  defaultCurrency: string;
   roleCodes: string[];
   permissionCodes: string[];
   accessMode: SubscriptionAccessMode;
@@ -111,6 +112,7 @@ export class WorkspacesService {
           name: membership.organization.name,
           slug: membership.organization.slug,
           logoUrl: membership.organization.publicProfile?.logoImageUrl ?? null,
+          defaultCurrency: membership.organization.defaultCurrency,
           roleCodes,
           permissionCodes: [...permissionCodes],
           accessMode,

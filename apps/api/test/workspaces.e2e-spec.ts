@@ -47,6 +47,7 @@ describe('My workspaces (e2e)', () => {
     expect(org.permissionCodes).toContain('branches.manage');
     expect(org.permissionCodes).toContain('reports.read');
     expect(org.membershipStatus).toBe('ACTIVE');
+    expect(org.defaultCurrency).toBe(fixture.serviceCurrency);
     expect(['FULL', 'LIMITED']).toContain(org.accessMode);
     expect(org.branches.map((b: { branchId: string }) => b.branchId)).toContain(fixture.branchId);
   });

@@ -15,10 +15,12 @@ import {
 import type {
   Branch,
   Organization,
+  Prisma,
   Role,
   StaffInvitation,
 } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
+import { EntitlementsService } from '../subscriptions/entitlements.service.js';
 
 type InvitationWithDetails = StaffInvitation & {
   organization: Organization;
@@ -26,7 +28,11 @@ type InvitationWithDetails = StaffInvitation & {
   branch: Branch | null;
 };
 
+type TransactionClient = Prisma.TransactionClient;
+
 const INVITATION_TTL_DAYS = 7;
+const OWNER_ROLE_CODE = 'owner';
+const STAFF_MAX_ENTITLEMENT_CODE = 'staff.max';
 
 export interface CreateInvitationInput {
   organizationId: string;
@@ -52,6 +58,7 @@ export class StaffInvitationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   /**
@@ -60,6 +67,17 @@ export class StaffInvitationService {
    * token is returned only at creation time until a delivery provider
    * exists"; the token is a high-entropy random value, the same reasoning
    * RefreshToken.tokenHash documents for using a fast hash here).
+   *
+   * Two safety rules enforced here (docs task "Staff and Role
+   * Invitations"): the `owner` role can never be granted through a
+   * normal invitation — ownership transfer is a separate, not-yet-built
+   * workflow — and the organization's `staff.max` entitlement is
+   * enforced against a locked snapshot of current staff usage, so
+   * concurrent invitation creates cannot together exceed the plan's
+   * limit. The lock is taken on the `OrganizationSubscription` row
+   * (unique per organization, the same aggregate-root-lock pattern
+   * `CashSessionsService.lockCashSession` established), inside the same
+   * transaction that then creates the invitation.
    */
   async create(input: CreateInvitationInput): Promise<{
     invitation: { id: string; expiresAt: Date; status: StaffInvitationStatus };
@@ -73,6 +91,12 @@ export class StaffInvitationService {
     const role = await this.prisma.role.findUnique({ where: { id: input.roleId } });
     if (!role || (role.organizationId && role.organizationId !== input.organizationId)) {
       throw new NotFoundException('Role not found');
+    }
+    if (role.code === OWNER_ROLE_CODE) {
+      throw new ForbiddenException({
+        code: 'OWNER_ROLE_NOT_INVITABLE',
+        message: 'The owner role cannot be granted through a staff invitation.',
+      });
     }
 
     if (input.branchId) {
@@ -88,17 +112,22 @@ export class StaffInvitationService {
     const tokenHash = hashToken(rawToken);
     const expiresAt = new Date(Date.now() + INVITATION_TTL_DAYS * 24 * 60 * 60 * 1000);
 
-    const invitation = await this.prisma.staffInvitation.create({
-      data: {
-        organizationId: input.organizationId,
-        emailNormalized,
-        phoneE164: input.phone,
-        tokenHash,
-        invitedByMembershipId: input.invitedByMembershipId,
-        roleId: input.roleId,
-        branchId: input.branchId,
-        expiresAt,
-      },
+    const invitation = await this.prisma.$transaction(async (tx) => {
+      await this.lockSubscription(tx, input.organizationId);
+      await this.assertWithinStaffLimit(tx, input.organizationId);
+
+      return tx.staffInvitation.create({
+        data: {
+          organizationId: input.organizationId,
+          emailNormalized,
+          phoneE164: input.phone,
+          tokenHash,
+          invitedByMembershipId: input.invitedByMembershipId,
+          roleId: input.roleId,
+          branchId: input.branchId,
+          expiresAt,
+        },
+      });
     });
 
     await this.auditService.record({
@@ -116,6 +145,85 @@ export class StaffInvitationService {
       invitation: { id: invitation.id, expiresAt: invitation.expiresAt, status: invitation.status },
       rawToken,
     };
+  }
+
+  /**
+   * The roles a staff invitation may actually grant (docs task "Staff
+   * and Role Invitations") — every system role plus any custom role
+   * this organization has defined, except `owner`, which can never be
+   * granted through an invitation (ownership transfer is a separate,
+   * not-yet-built workflow). Lets a client build a real role picker
+   * without hard-coding role ids, which are database-generated and not
+   * guaranteed stable across environments.
+   */
+  async listAssignableRoles(organizationId: string) {
+    const roles = await this.prisma.role.findMany({
+      where: {
+        code: { not: OWNER_ROLE_CODE },
+        OR: [{ organizationId: null }, { organizationId }],
+      },
+      orderBy: { name: 'asc' },
+    });
+    return roles.map((role) => ({ id: role.id, code: role.code, name: role.name }));
+  }
+
+  /** Owner/manager-facing invitation list — every status, newest first.
+   * Never exposes the token hash. */
+  async list(organizationId: string, status?: StaffInvitationStatus) {
+    const invitations = await this.prisma.staffInvitation.findMany({
+      where: { organizationId, ...(status ? { status } : {}) },
+      include: { role: true, branch: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return invitations.map((invitation) => ({
+      id: invitation.id,
+      email: invitation.emailNormalized,
+      phone: invitation.phoneE164,
+      roleId: invitation.roleId,
+      roleName: invitation.role.name,
+      roleCode: invitation.role.code,
+      branchId: invitation.branchId,
+      branchName: invitation.branch?.name ?? null,
+      status: invitation.status,
+      expiresAt: invitation.expiresAt,
+      createdAt: invitation.createdAt,
+    }));
+  }
+
+  private async lockSubscription(tx: TransactionClient, organizationId: string): Promise<void> {
+    await tx.$queryRaw`SELECT id FROM organization_subscriptions WHERE organization_id = ${organizationId}::uuid FOR UPDATE`;
+  }
+
+  /**
+   * Counts every ACTIVE membership (staff already occupying a seat) plus
+   * every still-PENDING invitation (a seat already promised) against the
+   * plan's `staff.max` entitlement — both counted inside the same locked
+   * transaction so a concurrent second invitation cannot slip past the
+   * same limit before the first commits.
+   */
+  private async assertWithinStaffLimit(tx: TransactionClient, organizationId: string): Promise<void> {
+    const entitlements = await this.entitlementsService.resolveForOrganization(organizationId, tx);
+    const staffMax = entitlements[STAFF_MAX_ENTITLEMENT_CODE];
+    if (typeof staffMax !== 'number') {
+      return;
+    }
+
+    const [activeMembershipCount, pendingInvitationCount] = await Promise.all([
+      tx.organizationMembership.count({
+        where: { organizationId, status: MembershipStatus.ACTIVE },
+      }),
+      tx.staffInvitation.count({
+        where: { organizationId, status: StaffInvitationStatus.PENDING },
+      }),
+    ]);
+
+    if (activeMembershipCount + pendingInvitationCount >= staffMax) {
+      throw new ConflictException({
+        code: 'STAFF_LIMIT_REACHED',
+        message: `This organization's plan allows at most ${staffMax} staff. Upgrade the plan or remove an existing member before inviting another.`,
+      });
+    }
   }
 
   /**

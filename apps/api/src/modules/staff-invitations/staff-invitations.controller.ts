@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -16,6 +17,7 @@ import type { RequestWithId } from '../../common/middleware/request-id.middlewar
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { Public } from '../auth/decorators/public.decorator.js';
 import type { RequestUser } from '../auth/interfaces/authenticated-request.interface.js';
+import type { StaffInvitationStatus } from '../../generated/prisma/client.js';
 import { CreateStaffInvitationDto } from './dto/create-staff-invitation.dto.js';
 import { StaffInvitationService } from './staff-invitation.service.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
@@ -42,6 +44,23 @@ export class StaffInvitationsController {
       branchId: dto.branchId,
       requestId: request.requestId,
     });
+  }
+
+  @UseGuards(TenantAccessGuard)
+  @RequirePermissions('staff.read')
+  @Get('organizations/:organizationId/staff-invitations')
+  async list(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('status') status?: StaffInvitationStatus,
+  ) {
+    return this.staffInvitationService.list(tenant.organizationId, status);
+  }
+
+  @UseGuards(TenantAccessGuard)
+  @RequirePermissions('staff.invite')
+  @Get('organizations/:organizationId/staff-invitations/assignable-roles')
+  async assignableRoles(@CurrentTenant() tenant: TenantContext) {
+    return this.staffInvitationService.listAssignableRoles(tenant.organizationId);
   }
 
   @Public()

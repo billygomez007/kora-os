@@ -31,7 +31,9 @@ import { ReportsModule } from './modules/reports/reports.module.js';
 import { SchedulingModule } from './modules/scheduling/scheduling.module.js';
 import { ServiceSessionsModule } from './modules/service-sessions/service-sessions.module.js';
 import { ServicesModule } from './modules/services/services.module.js';
+import { StaffModule } from './modules/staff/staff.module.js';
 import { StaffInvitationsModule } from './modules/staff-invitations/staff-invitations.module.js';
+import { SubscriptionDetailModule } from './modules/subscriptions/subscription-detail.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
 import { TransactionsModule } from './modules/transactions/transactions.module.js';
 import { WorkspacesModule } from './modules/workspaces/workspaces.module.js';
@@ -62,8 +64,10 @@ const repositoryRootEnvPath = path.resolve(
     DomainEventsModule,
     AuditModule,
     SubscriptionsModule,
+    SubscriptionDetailModule,
     OrganizationsModule,
     StaffInvitationsModule,
+    StaffModule,
     DiscoveryModule,
     ServicesModule,
     SchedulingModule,

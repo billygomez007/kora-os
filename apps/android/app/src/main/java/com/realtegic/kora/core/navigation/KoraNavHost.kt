@@ -1,0 +1,355 @@
+package com.realtegic.kora.core.navigation
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.navigation.NavGraphBuilder
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.navigation
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.realtegic.kora.core.di.AppContainer
+import com.realtegic.kora.core.network.ApiResult
+import com.realtegic.kora.core.preferences.SelectedWorkspacePreference
+import com.realtegic.kora.core.session.SessionState
+import com.realtegic.kora.feature.auth.AuthViewModel
+import com.realtegic.kora.feature.auth.EmailEntryScreen
+import com.realtegic.kora.feature.auth.OtpVerifyScreen
+import com.realtegic.kora.feature.auth.SplashScreen
+import com.realtegic.kora.feature.auth.SplashViewModel
+import com.realtegic.kora.feature.auth.WelcomeScreen
+import com.realtegic.kora.feature.business.dashboard.BusinessDashboardScreen
+import com.realtegic.kora.feature.business.dashboard.BusinessDashboardViewModel
+import com.realtegic.kora.feature.customer.appointments.AppointmentDetailScreen
+import com.realtegic.kora.feature.customer.appointments.AppointmentDetailViewModel
+import com.realtegic.kora.feature.customer.appointments.AppointmentsListScreen
+import com.realtegic.kora.feature.customer.appointments.AppointmentsListViewModel
+import com.realtegic.kora.feature.customer.booking.BookingConfirmationScreen
+import com.realtegic.kora.feature.customer.booking.BookingFlowScreen
+import com.realtegic.kora.feature.customer.booking.BookingViewModel
+import com.realtegic.kora.feature.customer.discovery.BranchServicesScreen
+import com.realtegic.kora.feature.customer.discovery.BranchServicesViewModel
+import com.realtegic.kora.feature.customer.discovery.BusinessDetailScreen
+import com.realtegic.kora.feature.customer.discovery.BusinessDetailViewModel
+import com.realtegic.kora.feature.customer.discovery.DiscoveryViewModel
+import com.realtegic.kora.feature.customer.discovery.SearchResultsScreen
+import com.realtegic.kora.feature.customer.home.HomeScreen
+import com.realtegic.kora.feature.customer.home.HomeViewModel
+import com.realtegic.kora.feature.customer.profile.AccountSettingsScreen
+import com.realtegic.kora.feature.customer.profile.AccountSettingsViewModel
+import com.realtegic.kora.feature.customer.profile.FavoritesScreen
+import com.realtegic.kora.feature.customer.profile.FavoritesViewModel
+import com.realtegic.kora.feature.customer.profile.ProfileScreen
+import com.realtegic.kora.feature.customer.profile.ProfileViewModel
+import com.realtegic.kora.feature.workspace.WorkspaceChooserScreen
+import com.realtegic.kora.feature.workspace.WorkspaceDecision
+import com.realtegic.kora.feature.workspace.WorkspaceViewModel
+import com.realtegic.kora.feature.workspace.decideInitialWorkspaceRoute
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+
+@Composable
+fun KoraNavHost(container: AppContainer) {
+    val navController = rememberNavController()
+
+    NavHost(navController = navController, startDestination = KoraRoutes.SPLASH) {
+        composable(KoraRoutes.SPLASH) {
+            val splashViewModel = koraViewModel { SplashViewModel(container.authRepository) }
+            val sessionState by splashViewModel.sessionState.collectAsState()
+            SplashScreen(splashViewModel)
+
+            LaunchedEffect(sessionState) {
+                when (sessionState) {
+                    is SessionState.SignedIn -> resolveAndNavigate(navController, container, popSplash = true)
+                    SessionState.SignedOut -> navController.navigate(KoraRoutes.AUTH_GRAPH) {
+                        popUpTo(KoraRoutes.SPLASH) { inclusive = true }
+                    }
+                    else -> Unit
+                }
+            }
+        }
+
+        authGraph(navController, container)
+        workspaceGraph(navController, container)
+        customerGraph(navController, container)
+        businessGraph(navController, container)
+    }
+}
+
+/** Fetches workspaces fresh, revalidates any locally remembered
+ * selection against that fresh result, and lands on the right graph --
+ * used both after session restoration and immediately after a fresh
+ * sign-in (docs task Phase 4). A stale or now-inaccessible remembered
+ * organization is cleared and falls back to the normal decision rather
+ * than ever being trusted outright. */
+private suspend fun resolveAndNavigate(navController: NavHostController, container: AppContainer, popSplash: Boolean) {
+    when (val result = container.workspacesRepository.getMyWorkspaces()) {
+        is ApiResult.Success -> {
+            val workspaces = result.value
+            val stored = container.localPreferences.selectedWorkspace.first()
+            val validOrganization = (stored as? SelectedWorkspacePreference.Organization)
+                ?.let { pref -> workspaces.organizations.firstOrNull { it.organizationId == pref.organizationId } }
+
+            when {
+                validOrganization != null -> navigateToBusiness(navController, validOrganization.organizationId, popSplash)
+                stored is SelectedWorkspacePreference.Customer && workspaces.customerWorkspaceAvailable ->
+                    navigateToCustomerHome(navController, popSplash)
+                else -> {
+                    if (stored is SelectedWorkspacePreference.Organization) {
+                        container.localPreferences.clearSelectedWorkspace()
+                    }
+                    when (val decision = decideInitialWorkspaceRoute(workspaces)) {
+                        WorkspaceDecision.CustomerHome -> navigateToCustomerHome(navController, popSplash)
+                        is WorkspaceDecision.BusinessWorkspace -> navigateToBusiness(navController, decision.organizationId, popSplash)
+                        WorkspaceDecision.ShowChooser -> navController.navigate(KoraRoutes.WORKSPACE_GRAPH) {
+                            if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true }
+                        }
+                    }
+                }
+            }
+        }
+        is ApiResult.Failure -> {
+            navController.navigate(KoraRoutes.WORKSPACE_GRAPH) {
+                if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true }
+            }
+        }
+    }
+}
+
+private fun navigateToCustomerHome(navController: NavHostController, popSplash: Boolean) {
+    navController.navigate(KoraRoutes.CUSTOMER_GRAPH) {
+        if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true } else popUpTo(KoraRoutes.WORKSPACE_GRAPH) { inclusive = true }
+    }
+}
+
+private fun navigateToBusiness(navController: NavHostController, organizationId: String, popSplash: Boolean) {
+    navController.navigate(KoraRoutes.businessGraph(organizationId)) {
+        if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true } else popUpTo(KoraRoutes.WORKSPACE_GRAPH) { inclusive = true }
+    }
+}
+
+private fun NavGraphBuilder.authGraph(navController: NavHostController, container: AppContainer) {
+    navigation(startDestination = KoraRoutes.AUTH_WELCOME, route = KoraRoutes.AUTH_GRAPH) {
+        composable(KoraRoutes.AUTH_WELCOME) {
+            WelcomeScreen(onContinue = { navController.navigate(KoraRoutes.AUTH_EMAIL_ENTRY) })
+        }
+        composable(KoraRoutes.AUTH_EMAIL_ENTRY) { backStackEntry ->
+            val authViewModel = rememberAuthGraphViewModel(navController, backStackEntry, container)
+            val state by authViewModel.state.collectAsState()
+            EmailEntryScreen(authViewModel, onBack = { navController.popBackStack() })
+            LaunchedEffect(state.step) {
+                if (state.step == com.realtegic.kora.feature.auth.AuthStep.OTP_VERIFY) {
+                    navController.navigate(KoraRoutes.AUTH_OTP_VERIFY)
+                }
+            }
+        }
+        composable(KoraRoutes.AUTH_OTP_VERIFY) { backStackEntry ->
+            val authViewModel = rememberAuthGraphViewModel(navController, backStackEntry, container)
+            val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+            OtpVerifyScreen(
+                authViewModel,
+                onBack = { navController.popBackStack() },
+                onSignedIn = {
+                    coroutineScope.launch { resolveAndNavigate(navController, container, popSplash = false) }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun rememberAuthGraphViewModel(
+    navController: NavHostController,
+    backStackEntry: androidx.navigation.NavBackStackEntry,
+    container: AppContainer,
+): AuthViewModel {
+    val parentEntry = remember(backStackEntry) { navController.getBackStackEntry(KoraRoutes.AUTH_GRAPH) }
+    return viewModel(viewModelStoreOwner = parentEntry, factory = viewModelFactory { initializer { AuthViewModel(container.authRepository) } })
+}
+
+private fun NavGraphBuilder.workspaceGraph(navController: NavHostController, container: AppContainer) {
+    navigation(startDestination = KoraRoutes.WORKSPACE_CHOOSER, route = KoraRoutes.WORKSPACE_GRAPH) {
+        composable(KoraRoutes.WORKSPACE_CHOOSER) {
+            val viewModel = koraViewModel { WorkspaceViewModel(container.workspacesRepository, container.localPreferences) }
+            WorkspaceChooserScreen(
+                viewModel = viewModel,
+                onCustomerSelected = { navigateToCustomerHome(navController, popSplash = false) },
+                onOrganizationSelected = { organizationId -> navigateToBusiness(navController, organizationId, popSplash = false) },
+            )
+        }
+    }
+}
+
+private fun NavGraphBuilder.customerGraph(navController: NavHostController, container: AppContainer) {
+    navigation(startDestination = KoraRoutes.CUSTOMER_HOME, route = KoraRoutes.CUSTOMER_GRAPH) {
+        composable(KoraRoutes.CUSTOMER_HOME) {
+            val viewModel = koraViewModel { HomeViewModel(container.discoveryRepository, container.appointmentsRepository) }
+            HomeScreen(
+                viewModel = viewModel,
+                onSearchTapped = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
+                onNearYouTapped = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
+                onCategoryTapped = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
+                onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
+                onProfileTapped = { navController.navigate(KoraRoutes.CUSTOMER_PROFILE) },
+                onUpcomingAppointmentTapped = { id -> navController.navigate(KoraRoutes.appointmentDetail(id)) },
+            )
+        }
+        composable(KoraRoutes.CUSTOMER_SEARCH) {
+            val viewModel = koraViewModel { DiscoveryViewModel(container.discoveryRepository, container.locationProvider) }
+            SearchResultsScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
+            )
+        }
+        composable(
+            KoraRoutes.CUSTOMER_BUSINESS_DETAIL,
+            arguments = listOf(navArgument("slug") { type = androidx.navigation.NavType.StringType }),
+        ) { backStackEntry ->
+            val slug = backStackEntry.arguments?.getString("slug").orEmpty()
+            val viewModel = koraViewModel { BusinessDetailViewModel(slug, container.discoveryRepository, container.favoritesRepository) }
+            BusinessDetailScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onBranchSelected = { branchId -> navController.navigate(KoraRoutes.branchServices(slug, branchId)) },
+            )
+        }
+        composable(
+            KoraRoutes.CUSTOMER_BRANCH_SERVICES,
+            arguments = listOf(
+                navArgument("slug") { type = androidx.navigation.NavType.StringType },
+                navArgument("branchId") { type = androidx.navigation.NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val slug = backStackEntry.arguments?.getString("slug").orEmpty()
+            val branchId = backStackEntry.arguments?.getString("branchId").orEmpty()
+            val viewModel = koraViewModel { BranchServicesViewModel(slug, branchId, container.discoveryRepository) }
+            BranchServicesScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onContinue = { serviceId, staffProfileId ->
+                    navController.currentBackStackEntry?.savedStateHandle?.set("serviceId", serviceId)
+                    navController.currentBackStackEntry?.savedStateHandle?.set("staffProfileId", staffProfileId)
+                    navController.navigate(KoraRoutes.booking(slug, branchId))
+                },
+            )
+        }
+        composable(
+            KoraRoutes.CUSTOMER_BOOKING,
+            arguments = listOf(
+                navArgument("slug") { type = androidx.navigation.NavType.StringType },
+                navArgument("branchId") { type = androidx.navigation.NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val slug = backStackEntry.arguments?.getString("slug").orEmpty()
+            val branchId = backStackEntry.arguments?.getString("branchId").orEmpty()
+            val previousEntry = remember(backStackEntry) { navController.previousBackStackEntry }
+            val serviceId = previousEntry?.savedStateHandle?.get<String>("serviceId").orEmpty()
+            val staffProfileId = previousEntry?.savedStateHandle?.get<String>("staffProfileId")
+            val viewModel = koraViewModel {
+                BookingViewModel(slug, branchId, serviceId, staffProfileId, container.discoveryRepository, container.appointmentsRepository)
+            }
+            BookingFlowScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onBooked = { appointmentId ->
+                    navController.navigate(KoraRoutes.bookingConfirmation(appointmentId)) {
+                        popUpTo(KoraRoutes.CUSTOMER_HOME)
+                    }
+                },
+            )
+        }
+        composable(
+            KoraRoutes.CUSTOMER_BOOKING_CONFIRMATION,
+            arguments = listOf(navArgument("appointmentId") { type = androidx.navigation.NavType.StringType }),
+        ) {
+            BookingConfirmationScreen(
+                onViewAppointments = {
+                    navController.navigate(KoraRoutes.CUSTOMER_APPOINTMENTS) { popUpTo(KoraRoutes.CUSTOMER_HOME) }
+                },
+                onDone = { navController.popBackStack(KoraRoutes.CUSTOMER_HOME, inclusive = false) },
+            )
+        }
+        composable(KoraRoutes.CUSTOMER_APPOINTMENTS) {
+            val viewModel = koraViewModel { AppointmentsListViewModel(container.appointmentsRepository) }
+            AppointmentsListScreen(
+                viewModel = viewModel,
+                onAppointmentTapped = { id -> navController.navigate(KoraRoutes.appointmentDetail(id)) },
+                onBookNew = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
+            )
+        }
+        composable(
+            KoraRoutes.CUSTOMER_APPOINTMENT_DETAIL,
+            arguments = listOf(navArgument("appointmentId") { type = androidx.navigation.NavType.StringType }),
+        ) { backStackEntry ->
+            val appointmentId = backStackEntry.arguments?.getString("appointmentId").orEmpty()
+            val viewModel = koraViewModel { AppointmentDetailViewModel(appointmentId, container.appointmentsRepository) }
+            AppointmentDetailScreen(viewModel, onBack = { navController.popBackStack() })
+        }
+        composable(KoraRoutes.CUSTOMER_PROFILE) {
+            val viewModel = koraViewModel { ProfileViewModel(container.authRepository) }
+            ProfileScreen(
+                viewModel = viewModel,
+                onFavorites = { navController.navigate(KoraRoutes.CUSTOMER_FAVORITES) },
+                onAccountSettings = { navController.navigate(KoraRoutes.ACCOUNT_SETTINGS) },
+                onSwitchWorkspace = {
+                    navController.navigate(KoraRoutes.WORKSPACE_GRAPH) { popUpTo(KoraRoutes.CUSTOMER_GRAPH) { inclusive = true } }
+                },
+                onSignedOut = { navigateToSignedOut(navController) },
+            )
+        }
+        composable(KoraRoutes.CUSTOMER_FAVORITES) {
+            val viewModel = koraViewModel { FavoritesViewModel(container.favoritesRepository) }
+            FavoritesScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
+            )
+        }
+        composable(KoraRoutes.ACCOUNT_SETTINGS) {
+            val viewModel = koraViewModel { AccountSettingsViewModel(container.authRepository) }
+            AccountSettingsScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onSignedOutEverywhere = { navigateToSignedOut(navController) },
+            )
+        }
+    }
+}
+
+private fun NavGraphBuilder.businessGraph(navController: NavHostController, container: AppContainer) {
+    navigation(
+        startDestination = KoraRoutes.BUSINESS_DASHBOARD,
+        route = KoraRoutes.BUSINESS_GRAPH_PATTERN,
+        arguments = listOf(navArgument("organizationId") { type = androidx.navigation.NavType.StringType }),
+    ) {
+        composable(KoraRoutes.BUSINESS_DASHBOARD) { backStackEntry ->
+            val organizationId = remember(backStackEntry) {
+                navController.getBackStackEntry(KoraRoutes.BUSINESS_GRAPH_PATTERN).arguments?.getString("organizationId").orEmpty()
+            }
+            val viewModel = koraViewModel { BusinessDashboardViewModel(organizationId, container.workspacesRepository, container.reportsRepository) }
+            BusinessDashboardScreen(
+                viewModel = viewModel,
+                onSwitchWorkspace = {
+                    navController.navigate(KoraRoutes.WORKSPACE_GRAPH) { popUpTo(KoraRoutes.BUSINESS_GRAPH_PATTERN) { inclusive = true } }
+                },
+            )
+        }
+    }
+}
+
+/** Clears the entire back stack down to nothing before landing on the
+ * auth graph, so pressing back from Welcome exits the app rather than
+ * returning to an authenticated screen (docs task Phase 10). */
+private fun navigateToSignedOut(navController: NavHostController) {
+    navController.navigate(KoraRoutes.AUTH_GRAPH) {
+        popUpTo(0) { inclusive = true }
+    }
+}

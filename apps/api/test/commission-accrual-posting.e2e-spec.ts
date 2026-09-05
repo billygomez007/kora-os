@@ -44,6 +44,9 @@ describe('Commission accrual and transaction-posting integration (e2e)', () => {
   function myEarningsUrl(): string {
     return `/v1/organizations/${fixture.organizationId}/me/earnings`;
   }
+  function myEarningsSummaryUrl(): string {
+    return `/v1/organizations/${fixture.organizationId}/me/earnings/summary`;
+  }
 
   describe('calculation', () => {
     it('accrues a PERCENTAGE commission on GROSS_LINE basis matching the exact rounded amount', async () => {
@@ -239,6 +242,27 @@ describe('Commission accrual and transaction-posting integration (e2e)', () => {
 
     it('a cashier without commissions.read_own cannot reach /me/earnings', async () => {
       const response = await authed(testApp, cashier.accessToken).get(myEarningsUrl());
+      expect(response.status).toBe(403);
+    });
+
+    it('the earnings summary totals match the sum of the own earnings lines, scoped to one staff profile only', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      const lines = await authed(testApp, fixture.providerAccessToken).get(myEarningsUrl()).expect(200);
+      const expectedNet = lines.body.data
+        .filter((line: { transactionId: string }) => line.transactionId === posted.transactionId)
+        .reduce((sum: number, line: { calculatedAmountMinor: number }) => sum + line.calculatedAmountMinor, 0);
+
+      const summary = await authed(testApp, fixture.providerAccessToken).get(myEarningsSummaryUrl()).expect(200);
+      expect(summary.body.data.staffProfileId).toBe(fixture.providerStaffProfileId);
+      const net = summary.body.data.net.find((amount: { currency: string }) => amount.currency === fixture.serviceCurrency);
+      expect(net?.amountMinor).toBeGreaterThanOrEqual(expectedNet);
+
+      const other = await authed(testApp, extras.secondProviderAccessToken).get(myEarningsSummaryUrl()).expect(200);
+      expect(other.body.data.net).toEqual([]);
+    });
+
+    it('a cashier without commissions.read_own cannot reach the earnings summary', async () => {
+      const response = await authed(testApp, cashier.accessToken).get(myEarningsSummaryUrl());
       expect(response.status).toBe(403);
     });
   });

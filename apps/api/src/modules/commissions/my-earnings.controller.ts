@@ -21,4 +21,10 @@ export class MyEarningsController {
       limit: query.limit,
     });
   }
+
+  @RequirePermissions('commissions.read_own')
+  @Get('earnings/summary')
+  async earningsSummary(@CurrentTenant() tenant: TenantContext, @Query() query: ListMyEarningsQueryDto) {
+    return this.accrualsQueryService.summaryOwnEarnings(tenant, { from: query.from, to: query.to });
+  }
 }

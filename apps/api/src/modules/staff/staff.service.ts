@@ -40,6 +40,13 @@ export class StaffService {
       displayName: membership.user.displayName,
       email: membership.user.emailNormalized,
       status: membership.status,
+      // Non-sensitive, no more revealing than membershipId already is —
+      // added so the mobile client can assign this staff member to a
+      // branch service (`.../services/:serviceId/staff`, keyed by
+      // staffProfileId, not membershipId). `null` for a membership with
+      // no StaffProfile (e.g. the owner, created by onboarding rather
+      // than a staff invitation).
+      staffProfileId: membership.staffProfile?.id ?? null,
       roleNames: membership.membershipRoles.map((membershipRole) => membershipRole.role.name),
       roleCodes: membership.membershipRoles.map((membershipRole) => membershipRole.role.code),
       branches: membership.branchAssignments.map((assignment) => ({

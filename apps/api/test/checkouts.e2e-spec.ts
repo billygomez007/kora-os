@@ -227,6 +227,21 @@ describe('Checkouts (e2e)', () => {
       expect(get.body.data.id).toBe(created.body.data.id);
     });
 
+    it('filters the list to the checkout for one specific completed service session', async () => {
+      const cashier = await createCashierActor(testApp, fixture);
+      const { serviceSessionId: sessionA } = await completeSession();
+      const createdA = await authed(testApp, extras.receptionistAccessToken).post(checkoutCreateUrl(sessionA)).expect(201);
+      const { serviceSessionId: sessionB } = await completeSession();
+      await authed(testApp, extras.receptionistAccessToken).post(checkoutCreateUrl(sessionB)).expect(201);
+
+      const list = await authed(testApp, cashier.accessToken)
+        .get(`/v1/organizations/${fixture.organizationId}/checkouts`)
+        .query({ serviceSessionId: sessionA })
+        .expect(200);
+      expect(list.body.data).toHaveLength(1);
+      expect(list.body.data[0].id).toBe(createdA.body.data.id);
+    });
+
     it('a service provider without checkouts.read cannot list or read checkouts', async () => {
       const { serviceSessionId } = await completeSession();
       const created = await authed(testApp, extras.receptionistAccessToken).post(checkoutCreateUrl(serviceSessionId)).expect(201);

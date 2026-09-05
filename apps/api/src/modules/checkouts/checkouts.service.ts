@@ -189,6 +189,7 @@ export class CheckoutsService {
       status?: CheckoutStatus;
       assignedStaffProfileId?: string;
       customerRecordId?: string;
+      serviceSessionId?: string;
       cursor?: string;
       limit?: number;
     },
@@ -213,6 +214,7 @@ export class CheckoutsService {
         ...(options.status ? { status: options.status } : {}),
         ...(options.assignedStaffProfileId ? { assignedStaffProfileId: options.assignedStaffProfileId } : {}),
         ...(options.customerRecordId ? { customerRecordId: options.customerRecordId } : {}),
+        ...(options.serviceSessionId ? { serviceSessionId: options.serviceSessionId } : {}),
         ...(cursorId ? { id: { gt: cursorId } } : {}),
       },
       include: checkoutViewInclude,

@@ -22,6 +22,7 @@ export class CheckoutsController {
       status: query.status,
       assignedStaffProfileId: query.assignedStaffProfileId,
       customerRecordId: query.customerRecordId,
+      serviceSessionId: query.serviceSessionId,
       cursor: query.cursor,
       limit: query.limit,
     });

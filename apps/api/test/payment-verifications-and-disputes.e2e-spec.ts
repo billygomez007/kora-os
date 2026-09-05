@@ -202,6 +202,24 @@ describe('Payment verification and disputes (e2e)', () => {
       const response = await authed(testApp, cashier.accessToken).get(pendingUrl());
       expect(response.status).toBe(403);
     });
+
+    it('the unfiltered verifications endpoint lists every status for the provider\'s own payments, and a status filter narrows it', async () => {
+      const half = Math.floor(checkoutTotalMinor / 2);
+      const confirmed = await recordPayment(cashier.accessToken, half);
+      await authed(testApp, fixture.providerAccessToken).post(confirmUrl(confirmed.id)).send({}).expect(201);
+      const recorded = await recordPayment(cashier.accessToken, checkoutTotalMinor - half);
+
+      const mineUrl = `/v1/organizations/${fixture.organizationId}/payment-verifications`;
+      const all = await authed(testApp, fixture.providerAccessToken).get(mineUrl).expect(200);
+      const ids = all.body.data.map((p: { id: string }) => p.id);
+      expect(ids).toEqual(expect.arrayContaining([recorded.id, confirmed.id]));
+
+      const onlyConfirmed = await authed(testApp, fixture.providerAccessToken).get(mineUrl).query({ status: 'CONFIRMED' }).expect(200);
+      expect(onlyConfirmed.body.data.map((p: { id: string }) => p.id)).toEqual([confirmed.id]);
+
+      const other = await authed(testApp, extras.secondProviderAccessToken).get(mineUrl).expect(200);
+      expect(other.body.data).toEqual([]);
+    });
   });
 
   describe('dispute resolution', () => {
@@ -230,6 +248,10 @@ describe('Payment verification and disputes (e2e)', () => {
         .send({ resolution: 'CONFIRM_PAYMENT', resolutionNote: 'Verified against till slip' })
         .expect(201);
       expect(response.body.data.status).toBe('RESOLVED_CONFIRMED');
+      // A resolution screen has no other way to look up the underlying
+      // payment claim (no standalone get-payment-by-id route exists),
+      // so the dispute response embeds a safe payment summary directly.
+      expect(response.body.data.payment).toMatchObject({ id: paymentId, status: 'CONFIRMED' });
 
       const payment = await testApp.prisma.paymentRecord.findUniqueOrThrow({ where: { id: paymentId } });
       expect(payment.status).toBe('CONFIRMED');
@@ -297,15 +319,18 @@ describe('Payment verification and disputes (e2e)', () => {
       expect(response.status).toBe(403);
     });
 
-    it('a manager can list and read disputes', async () => {
+    it('a manager can list and read disputes, each with its embedded safe payment summary', async () => {
       const manager = await createManagerActor(testApp, fixture);
-      const { disputeId } = await openDispute();
+      const { paymentId, disputeId } = await openDispute();
 
       const list = await authed(testApp, manager.accessToken).get(disputesUrl()).expect(200);
       expect(list.body.data.map((d: { id: string }) => d.id)).toContain(disputeId);
+      const listedEntry = list.body.data.find((d: { id: string }) => d.id === disputeId);
+      expect(listedEntry.payment).toMatchObject({ id: paymentId, status: 'DISPUTED' });
 
       const get = await authed(testApp, manager.accessToken).get(disputesUrl(`/${disputeId}`)).expect(200);
       expect(get.body.data.id).toBe(disputeId);
+      expect(get.body.data.payment).toMatchObject({ id: paymentId, status: 'DISPUTED' });
     });
   });
 });

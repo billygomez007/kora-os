@@ -19,6 +19,16 @@ export class ListCheckoutsQueryDto {
   @IsUUID()
   customerRecordId?: string;
 
+  /** `serviceSessionId` is unique per Checkout — this lets a client
+   * resolve "does a checkout already exist for this completed
+   * session?" without guessing, since no other lookup key connects the
+   * two resources (docs task Phase 7: "retrieve and display the
+   * authoritative existing checkout instead of creating a local
+   * duplicate"). */
+  @IsOptional()
+  @IsUUID()
+  serviceSessionId?: string;
+
   @IsOptional()
   @Type(() => String)
   cursor?: string;

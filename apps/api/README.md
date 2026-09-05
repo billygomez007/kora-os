@@ -364,6 +364,30 @@ email exactly matches the invitation may accept it. See
 `docs/API_SPEC.md` section 33 and `docs/SECURITY.md` sections 37-38
 for the full model.
 
+## Mobile-contract additions for Android business operations
+
+Six small, additive changes closed real gaps found while building
+Android's checkout, payments, verification, transactions/receipts, and
+earnings screens — none duplicates existing domain logic, and each
+inherits the authorization of the resource it extends (see
+`docs/API_SPEC.md` section 34 and `docs/SECURITY.md` section 39 for the
+full detail): a `staffProfileId` field on `GET .../staff` (so a
+provider can resolve their own identity for "My Work" without a new
+endpoint); a `serviceSessionId` filter on `GET .../checkouts` and a
+`transactionId` filter on `GET .../receipts` (so a client can look up
+"does this already exist" with one filtered list call); a new base `GET
+.../payment-verifications` route (a provider's own pending/disputed/
+resolved history in one call, alongside the pre-existing `/pending`);
+an embedded `payment` summary on every `PaymentDispute` response; and a
+new `GET .../me/earnings/summary` endpoint reusing the owner/manager
+commissions-report aggregation, scoped to the caller's own staff
+profile, so a provider's "net accrued commission" figure never has to
+be summed client-side from a paged line list. Covered by e2e tests in
+`test/organizations-and-invitations.e2e-spec.ts`,
+`test/checkouts.e2e-spec.ts`, `test/receipts.e2e-spec.ts`,
+`test/payment-verifications-and-disputes.e2e-spec.ts`, and
+`test/commission-accrual-posting.e2e-spec.ts`.
+
 ## Useful root-level scripts
 
 Run from the repository root (see the root `package.json` for the full

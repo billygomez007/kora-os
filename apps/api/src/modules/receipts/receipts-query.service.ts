@@ -24,7 +24,7 @@ export class ReceiptsQueryService {
 
   async listForOrganization(
     tenant: TenantContext,
-    options: { branchId?: string; customerRecordId?: string; cursor?: string; limit?: number },
+    options: { branchId?: string; customerRecordId?: string; transactionId?: string; cursor?: string; limit?: number },
   ): Promise<PaginatedPayload<ReceiptView>> {
     if (options.branchId) {
       assertMembershipHasBranchAccess(tenant, options.branchId);
@@ -44,6 +44,7 @@ export class ReceiptsQueryService {
         organizationId: tenant.organizationId,
         ...branchFilter,
         ...(options.customerRecordId ? { customerRecordId: options.customerRecordId } : {}),
+        ...(options.transactionId ? { transactionId: options.transactionId } : {}),
         ...(cursorId ? { id: { gt: cursorId } } : {}),
       },
       include: receiptViewInclude,

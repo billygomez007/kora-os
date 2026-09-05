@@ -51,6 +51,31 @@ export class PaymentVerificationsService {
     return payments.map(toPaymentRecordView);
   }
 
+  /**
+   * The provider's own confirmation queue across every status, not
+   * only pending (docs task Phase 9: "pending payment confirmations;
+   * disputed confirmations; resolved confirmations" as three distinct
+   * required views) — `listPendingForProvider` above intentionally
+   * keeps its narrower RECORDED-only contract unchanged; this is an
+   * additive sibling, same tenant/provider scoping, optionally
+   * narrowed by `status`.
+   */
+  async listMineForProvider(tenant: TenantContext, status?: PaymentRecordStatus): Promise<PaymentRecordView[]> {
+    const ownStaffProfileId = await this.resolveOwnStaffProfileId(tenant.organizationId, tenant.membershipId);
+    if (!ownStaffProfileId) {
+      return [];
+    }
+    const payments = await this.prisma.paymentRecord.findMany({
+      where: {
+        organizationId: tenant.organizationId,
+        confirmationRequiredByStaffProfileId: ownStaffProfileId,
+        ...(status ? { status } : {}),
+      },
+      orderBy: { recordedAt: 'desc' },
+    });
+    return payments.map(toPaymentRecordView);
+  }
+
   async confirm(
     tenant: TenantContext,
     paymentId: string,

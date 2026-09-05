@@ -4,6 +4,7 @@ import type { TenantContext } from '../../common/authorization/interfaces/tenant
 import type { PaginatedPayload } from '../../common/http/api-response.interceptor.js';
 import { PrismaService } from '../../database/prisma.service.js';
 import { CommissionAccrualSource } from '../../generated/prisma/client.js';
+import { aggregateCommissionsBySource, type CommissionReportEntry } from '../reports/report-aggregation.util.js';
 import { toCommissionAccrualView, type CommissionAccrualView } from './commission-accrual-view.js';
 import { myEarningsInclude, toMyEarningsLineView, type MyEarningsLineView } from './my-earnings-view.js';
 
@@ -114,6 +115,48 @@ export class CommissionAccrualsQueryService {
       data: page.map(toMyEarningsLineView),
       page: { hasMore, nextCursor: hasMore ? encodeCursor(page.at(-1)!.id) : null },
     };
+  }
+
+  /** Currency-separated earned/refunded/reversed/net totals for the
+   * caller's own accruals over a date range — reuses the same
+   * aggregation as the owner/manager commissions report so the two
+   * never drift, but scoped to one staff profile only. Never derived
+   * from a mutable Service price or a cached commission rate (docs task
+   * Phase 12: "derive only from server CommissionAccrual data"). */
+  async summaryOwnEarnings(tenant: TenantContext, options: { from?: string; to?: string }): Promise<CommissionReportEntry> {
+    const ownStaffProfile = await this.prisma.staffProfile.findUnique({
+      where: { organizationId_membershipId: { organizationId: tenant.organizationId, membershipId: tenant.membershipId } },
+    });
+    const empty: CommissionReportEntry = {
+      staffProfileId: ownStaffProfile?.id ?? '',
+      policyAccrued: [],
+      noPolicyAccrued: [],
+      refunded: [],
+      reversed: [],
+      net: [],
+    };
+    if (!ownStaffProfile) {
+      return empty;
+    }
+
+    const accruals = await this.prisma.commissionAccrual.findMany({
+      where: {
+        organizationId: tenant.organizationId,
+        staffProfileId: ownStaffProfile.id,
+        ...(options.from || options.to
+          ? {
+              calculatedAt: {
+                ...(options.from ? { gte: new Date(options.from) } : {}),
+                ...(options.to ? { lte: new Date(options.to) } : {}),
+              },
+            }
+          : {}),
+      },
+      select: { staffProfileId: true, source: true, kind: true, calculatedAmountMinor: true, currency: true },
+    });
+
+    const [entry] = aggregateCommissionsBySource(accruals);
+    return entry ?? empty;
   }
 }
 

@@ -110,6 +110,16 @@ describe('Receipts (e2e)', () => {
       expect(get.body.data.id).toBe(receipt.id);
     });
 
+    it('filters the list to the receipt for one specific posted transaction', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      const list = await authed(testApp, cashier.accessToken)
+        .get(receiptsUrl())
+        .query({ transactionId: posted.transactionId })
+        .expect(200);
+      expect(list.body.data).toHaveLength(1);
+      expect(list.body.data[0].transactionId).toBe(posted.transactionId);
+    });
+
     it('a service provider without receipts.read by default is forbidden', async () => {
       const response = await authed(testApp, fixture.providerAccessToken).get(receiptsUrl());
       expect(response.status).toBe(403);

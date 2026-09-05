@@ -17,6 +17,7 @@ export class ReceiptsController {
     return this.receiptsQueryService.listForOrganization(tenant, {
       branchId: query.branchId,
       customerRecordId: query.customerRecordId,
+      transactionId: query.transactionId,
       cursor: query.cursor,
       limit: query.limit,
     });

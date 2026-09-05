@@ -48,6 +48,7 @@ export class PaymentDisputesService {
         ...(options.status ? { status: options.status } : {}),
         ...(cursorId ? { id: { gt: cursorId } } : {}),
       },
+      include: { paymentRecord: true },
       orderBy: { id: 'asc' },
       take: limit + 1,
     });
@@ -55,7 +56,7 @@ export class PaymentDisputesService {
     const hasMore = rows.length > limit;
     const page = rows.slice(0, limit);
     return {
-      data: page.map(toPaymentDisputeView),
+      data: page.map((row) => toPaymentDisputeView(row, row.paymentRecord)),
       page: { hasMore, nextCursor: hasMore ? encodeCursor(page.at(-1)!.id) : null },
     };
   }
@@ -63,11 +64,12 @@ export class PaymentDisputesService {
   async get(tenant: TenantContext, disputeId: string): Promise<PaymentDisputeView> {
     const dispute = await this.prisma.paymentDispute.findFirst({
       where: { id: disputeId, organizationId: tenant.organizationId },
+      include: { paymentRecord: true },
     });
     if (!dispute) {
       throw new NotFoundException('Dispute not found');
     }
-    return toPaymentDisputeView(dispute);
+    return toPaymentDisputeView(dispute, dispute.paymentRecord);
   }
 
   async resolve(
@@ -187,10 +189,10 @@ export class PaymentDisputesService {
         requestId,
       });
 
-      return tx.paymentDispute.findUniqueOrThrow({ where: { id: disputeId } });
+      return tx.paymentDispute.findUniqueOrThrow({ where: { id: disputeId }, include: { paymentRecord: true } });
     });
 
-    return toPaymentDisputeView(updated);
+    return toPaymentDisputeView(updated, updated.paymentRecord);
   }
 }
 

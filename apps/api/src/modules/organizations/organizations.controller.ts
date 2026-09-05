@@ -61,4 +61,10 @@ export class OrganizationsController {
   async setupStatus(@Param('organizationId') organizationId: string) {
     return this.setupStatusService.compute(organizationId);
   }
+
+  @UseGuards(TenantAccessGuard)
+  @Get(':organizationId/branches')
+  async branches(@Param('organizationId') organizationId: string) {
+    return this.organizationsService.listBranches(organizationId);
+  }
 }

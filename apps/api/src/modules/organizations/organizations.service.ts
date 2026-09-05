@@ -33,4 +33,28 @@ export class OrganizationsService {
       where: { id: organizationId },
     });
   }
+
+  /**
+   * Read-only branch listing — mobile needs this to resolve the primary
+   * branch id after resuming onboarding (no full branch CRUD exists yet
+   * this stage, see docs task scope notes), and it is otherwise a safe,
+   * non-sensitive projection of branch identity fields.
+   */
+  async listBranches(organizationId: string) {
+    const branches = await this.prisma.branch.findMany({
+      where: { organizationId, archivedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return branches.map((branch) => ({
+      id: branch.id,
+      organizationId: branch.organizationId,
+      name: branch.name,
+      code: branch.code,
+      countryCode: branch.countryCode,
+      timeZone: branch.timeZone,
+      currency: branch.currency,
+      status: branch.status,
+    }));
+  }
 }

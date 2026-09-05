@@ -103,6 +103,10 @@ data class StaffDirectoryEntryDto(
     val displayName: String,
     val email: String?,
     val status: String,
+    /** `null` for a membership with no StaffProfile (the owner) --
+     * needed to assign this staff member to a branch service, which is
+     * keyed by staffProfileId, not membershipId (docs task Phase 1). */
+    val staffProfileId: String? = null,
     val roleNames: List<String>,
     val roleCodes: List<String>,
     val branches: List<StaffDirectoryBranchDto>,

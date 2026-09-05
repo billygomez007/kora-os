@@ -21,6 +21,26 @@ data class RescheduleAppointmentRequest(
     val staffProfileId: String? = null,
 )
 
+/** Staff-assisted appointment creation -- exactly one of
+ * [customerProfileId]/[newCustomer] must be set (server-validated; the
+ * client never guesses which). */
+@JsonClass(generateAdapter = true)
+data class CreateStaffAppointmentRequest(
+    val serviceIds: List<String>,
+    val staffProfileId: String,
+    val startAt: String,
+    val customerProfileId: String? = null,
+    val newCustomer: NewCustomerRequest? = null,
+    val idempotencyKey: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class NewCustomerRequest(
+    val name: String,
+    val phoneE164: String? = null,
+    val email: String? = null,
+)
+
 /** Exact shape of `AppointmentView` (docs task Phase 7) -- `status` is
  * always one of CONFIRMED/CANCELLED/NO_SHOW; there is deliberately no
  * COMPLETED status here, since only a ServiceSession can prove work

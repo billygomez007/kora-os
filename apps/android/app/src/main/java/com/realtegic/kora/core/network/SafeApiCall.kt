@@ -117,7 +117,7 @@ private fun mapHttpError(httpStatus: Int, moshi: Moshi, rawErrorBody: String?): 
         code == "SUBSCRIPTION_UNAVAILABLE" -> DomainError.SubscriptionBlocked
         httpStatus == 400 || code == "VALIDATION_FAILED" -> DomainError.Validation(message)
         httpStatus == 401 -> DomainError.Unauthorized
-        httpStatus == 403 -> DomainError.Forbidden
+        httpStatus == 403 -> DomainError.Forbidden(code = parsed?.error?.code, details = message)
         httpStatus == 404 -> DomainError.NotFound
         httpStatus == 409 -> DomainError.Conflict(code, message)
         httpStatus == 429 -> DomainError.RateLimited

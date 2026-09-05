@@ -6,30 +6,49 @@ import androidx.compose.runtime.mutableStateOf
 import com.realtegic.kora.BuildConfig
 import com.realtegic.kora.core.data.AppointmentsRepository
 import com.realtegic.kora.core.data.BusinessProfileRepository
+import com.realtegic.kora.core.data.CashPolicyRepository
+import com.realtegic.kora.core.data.CheckoutsRepository
 import com.realtegic.kora.core.data.DiscoveryRepository
 import com.realtegic.kora.core.data.FavoritesRepository
+import com.realtegic.kora.core.data.MyEarningsRepository
+import com.realtegic.kora.core.data.OrganizationAppointmentsRepository
 import com.realtegic.kora.core.data.OrganizationsRepository
+import com.realtegic.kora.core.data.PaymentsRepository
+import com.realtegic.kora.core.data.QueueRepository
+import com.realtegic.kora.core.data.ReceiptsRepository
 import com.realtegic.kora.core.data.ReportsRepository
 import com.realtegic.kora.core.data.SchedulingRepository
 import com.realtegic.kora.core.data.ServiceCatalogueRepository
+import com.realtegic.kora.core.data.ServiceSessionsRepository
 import com.realtegic.kora.core.data.StaffRepository
 import com.realtegic.kora.core.data.SubscriptionRepository
+import com.realtegic.kora.core.data.TransactionsRepository
 import com.realtegic.kora.core.data.WorkspacesRepository
 import com.realtegic.kora.core.location.ApproximateLocationProvider
 import com.realtegic.kora.core.network.AppointmentsApi
 import com.realtegic.kora.core.network.AuthApi
 import com.realtegic.kora.core.network.AuthInterceptor
 import com.realtegic.kora.core.network.BusinessProfileApi
+import com.realtegic.kora.core.network.CashPolicyApi
+import com.realtegic.kora.core.network.CheckoutsApi
 import com.realtegic.kora.core.network.DiscoveryApi
 import com.realtegic.kora.core.network.FavoritesApi
+import com.realtegic.kora.core.network.MyEarningsApi
 import com.realtegic.kora.core.network.NetworkModule
+import com.realtegic.kora.core.network.OrganizationAppointmentsApi
 import com.realtegic.kora.core.network.OrganizationsApi
+import com.realtegic.kora.core.network.PaymentDisputesApi
+import com.realtegic.kora.core.network.PaymentsApi
+import com.realtegic.kora.core.network.QueueApi
+import com.realtegic.kora.core.network.ReceiptsApi
 import com.realtegic.kora.core.network.ReportsApi
 import com.realtegic.kora.core.network.SchedulingApi
 import com.realtegic.kora.core.network.ServiceCatalogueApi
+import com.realtegic.kora.core.network.ServiceSessionsApi
 import com.realtegic.kora.core.network.StaffApi
 import com.realtegic.kora.core.network.SubscriptionApi
 import com.realtegic.kora.core.network.TokenAuthenticator
+import com.realtegic.kora.core.network.TransactionsApi
 import com.realtegic.kora.core.network.WorkspacesApi
 import com.realtegic.kora.core.preferences.LocalPreferences
 import com.realtegic.kora.core.session.AuthRepository
@@ -94,6 +113,19 @@ class AppContainer(context: Context) {
     val schedulingRepository = SchedulingRepository(mainRetrofit.create(SchedulingApi::class.java), moshi)
     val staffRepository = StaffRepository(mainRetrofit.create(StaffApi::class.java), moshi)
     val subscriptionRepository = SubscriptionRepository(mainRetrofit.create(SubscriptionApi::class.java), moshi)
+    val organizationAppointmentsRepository = OrganizationAppointmentsRepository(mainRetrofit.create(OrganizationAppointmentsApi::class.java), moshi)
+    val queueRepository = QueueRepository(mainRetrofit.create(QueueApi::class.java), moshi)
+    val serviceSessionsRepository = ServiceSessionsRepository(mainRetrofit.create(ServiceSessionsApi::class.java), moshi)
+    val checkoutsRepository = CheckoutsRepository(mainRetrofit.create(CheckoutsApi::class.java), moshi)
+    val paymentsRepository = PaymentsRepository(
+        mainRetrofit.create(PaymentsApi::class.java),
+        mainRetrofit.create(PaymentDisputesApi::class.java),
+        moshi,
+    )
+    val transactionsRepository = TransactionsRepository(mainRetrofit.create(TransactionsApi::class.java), moshi)
+    val receiptsRepository = ReceiptsRepository(mainRetrofit.create(ReceiptsApi::class.java), moshi)
+    val myEarningsRepository = MyEarningsRepository(mainRetrofit.create(MyEarningsApi::class.java), moshi)
+    val cashPolicyRepository = CashPolicyRepository(mainRetrofit.create(CashPolicyApi::class.java), moshi)
 
     /** The most recently deep-linked staff-invitation token, held only
      * in memory (docs task "Invitation Deep Link and Acceptance": "hold

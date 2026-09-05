@@ -19,7 +19,13 @@ package com.realtegic.kora.core.network
 sealed class DomainError(val message: String) {
     data class Validation(val details: String) : DomainError(details)
     data object Unauthorized : DomainError("Your session has expired. Please sign in again.")
-    data object Forbidden : DomainError("You do not have permission to do that.")
+
+    /** [code] is present whenever the server sent one alongside its 403
+     * (e.g. `PAYMENT_SELF_CONFIRMATION_FORBIDDEN`/`PAYMENT_CONFIRMATION_FORBIDDEN`
+     * -- docs task Phase 9), so a screen can react to a specific
+     * forbidden reason rather than only a generic denial; `null` for an
+     * ordinary bare-message 403 (e.g. a missing RBAC permission). */
+    data class Forbidden(val code: String? = null, val details: String = "You do not have permission to do that.") : DomainError(details)
     data object SubscriptionReadOnly : DomainError("This workspace is in read-only mode.")
     data object SubscriptionBlocked : DomainError("This workspace's subscription is not active.")
     data object RateLimited : DomainError("Too many attempts. Please wait and try again.")

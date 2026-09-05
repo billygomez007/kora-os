@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 private const val RESEND_COOLDOWN_SECONDS = 30
+private const val OTP_CODE_LENGTH = 6
 
 enum class AuthStep { EMAIL_ENTRY, OTP_VERIFY }
 
@@ -48,7 +49,7 @@ class AuthViewModel(private val authRepository: AuthRepository) : ViewModel() {
     }
 
     fun onCodeChanged(code: String) {
-        val digitsOnly = code.filter { it.isDigit() }.take(10)
+        val digitsOnly = code.filter { it.isDigit() }.take(OTP_CODE_LENGTH)
         _state.value = _state.value.copy(otpCode = digitsOnly, error = null)
     }
 
@@ -64,6 +65,12 @@ class AuthViewModel(private val authRepository: AuthRepository) : ViewModel() {
                 is ApiResult.Success -> {
                     _state.value = _state.value.copy(
                         step = AuthStep.OTP_VERIFY,
+                        // The server sends the code to its own normalized
+                        // form of the address (trimmed, lower-cased) --
+                        // shown here so the OTP screen always displays the
+                        // exact address the code was actually sent to,
+                        // never whatever casing/whitespace the user typed.
+                        email = email.lowercase(),
                         challengeId = result.value.challengeId,
                         otpCode = "",
                         isSubmitting = false,
@@ -78,15 +85,21 @@ class AuthViewModel(private val authRepository: AuthRepository) : ViewModel() {
     }
 
     fun resendCode() {
-        if (_state.value.resendAvailableInSeconds > 0) return
+        // Disabled during the countdown AND while a request is already
+        // running -- guarded here, not only by the button's own `enabled`,
+        // so a resend can never fire twice from one rapid double-tap
+        // (docs task: "Disable resend during the countdown and while a
+        // request is running").
+        if (_state.value.resendAvailableInSeconds > 0 || _state.value.isSubmitting) return
         submitEmail()
     }
 
     fun submitCode() {
         val current = _state.value
+        if (current.isSubmitting) return
         val challengeId = current.challengeId ?: return
-        if (current.otpCode.length < 4) {
-            _state.value = current.copy(error = DomainError.Validation("Enter the code from your email."))
+        if (current.otpCode.length != OTP_CODE_LENGTH) {
+            _state.value = current.copy(error = DomainError.Validation("Enter the 6-digit code from your email."))
             return
         }
         viewModelScope.launch {

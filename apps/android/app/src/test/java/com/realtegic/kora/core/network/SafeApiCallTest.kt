@@ -90,6 +90,15 @@ class SafeApiCallTest {
     }
 
     @Test
+    fun `maps 401 OTP_INVALID to Validation with the server's own message, never Unauthorized`() = runTest {
+        enqueueError(401, "OTP_INVALID", "This code is invalid or has expired.")
+        val result = safeApiCall(moshi) { api.get() }
+        val error = (result as ApiResult.Failure).error
+        assertTrue(error is DomainError.Validation)
+        assertEquals("This code is invalid or has expired.", error.message)
+    }
+
+    @Test
     fun `maps 403 to Forbidden`() = runTest {
         enqueueError(403, "FORBIDDEN", "You do not have access")
         val result = safeApiCall(moshi) { api.get() }

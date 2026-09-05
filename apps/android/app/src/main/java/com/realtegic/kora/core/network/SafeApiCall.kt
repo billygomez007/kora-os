@@ -115,6 +115,13 @@ private fun mapHttpError(httpStatus: Int, moshi: Moshi, rawErrorBody: String?): 
     return when {
         code == "SLOT_UNAVAILABLE" -> DomainError.SlotUnavailable
         code == "SUBSCRIPTION_UNAVAILABLE" -> DomainError.SubscriptionBlocked
+        // The email-OTP verify endpoint deliberately collapses incorrect,
+        // expired, consumed, invalidated, and locked challenges into one
+        // generic 401 (anti-enumeration -- never reveal which specific
+        // reason applied). Left to the generic `httpStatus == 401` branch
+        // below, this would show "Your session has expired," which is
+        // wrong and confusing before any session has ever existed.
+        code == "OTP_INVALID" -> DomainError.Validation(message)
         httpStatus == 400 || code == "VALIDATION_FAILED" -> DomainError.Validation(message)
         httpStatus == 401 -> DomainError.Unauthorized
         httpStatus == 403 -> DomainError.Forbidden(code = parsed?.error?.code, details = message)

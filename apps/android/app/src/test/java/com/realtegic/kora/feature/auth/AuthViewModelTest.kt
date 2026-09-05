@@ -20,6 +20,7 @@ import com.realtegic.kora.core.session.AuthRepository
 import com.realtegic.kora.core.session.SessionManager
 import com.realtegic.kora.core.session.TokenStore
 import com.squareup.moshi.Moshi
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -40,6 +41,12 @@ private class FakeAuthApi : AuthApi {
     var requestOtpCallCount = 0
     var verifyOtpCallCount = 0
 
+    /** Set to make [verifyOtp] genuinely suspend until the test resolves
+     * it -- needed to observe an in-flight [AuthViewModel.submitCode]
+     * call from the test body itself (docs task: "Prevent duplicate
+     * verification submissions"). */
+    var verifyOtpGate: CompletableDeferred<Response<ApiSuccessEnvelope<AuthResultDto>>>? = null
+
     override suspend fun requestOtp(body: RequestEmailOtpRequest): Response<ApiSuccessEnvelope<RequestEmailOtpResponse>> {
         requestOtpCallCount++
         return requestOtpResult!!
@@ -47,6 +54,7 @@ private class FakeAuthApi : AuthApi {
 
     override suspend fun verifyOtp(body: VerifyEmailOtpRequest): Response<ApiSuccessEnvelope<AuthResultDto>> {
         verifyOtpCallCount++
+        verifyOtpGate?.let { return it.await() }
         return verifyOtpResult!!
     }
 
@@ -180,9 +188,68 @@ class AuthViewModelTest {
     }
 
     @Test
-    fun `the OTP field only accepts digits and caps at 10`() {
+    fun `a successful resend after the cooldown elapses replaces the challenge id and clears the code`() {
+        fakeApi.requestOtpResult = otpRequested("challenge-1")
+        viewModel.onEmailChanged("ama@example.test")
+        viewModel.submitEmail()
+        viewModel.onCodeChanged("111111")
+        mainDispatcherRule.dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(0, viewModel.state.value.resendAvailableInSeconds)
+
+        fakeApi.requestOtpResult = otpRequested("challenge-2")
+        viewModel.resendCode()
+
+        assertEquals(2, fakeApi.requestOtpCallCount)
+        assertEquals("challenge-2", viewModel.state.value.challengeId)
+        assertEquals("", viewModel.state.value.otpCode)
+        assertEquals(30, viewModel.state.value.resendAvailableInSeconds)
+    }
+
+    @Test
+    fun `a failed resend keeps the prior challenge intact -- a recoverable state, not a reset`() {
+        fakeApi.requestOtpResult = otpRequested("challenge-1")
+        viewModel.onEmailChanged("ama@example.test")
+        viewModel.submitEmail()
+        mainDispatcherRule.dispatcher.scheduler.advanceUntilIdle()
+
+        fakeApi.requestOtpResult = Response.error<ApiSuccessEnvelope<RequestEmailOtpResponse>>(503, "{}".toResponseBody("application/json".toMediaType()))
+        viewModel.resendCode()
+
+        assertEquals("challenge-1", viewModel.state.value.challengeId)
+        assertNotNull(viewModel.state.value.error)
+    }
+
+    @Test
+    fun `submitCode is a no-op while a verification is already in flight`() = runTest {
+        fakeApi.requestOtpResult = otpRequested("challenge-1")
+        viewModel.onEmailChanged("ama@example.test")
+        viewModel.submitEmail()
+        viewModel.onCodeChanged("123456")
+        val gate = CompletableDeferred<Response<ApiSuccessEnvelope<AuthResultDto>>>()
+        fakeApi.verifyOtpGate = gate
+
+        viewModel.submitCode()
+        assertTrue(viewModel.state.value.isSubmitting)
+        viewModel.submitCode()
+
+        assertEquals(1, fakeApi.verifyOtpCallCount)
+        gate.complete(otpVerified())
+    }
+
+    @Test
+    fun `the OTP field only accepts digits and caps at 6`() {
         viewModel.onCodeChanged("12a3-45!67890123")
-        assertEquals("1234567890", viewModel.state.value.otpCode)
+        assertEquals("123456", viewModel.state.value.otpCode)
+    }
+
+    @Test
+    fun `the normalized email -- trimmed and lower-cased -- is what the OTP screen shows, not whatever was typed`() = runTest {
+        fakeApi.requestOtpResult = otpRequested("challenge-1")
+        viewModel.onEmailChanged("  AMA@Example.TEST  ")
+
+        viewModel.submitEmail()
+
+        assertEquals("ama@example.test", viewModel.state.value.email)
     }
 
     @Test

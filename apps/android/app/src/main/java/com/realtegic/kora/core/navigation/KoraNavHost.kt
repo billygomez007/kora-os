@@ -92,7 +92,7 @@ fun KoraNavHost(container: AppContainer) {
             LaunchedEffect(sessionState) {
                 if (container.pendingInvitationToken.value != null) return@LaunchedEffect
                 when (sessionState) {
-                    is SessionState.SignedIn -> resolveAndNavigate(navController, container, popSplash = true)
+                    is SessionState.SignedIn -> resolveAndNavigate(navController, container, popUpToRoute = KoraRoutes.SPLASH)
                     SessionState.SignedOut -> navController.navigate(KoraRoutes.AUTH_GRAPH) {
                         popUpTo(KoraRoutes.SPLASH) { inclusive = true }
                     }
@@ -115,8 +115,14 @@ fun KoraNavHost(container: AppContainer) {
  * used both after session restoration and immediately after a fresh
  * sign-in (docs task Phase 4). A stale or now-inaccessible remembered
  * organization is cleared and falls back to the normal decision rather
- * than ever being trusted outright. */
-private suspend fun resolveAndNavigate(navController: NavHostController, container: AppContainer, popSplash: Boolean) {
+ * than ever being trusted outright. [popUpToRoute] is popped inclusive
+ * on every branch, removing whichever entry-point stack segment got the
+ * caller here -- Splash when resuming a session, or the auth graph after
+ * a fresh OTP sign-in -- so that entry point is never reachable again via
+ * the back button (docs task Stage 7 OTP screen: "Remove the OTP screen
+ * from the back stack so the user cannot return to it after
+ * authentication"). */
+private suspend fun resolveAndNavigate(navController: NavHostController, container: AppContainer, popUpToRoute: String) {
     when (val result = container.workspacesRepository.getMyWorkspaces()) {
         is ApiResult.Success -> {
             val workspaces = result.value
@@ -125,18 +131,18 @@ private suspend fun resolveAndNavigate(navController: NavHostController, contain
                 ?.let { pref -> workspaces.organizations.firstOrNull { it.organizationId == pref.organizationId } }
 
             when {
-                validOrganization != null -> navigateToBusiness(navController, validOrganization.organizationId, popSplash)
+                validOrganization != null -> navigateToBusiness(navController, validOrganization.organizationId, popUpToRoute)
                 stored is SelectedWorkspacePreference.Customer && workspaces.customerWorkspaceAvailable ->
-                    navigateToCustomerHome(navController, popSplash)
+                    navigateToCustomerHome(navController, popUpToRoute)
                 else -> {
                     if (stored is SelectedWorkspacePreference.Organization) {
                         container.localPreferences.clearSelectedWorkspace()
                     }
                     when (val decision = decideInitialWorkspaceRoute(workspaces)) {
-                        WorkspaceDecision.CustomerHome -> navigateToCustomerHome(navController, popSplash)
-                        is WorkspaceDecision.BusinessWorkspace -> navigateToBusiness(navController, decision.organizationId, popSplash)
+                        WorkspaceDecision.CustomerHome -> navigateToCustomerHome(navController, popUpToRoute)
+                        is WorkspaceDecision.BusinessWorkspace -> navigateToBusiness(navController, decision.organizationId, popUpToRoute)
                         WorkspaceDecision.ShowChooser -> navController.navigate(KoraRoutes.WORKSPACE_GRAPH) {
-                            if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true }
+                            popUpTo(popUpToRoute) { inclusive = true }
                         }
                     }
                 }
@@ -144,21 +150,21 @@ private suspend fun resolveAndNavigate(navController: NavHostController, contain
         }
         is ApiResult.Failure -> {
             navController.navigate(KoraRoutes.WORKSPACE_GRAPH) {
-                if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true }
+                popUpTo(popUpToRoute) { inclusive = true }
             }
         }
     }
 }
 
-private fun navigateToCustomerHome(navController: NavHostController, popSplash: Boolean) {
+private fun navigateToCustomerHome(navController: NavHostController, popUpToRoute: String) {
     navController.navigate(KoraRoutes.CUSTOMER_GRAPH) {
-        if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true } else popUpTo(KoraRoutes.WORKSPACE_GRAPH) { inclusive = true }
+        popUpTo(popUpToRoute) { inclusive = true }
     }
 }
 
-private fun navigateToBusiness(navController: NavHostController, organizationId: String, popSplash: Boolean) {
+private fun navigateToBusiness(navController: NavHostController, organizationId: String, popUpToRoute: String) {
     navController.navigate(KoraRoutes.businessGraph(organizationId)) {
-        if (popSplash) popUpTo(KoraRoutes.SPLASH) { inclusive = true } else popUpTo(KoraRoutes.WORKSPACE_GRAPH) { inclusive = true }
+        popUpTo(popUpToRoute) { inclusive = true }
     }
 }
 
@@ -199,9 +205,13 @@ private fun NavGraphBuilder.authGraph(navController: NavHostController, containe
                                 launchSingleTop = true
                             }
                         } else {
-                            resolveAndNavigate(navController, container, popSplash = false)
+                            resolveAndNavigate(navController, container, popUpToRoute = KoraRoutes.AUTH_GRAPH)
                         }
                     }
+                },
+                onUseDifferentEmail = {
+                    authViewModel.changeEmail()
+                    navController.popBackStack()
                 },
             )
         }
@@ -224,8 +234,8 @@ private fun NavGraphBuilder.workspaceGraph(navController: NavHostController, con
             val viewModel = koraViewModel { WorkspaceViewModel(container.workspacesRepository, container.localPreferences) }
             WorkspaceChooserScreen(
                 viewModel = viewModel,
-                onCustomerSelected = { navigateToCustomerHome(navController, popSplash = false) },
-                onOrganizationSelected = { organizationId -> navigateToBusiness(navController, organizationId, popSplash = false) },
+                onCustomerSelected = { navigateToCustomerHome(navController, popUpToRoute = KoraRoutes.WORKSPACE_GRAPH) },
+                onOrganizationSelected = { organizationId -> navigateToBusiness(navController, organizationId, popUpToRoute = KoraRoutes.WORKSPACE_GRAPH) },
                 onCreateBusiness = { navController.navigate(KoraRoutes.ONBOARDING) },
             )
         }
@@ -453,7 +463,14 @@ private fun NavGraphBuilder.invitationGraph(navController: NavHostController, co
                 container.pendingInvitationToken.value = null
                 coroutineScope.launch {
                     container.localPreferences.setSelectedOrganizationWorkspace(organizationId)
-                    navigateToBusiness(navController, organizationId, popSplash = false)
+                    // By the time acceptance succeeds, the back stack is
+                    // always just [INVITATION_PREVIEW] -- either a raw
+                    // deep-link landing (Splash already popped inclusive
+                    // by the LaunchedEffect above) or the post-OTP-sign-in
+                    // handoff (AUTH_GRAPH already popped inclusive) --
+                    // so popping through this route itself is what
+                    // actually removes it.
+                    navigateToBusiness(navController, organizationId, popUpToRoute = KoraRoutes.INVITATION_PREVIEW)
                 }
             },
             onDone = {

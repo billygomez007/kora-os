@@ -281,6 +281,40 @@ printing some earlier prototypes used has not been restored, and never
 will be. OTP codes are never exposed in API responses, application
 logs, Android logs, test reports, or committed screenshots.
 
+### OTP verification screen design
+
+`OtpVerifyScreen` (`feature/auth`) matches the approved
+`docs/design/mobile-auth/kora-auth-otp-reference.png` reference natively
+in Compose — the PNG is design guidance only, never rendered as a
+background image. Six visual cells are backed by exactly one
+`BasicTextField` (`core/designsystem.KoraOtpCells`), so native paste and
+the system's SMS-style one-time-code keyboard still work without a
+hand-rolled per-cell focus scheme; the code itself is held only in
+`AuthViewModel`'s in-memory state, never written to Room, DataStore, a
+log line, or a screenshot-obscured field (no such policy exists
+elsewhere in this app, so digits render in the clear, matching the
+approved design). The displayed email is always the server-normalized
+form (trimmed, lower-cased) the code was actually sent to, never
+whatever casing or whitespace the user typed.
+
+The email-OTP verify endpoint deliberately returns one generic
+`OTP_INVALID` outcome for every rejection reason (incorrect, expired,
+consumed, invalidated, or a locked challenge) — an anti-enumeration
+design choice on the backend, not a gap in the Android mapping. This
+screen shows that one safe server message rather than pretending to
+distinguish causes the API itself does not disclose. Fixed as part of
+this screen: a 401 `OTP_INVALID` previously fell through to the
+generic `DomainError.Unauthorized` mapping ("Your session has expired,
+please sign in again"), a confusing message before any session had
+ever existed — it now maps to `DomainError.Validation` carrying the
+server's own message instead (`core/network/SafeApiCall.kt`). Also
+fixed here: signing in fresh via OTP left the whole auth graph on the
+back stack, so pressing back after a successful sign-in could return to
+the (already-consumed) OTP screen — `KoraNavHost`'s post-sign-in
+navigation now always pops the correct entry-point graph inclusive,
+regardless of whether the user arrived via session restoration, a fresh
+OTP sign-in, or an invitation deep link.
+
 ## Building and testing
 
 ```bash
@@ -328,16 +362,32 @@ checkout rather than fabricating one; a self-confirmation-forbidden
 payment rejection reloading the authoritative list instead of being
 treated as a successful confirmation; and the solo-owner dispute-
 resolution override requiring a reason to reject but never to confirm.
-Compose UI tests cover
-the OTP entry screen, the customer home screen, and the workspace
-chooser. Screenshot captures exist for the customer home screen and the
-workspace chooser, reviewed manually for clipping, color, the logo, and
-label correctness — they are visual-review captures on every run, not
-yet a pixel-diff regression gate against a committed golden image.
-Dedicated Compose UI and screenshot coverage for the onboarding wizard,
-business-profile/services/hours/team screens, and the invitation screen
-itself does not exist yet — only their ViewModels are unit-tested; this
-is a known gap, not a silent omission.
+The redesigned OTP screen adds: six-digit sanitization and capping (a
+pasted or autofilled "1a2-3 4567890" yields exactly "123456"); verify
+enablement at exactly six digits; duplicate-tap prevention at both the
+button (disabled while submitting) and `AuthViewModel` (`submitCode`/
+`resendCode` no-op while a request is already in flight, proven with a
+held-open fake network call); the shared `OTP_INVALID` server outcome
+covering incorrect/expired/consumed/invalidated/locked codes, mapped to
+the server's own safe message rather than a generic session-expired
+one; offline and server-unavailable verification failures; a real
+resend cycle (cooldown expiry via direct scheduler control, a
+successful resend replacing the challenge id and clearing the code, a
+failed resend leaving the prior challenge intact); "use a different
+email" resetting the flow and popping back to email entry; and a direct
+assertion that the code never lands in the token store's backing
+preferences. Compose UI tests cover the OTP entry screen (empty,
+partial, complete, verifying, invalid-code, and resend-available
+states), the customer home screen, and the workspace chooser.
+Screenshot captures exist for those same OTP states plus the customer
+home screen and the workspace chooser, reviewed manually for clipping,
+color, the logo, and label correctness — they are visual-review
+captures on every run, not yet a pixel-diff regression gate against a
+committed golden image. Dedicated Compose UI and screenshot coverage
+for the onboarding wizard, business-profile/services/hours/team
+screens, and the invitation screen itself does not exist yet — only
+their ViewModels are unit-tested; this is a known gap, not a silent
+omission.
 
 **A genuine Android Keystore does not exist inside a plain-JVM
 Robolectric test.** Tests that need to prove `TokenStore`'s own logic

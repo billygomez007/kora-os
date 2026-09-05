@@ -1,6 +1,8 @@
 package com.realtegic.kora.feature.business.team
 
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -8,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -27,6 +30,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.realtegic.kora.core.designsystem.EmptyStateView
@@ -44,14 +50,16 @@ import com.realtegic.kora.core.model.StaffInvitationListItemDto
 fun TeamScreen(viewModel: TeamViewModel, onBack: () -> Unit) {
     val state by viewModel.state.collectAsState()
 
-    Scaffold(
-        topBar = { KoraTopBar(title = "Team", onBack = onBack) },
-        floatingActionButton = {
-            FloatingActionButton(onClick = viewModel::showInviteForm) {
-                Icon(Icons.Default.Add, contentDescription = "Invite staff")
-            }
-        },
-    ) { padding ->
+    // The FAB is positioned manually via this outer Box, rather than
+    // through Scaffold's own `floatingActionButton` slot: this screen
+    // is only ever embedded inside BusinessHomeScreen's own Scaffold
+    // (see that file), and a FAB nested two Scaffolds deep was silently
+    // failing to render or receive touches at all -- a real bug found
+    // during manual verification, not just a style preference.
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = { KoraTopBar(title = "Team", onBack = onBack) },
+        ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             Text("Pending invitations", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
             when (val invitations = state.invitations) {
@@ -82,6 +90,14 @@ fun TeamScreen(viewModel: TeamViewModel, onBack: () -> Unit) {
                 ScreenState.AuthenticationExpired -> Unit
             }
         }
+        }
+
+        FloatingActionButton(
+            onClick = viewModel::showInviteForm,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Invite staff")
+        }
     }
 
     if (state.showInviteForm) {
@@ -97,6 +113,60 @@ fun TeamScreen(viewModel: TeamViewModel, onBack: () -> Unit) {
             dismissButton = { TextButton(onClick = viewModel::dismissRevokeConfirmation) { Text("Cancel") } },
         )
     }
+
+    state.pendingInvitationLink?.let { link ->
+        InvitationLinkDialog(link = link, onDismiss = viewModel::dismissInvitationLink)
+    }
+}
+
+/**
+ * The invitation link is shown here exactly once (docs task "Staff and
+ * Role Invitations") -- no automated delivery exists this stage, so
+ * this dialog is the owner's only way to actually hand the invite to
+ * staff. Dismissing it (Copy, Share, or the close button) clears the
+ * raw token from memory; it is never written to ordinary storage.
+ */
+@Composable
+private fun InvitationLinkDialog(link: String, onDismiss: () -> Unit) {
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Invitation created") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Share this secure link with the staff member. It won't be shown again.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                SelectionContainer {
+                    Text(link, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, link)
+                }
+                context.startActivity(Intent.createChooser(sendIntent, "Share invitation link").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                onDismiss()
+            }) { Text("Share") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = {
+                    clipboardManager.setText(AnnotatedString(link))
+                    onDismiss()
+                }) { Text("Copy") }
+                TextButton(onClick = onDismiss) { Text("Done") }
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

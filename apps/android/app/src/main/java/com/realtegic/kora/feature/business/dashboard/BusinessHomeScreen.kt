@@ -1,6 +1,7 @@
 package com.realtegic.kora.feature.business.dashboard
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -143,36 +144,43 @@ private fun BusinessTabs(
             }
         },
     ) { padding ->
-        when (selectedTab) {
-            BusinessTab.OVERVIEW -> BusinessDashboardScreen(dashboardViewModel, onSwitchWorkspace)
-            BusinessTab.SETUP -> {
-                val setupViewModel = koraViewModel { SetupViewModel(org.organizationId, organizationsRepository) }
-                SetupScreen(
-                    viewModel = setupViewModel,
-                    onBack = {},
+        // Every tab's own screen must be inset against the bottom
+        // NavigationBar this Scaffold owns -- omitting this (as only the
+        // MORE tab previously did) let bottom-aligned content (a form
+        // field, a FloatingActionButton) render underneath the nav bar,
+        // invisible and untappable. A real bug found during manual
+        // verification, not a style choice.
+        Box(modifier = Modifier.padding(padding)) {
+            when (selectedTab) {
+                BusinessTab.OVERVIEW -> BusinessDashboardScreen(dashboardViewModel, onSwitchWorkspace)
+                BusinessTab.SETUP -> {
+                    val setupViewModel = koraViewModel { SetupViewModel(org.organizationId, organizationsRepository) }
+                    SetupScreen(
+                        viewModel = setupViewModel,
+                        onBack = {},
+                        onBusinessProfile = onBusinessProfile,
+                        onServices = { selectedTab = BusinessTab.SERVICES },
+                        onHours = { selectedTab = BusinessTab.MORE },
+                        onTeam = { selectedTab = BusinessTab.TEAM },
+                    )
+                }
+                BusinessTab.SERVICES -> {
+                    val servicesViewModel = koraViewModel { ServicesViewModel(org.organizationId, org.defaultCurrency, serviceCatalogueRepository) }
+                    ServicesScreen(viewModel = servicesViewModel, onBack = {})
+                }
+                BusinessTab.TEAM -> {
+                    val teamViewModel = koraViewModel { TeamViewModel(org.organizationId, staffRepository) }
+                    TeamScreen(viewModel = teamViewModel, onBack = {})
+                }
+                BusinessTab.MORE -> MoreTab(
+                    org = org,
+                    primaryBranchId = primaryBranchId,
+                    schedulingRepository = schedulingRepository,
+                    onSubscription = onSubscription,
                     onBusinessProfile = onBusinessProfile,
-                    onServices = { selectedTab = BusinessTab.SERVICES },
-                    onHours = { selectedTab = BusinessTab.MORE },
-                    onTeam = { selectedTab = BusinessTab.TEAM },
+                    onSwitchWorkspace = onSwitchWorkspace,
                 )
             }
-            BusinessTab.SERVICES -> {
-                val servicesViewModel = koraViewModel { ServicesViewModel(org.organizationId, org.defaultCurrency, serviceCatalogueRepository) }
-                ServicesScreen(viewModel = servicesViewModel, onBack = {})
-            }
-            BusinessTab.TEAM -> {
-                val teamViewModel = koraViewModel { TeamViewModel(org.organizationId, staffRepository) }
-                TeamScreen(viewModel = teamViewModel, onBack = {})
-            }
-            BusinessTab.MORE -> MoreTab(
-                org = org,
-                primaryBranchId = primaryBranchId,
-                schedulingRepository = schedulingRepository,
-                onSubscription = onSubscription,
-                onBusinessProfile = onBusinessProfile,
-                onSwitchWorkspace = onSwitchWorkspace,
-                modifier = Modifier.padding(padding),
-            )
         }
     }
 }

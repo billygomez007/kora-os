@@ -25,6 +25,12 @@ data class TeamUiState(
     val isSendingInvite: Boolean = false,
     val inviteError: DomainError? = null,
     val pendingRevokeInvitationId: String? = null,
+    /** The raw invitation link, shown exactly once right after creation
+     * (docs task "Staff and Role Invitations": "display it only once
+     * with a deliberate Copy/Share action, never persist to ordinary
+     * local storage") -- held only in this in-memory Compose state,
+     * cleared as soon as the owner dismisses the dialog. */
+    val pendingInvitationLink: String? = null,
 )
 
 /**
@@ -103,12 +109,24 @@ class TeamViewModel(
             val request = CreateStaffInvitationRequest(email = current.inviteEmail.trim(), roleId = roleId)
             when (val result = staffRepository.createInvitation(organizationId, request)) {
                 is ApiResult.Success -> {
-                    _state.value = _state.value.copy(isSendingInvite = false, showInviteForm = false, inviteEmail = "")
+                    _state.value = _state.value.copy(
+                        isSendingInvite = false,
+                        showInviteForm = false,
+                        inviteEmail = "",
+                        pendingInvitationLink = "kora://invite/${result.value.rawToken}",
+                    )
                     loadInvitations()
                 }
                 is ApiResult.Failure -> _state.value = _state.value.copy(isSendingInvite = false, inviteError = result.error)
             }
         }
+    }
+
+    /** Called once the owner has copied/shared the link (or dismissed
+     * the dialog outright) -- the raw token must not linger in memory
+     * any longer than necessary. */
+    fun dismissInvitationLink() {
+        _state.value = _state.value.copy(pendingInvitationLink = null)
     }
 
     fun requestRevokeConfirmation(invitationId: String) {

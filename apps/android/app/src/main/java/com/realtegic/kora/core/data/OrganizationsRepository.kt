@@ -1,5 +1,6 @@
 package com.realtegic.kora.core.data
 
+import com.realtegic.kora.core.model.BranchDto
 import com.realtegic.kora.core.model.CreateOrganizationRequest
 import com.realtegic.kora.core.model.OnboardOrganizationResponseDto
 import com.realtegic.kora.core.model.OrganizationDto
@@ -32,4 +33,7 @@ class OrganizationsRepository(
 
     suspend fun getSetupStatus(organizationId: String): ApiResult<OrganizationSetupStatusDto> =
         safeApiCall(moshi) { organizationsApi.getSetupStatus(organizationId) }
+
+    suspend fun listBranches(organizationId: String): ApiResult<List<BranchDto>> =
+        safeApiCall(moshi) { organizationsApi.listBranches(organizationId) }
 }

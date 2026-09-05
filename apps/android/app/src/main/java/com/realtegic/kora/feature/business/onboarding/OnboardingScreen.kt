@@ -8,18 +8,25 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import android.content.Intent
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.realtegic.kora.core.designsystem.KoraPrimaryButton
@@ -211,6 +218,59 @@ private fun TeamStep(state: OnboardingUiState, viewModel: OnboardingViewModel) {
         KoraSecondaryButton(text = "Send invitation", onClick = viewModel::sendInvite, enabled = !state.isSendingInvite, modifier = Modifier.fillMaxWidth())
         KoraPrimaryButton(text = "Continue", onClick = viewModel::proceedFromTeam, modifier = Modifier.fillMaxWidth())
     }
+
+    state.pendingInvitationLink?.let { link ->
+        InvitationLinkDialog(link = link, onDismiss = viewModel::dismissInvitationLink)
+    }
+}
+
+/**
+ * Shown exactly once right after an invitation is created (docs task
+ * "Staff and Role Invitations") -- no automated delivery exists this
+ * stage, so this is the owner's only way to hand the link to staff.
+ * Dismissing it clears the raw token from memory.
+ */
+@Composable
+private fun InvitationLinkDialog(link: String, onDismiss: () -> Unit) {
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Invitation created") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Share this secure link with the staff member. It won't be shown again.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                SelectionContainer {
+                    Text(link, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, link)
+                }
+                context.startActivity(Intent.createChooser(sendIntent, "Share invitation link").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                onDismiss()
+            }) { Text("Share") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = {
+                    clipboardManager.setText(AnnotatedString(link))
+                    onDismiss()
+                }) { Text("Copy") }
+                TextButton(onClick = onDismiss) { Text("Done") }
+            }
+        },
+    )
 }
 
 @Composable

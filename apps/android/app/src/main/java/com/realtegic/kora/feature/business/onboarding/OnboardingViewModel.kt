@@ -74,6 +74,9 @@ data class OnboardingUiState(
     val isSendingInvite: Boolean = false,
     val inviteError: DomainError? = null,
     val lastInvitationSent: Boolean = false,
+    /** Shown once right after creation, same as `TeamViewModel`'s
+     * equivalent field -- never persisted, cleared on dismissal. */
+    val pendingInvitationLink: String? = null,
 
     val setupStatus: OrganizationSetupStatusDto? = null,
 )
@@ -125,11 +128,14 @@ class OnboardingViewModel(
                 is ApiResult.Success -> {
                     val statusResult = organizationsRepository.getSetupStatus(organizationId)
                     val status = (statusResult as? ApiResult.Success)?.value
+                    val branchesResult = organizationsRepository.listBranches(organizationId)
+                    val primaryBranchId = (branchesResult as? ApiResult.Success)?.value?.firstOrNull()?.id
                     _state.value = _state.value.copy(
                         isResuming = false,
                         organizationId = organizationId,
                         organizationName = orgResult.value.name,
                         setupStatus = status,
+                        primaryBranchId = primaryBranchId,
                         step = status?.let(::stepForStatus) ?: OnboardingStep.BASICS,
                     )
                     if (status != null) loadServicesIfNeeded(organizationId)
@@ -343,10 +349,19 @@ class OnboardingViewModel(
             _state.value = _state.value.copy(isSendingInvite = true, inviteError = null)
             val request = CreateStaffInvitationRequest(email = current.inviteEmail.trim(), roleId = roleId, branchId = current.primaryBranchId)
             when (val result = staffRepository.createInvitation(organizationId, request)) {
-                is ApiResult.Success -> _state.value = _state.value.copy(isSendingInvite = false, lastInvitationSent = true, inviteEmail = "")
+                is ApiResult.Success -> _state.value = _state.value.copy(
+                    isSendingInvite = false,
+                    lastInvitationSent = true,
+                    inviteEmail = "",
+                    pendingInvitationLink = "kora://invite/${result.value.rawToken}",
+                )
                 is ApiResult.Failure -> _state.value = _state.value.copy(isSendingInvite = false, inviteError = result.error)
             }
         }
+    }
+
+    fun dismissInvitationLink() {
+        _state.value = _state.value.copy(pendingInvitationLink = null)
     }
 
     fun proceedFromTeam() {

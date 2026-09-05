@@ -7,6 +7,7 @@ import com.realtegic.kora.core.model.AppointmentDto
 import com.realtegic.kora.core.model.AssignStaffServiceRequest
 import com.realtegic.kora.core.model.AvailabilityResultDto
 import com.realtegic.kora.core.model.BookingPolicyDto
+import com.realtegic.kora.core.model.BranchDto
 import com.realtegic.kora.core.model.BranchScheduleExceptionDto
 import com.realtegic.kora.core.model.BranchServiceDto
 import com.realtegic.kora.core.model.BusinessCategoryDto
@@ -172,6 +173,11 @@ interface OrganizationsApi {
     suspend fun getSetupStatus(
         @Path("organizationId") organizationId: String,
     ): Response<ApiSuccessEnvelope<OrganizationSetupStatusDto>>
+
+    @GET("organizations/{organizationId}/branches")
+    suspend fun listBranches(
+        @Path("organizationId") organizationId: String,
+    ): Response<ApiSuccessEnvelope<List<BranchDto>>>
 }
 
 interface BusinessProfileApi {

@@ -83,6 +83,7 @@ private class FakeOrganizationsApi : OrganizationsApi {
     override suspend fun list(): Response<ApiSuccessEnvelope<List<OrganizationSummaryDto>>> = notImplemented()
     override suspend fun get(organizationId: String): Response<ApiSuccessEnvelope<OrganizationDto>> = notImplemented()
     override suspend fun getSetupStatus(organizationId: String): Response<ApiSuccessEnvelope<OrganizationSetupStatusDto>> = notImplemented()
+    override suspend fun listBranches(organizationId: String): Response<ApiSuccessEnvelope<List<BranchDto>>> = notImplemented()
 
     private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this test")
 }

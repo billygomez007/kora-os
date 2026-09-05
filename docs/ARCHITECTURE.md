@@ -729,3 +729,140 @@ availability rules/exceptions, and invitation resend/reissue (the
 backend does not support reissue either). Only weekly business hours
 got a dedicated editor. These are documented gaps, not silent
 omissions (docs/ROADMAP.md).
+
+## 25. Android business-operations integration and permission-driven navigation
+
+The third Android integration stage (docs/ROADMAP.md) connects the
+entire remaining day-to-day operations surface — branch-service
+configuration, appointment check-in, walk-in intake, the live queue,
+service sessions, checkout, manual payment recording, provider
+verification, owner/manager dispute resolution, transactions, receipts,
+staff earnings, and owner/manager reports — and replaces the fixed
+Overview/Setup/Services/Team/More tab set from section 23/24 with a
+permission-driven shell.
+
+**The business workspace is a real nested Navigation-Compose graph, not
+a hand-rolled per-tab stack.** `BusinessHomeScreen` owns its own
+`rememberNavController()` and defines every operational screen —
+Queue, Queue entry detail, Walk-in, Appointments, Appointment detail,
+My Work, Active service, Checkout (session list and detail), Record
+payment, Verifications, Disputes (list and detail), Transactions (list
+and detail), Receipts (list and detail), Earnings, Reports, plus Setup/
+Services/Branch services/Team/Business hours — as `composable()`
+destinations in one flat graph, exactly the pattern
+`KoraNavHost`'s existing `customerGraph` already used for its own
+multi-level flows (section 23). This was a deliberate choice over
+extending the existing `BusinessHomeScreen`'s Stage-5 pattern (a
+`rememberSaveable` tab enum plus a couple of local `Boolean` toggles for
+the one optional Business-Hours screen) — that pattern does not scale to
+a real multi-level drill-down (Queue → entry detail → active service →
+checkout → record payment) without either hand-rolling a back stack and
+a `BackHandler`, or getting hardware back, argument passing, and
+deep-linking for free from Navigation-Compose, which already existed
+and was already proven elsewhere in this app.
+
+**The bottom navigation bar is computed from the workspace's own
+permission codes, never from role names, and is capped at five items.**
+`BizDestination` pairs a route with a `(WorkspaceOrganizationDto) ->
+Boolean` predicate over `permissionCodes` (`queue.read`,
+`appointments.read`, any of `service_sessions.{start,perform,manage}`,
+`checkouts.read`, `reports.read`, `transactions.read`,
+`payments.verify_own`, `payments.resolve`, `commissions.read_own`,
+`receipts.read`). Overview is always shown; the bar fills up to four
+more slots from the permitted destinations in a fixed priority order,
+and everything else — plus Setup, Services, Branch services, Team,
+Business hours, and account-level actions (business profile,
+subscription, switch workspace) — lives in a scrollable "More" list.
+This is a disclosed scope reduction, not an attempt at the full
+suggested Overview/Appointments/Queue/My Work/Checkout/Verifications/
+Transactions/Receipts/Earnings/Reports/More tab set as literal bottom-
+bar items: Material accessibility guidance against clipped, cramped
+labels rules out ten-plus items in one `NavigationBar` on a phone-sized
+screen, and every destination beyond the cap remains fully reachable,
+unrestricted, one tap away in More. All client-side gating is
+presentation-only — the server independently re-authorizes every read
+and write regardless of what the bar or the More list ever showed.
+
+**One primary branch stands in for real multi-branch selection.**
+`org.branches.firstOrNull()` is used everywhere a branch-scoped screen
+needs a branch id, and a `LaunchedEffect` fetches `GET .../branches`
+once per workspace to resolve that branch's IANA `timeZone` for
+UTC-to-local display (queue join times, appointment times) — defaulting
+to literal `"UTC"`, never the device's own zone, if that call fails,
+since displaying an explicit UTC timestamp is honest while silently
+guessing the device zone as the branch's zone would not be. A real
+branch switcher (preserving selection, cancelling in-flight requests,
+and reloading branch-scoped data on change, as the product task
+describes) does not exist yet in this or any prior Android stage; every
+seeded/onboarded organization in this codebase has exactly one branch
+today, so this has no observed effect on any tested flow, but it is a
+real, disclosed simplification (docs/ROADMAP.md).
+
+**"Checkout" has its own list root, independent of "My Work," because
+the two are gated by different permissions.** `CheckoutSessionsViewModel`
+lists `service_sessions` with `status=COMPLETED` for the branch — not
+filtered to the caller's own staff profile — so a cashier who holds
+`checkouts.read` but none of the `service_sessions.*` action
+permissions can still find a session to check out. Tapping one hands
+its id to the existing `CheckoutViewModel`, which already create-or-
+recovers the checkout for that session (section on Phase 7/idempotency
+below); the list screen itself never shows which sessions already have
+a checkout, since that is exactly what the create-or-recover call is
+for.
+
+**Every write action reuses the same idempotency-key lifecycle
+established in section 24's onboarding work: generate once, reuse
+across a retry of the identical request, regenerate only when the
+request itself changes.** `WalkInViewModel.submit()`,
+`RecordPaymentViewModel.submit()`, and `CheckoutViewModel`'s one-shot
+create call all follow this exact pattern — a `UUID` held in the
+ViewModel, compared against a snapshot (`request.toString()`) of the
+last-submitted body, never regenerated just because the user tapped the
+button again. Verified directly: retrying an unchanged submission after
+a transient server failure sends the identical `Idempotency-Key` twice;
+changing any field first (amount, selected services) mints a new one
+before the next attempt (`RecordPaymentViewModelTest`,
+`WalkInViewModelTest`).
+
+**A `REQUIRED` cash policy is enforced client-side as a UX convenience,
+never as the actual authorization boundary.** `RecordPaymentViewModel`
+reads the branch's `CashPolicyDto.mode` and refuses to submit a CASH
+payment locally when it is `REQUIRED`, showing a validation message and
+leaving every other payment method selectable — but this is purely
+advisory friction-reduction; full Android cash-session management
+(opening/operating/closing a `CashSession`) does not exist this stage,
+so the client cannot know whether an eligible open session actually
+exists, and the server's own `REQUIRED`-policy rule (docs/SECURITY.md)
+remains the only real enforcement regardless of what this check does.
+
+**Provider verification and owner/manager resolution never update
+status optimistically.** `VerificationsViewModel.confirm()`/
+`submitDispute()` and `DisputeResolutionDetailViewModel.confirmResolve()`
+all reload the authoritative list or dispute after *every* outcome,
+success or failure — a `PAYMENT_SELF_CONFIRMATION_FORBIDDEN` rejection
+(mapped to `DomainError.Forbidden(code = ...)`, section 23) surfaces its
+error and reloads exactly like a successful confirmation does, so a
+denied action can never be mistaken for one that silently succeeded.
+Rejecting a payment in dispute resolution requires a non-blank
+resolution note before any network call; confirming one does not,
+matching the backend's own asymmetric requirement (docs/API_SPEC.md
+section 19).
+
+**Reports and staff earnings never locally aggregate a paged list into
+a total.** `ReportsViewModel` calls the seven distinct report endpoints
+(overview, revenue, staff performance, services, payment methods,
+commissions, cash-reconciliation is deliberately not called from
+Android) as seven independent server-computed results over a shared
+7/30/90-day window; `StaffEarningsViewModel` calls the new
+`.../me/earnings/summary` endpoint (docs/API_SPEC.md section 34) for
+its headline "net accrued commission" figure and `.../me/earnings` only
+for the line-level detail underneath it — the two are never reconciled
+against each other client-side, since both already come from the same
+server-side aggregation function by construction.
+
+Covered by 26 new Android unit tests across five ViewModels
+(`RecordPaymentViewModelTest`, `WalkInViewModelTest`,
+`VerificationsViewModelTest`, `DisputeResolutionViewModelTest`,
+`CheckoutViewModelTest`), bringing the Android unit-test count from 117
+to 143. Compose UI tests and Roborazzi screenshot coverage for these
+screens do not exist yet (docs/ROADMAP.md).

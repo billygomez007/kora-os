@@ -6,9 +6,15 @@ import com.realtegic.kora.core.data.WorkspacesRepository
 import com.realtegic.kora.core.designsystem.ScreenState
 import com.realtegic.kora.core.model.ApiMeta
 import com.realtegic.kora.core.model.ApiSuccessEnvelope
+import com.realtegic.kora.core.model.CashReconciliationEntryDto
+import com.realtegic.kora.core.model.CommissionReportEntryDto
 import com.realtegic.kora.core.model.CurrencyAmountDto
 import com.realtegic.kora.core.model.MyWorkspacesDto
+import com.realtegic.kora.core.model.PaymentMethodEntryDto
 import com.realtegic.kora.core.model.ReportsOverviewDto
+import com.realtegic.kora.core.model.RevenueReportDto
+import com.realtegic.kora.core.model.ServicePerformanceEntryDto
+import com.realtegic.kora.core.model.StaffPerformanceEntryDto
 import com.realtegic.kora.core.model.WorkspaceBranchDto
 import com.realtegic.kora.core.model.WorkspaceOrganizationDto
 import com.realtegic.kora.core.network.DomainError
@@ -39,6 +45,54 @@ private class FakeReportsApi : ReportsApi {
         callCount++
         return result!!
     }
+
+    override suspend fun revenue(organizationId: String, from: String, to: String, branchId: String?, timezone: String?): Response<ApiSuccessEnvelope<RevenueReportDto>> =
+        throw NotImplementedError("not exercised by this test")
+
+    override suspend fun staffPerformance(
+        organizationId: String,
+        from: String,
+        to: String,
+        branchId: String?,
+        cursor: String?,
+        limit: Int?,
+    ): Response<ApiSuccessEnvelope<List<StaffPerformanceEntryDto>>> = throw NotImplementedError("not exercised by this test")
+
+    override suspend fun services(
+        organizationId: String,
+        from: String,
+        to: String,
+        branchId: String?,
+        cursor: String?,
+        limit: Int?,
+    ): Response<ApiSuccessEnvelope<List<ServicePerformanceEntryDto>>> = throw NotImplementedError("not exercised by this test")
+
+    override suspend fun paymentMethods(
+        organizationId: String,
+        from: String,
+        to: String,
+        branchId: String?,
+        cursor: String?,
+        limit: Int?,
+    ): Response<ApiSuccessEnvelope<List<PaymentMethodEntryDto>>> = throw NotImplementedError("not exercised by this test")
+
+    override suspend fun commissions(
+        organizationId: String,
+        from: String,
+        to: String,
+        branchId: String?,
+        cursor: String?,
+        limit: Int?,
+    ): Response<ApiSuccessEnvelope<List<CommissionReportEntryDto>>> = throw NotImplementedError("not exercised by this test")
+
+    override suspend fun cashReconciliation(
+        organizationId: String,
+        from: String,
+        to: String,
+        branchId: String?,
+        cursor: String?,
+        limit: Int?,
+    ): Response<ApiSuccessEnvelope<List<CashReconciliationEntryDto>>> = throw NotImplementedError("not exercised by this test")
 }
 
 private fun org(

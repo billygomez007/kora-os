@@ -6,9 +6,9 @@ prototype or demo. It preserves the existing Google Play
 `applicationId` (`com.aistudio.chairside.ksghna`) for update continuity
 and the Kotlin namespace `com.realtegic.kora`.
 
-Status: second production integration stage. See docs/ROADMAP.md,
-docs/ARCHITECTURE.md sections 23-24, and docs/SECURITY.md sections
-36-38 (all in the repository root) for the full design record. This
+Status: third production integration stage. See docs/ROADMAP.md,
+docs/ARCHITECTURE.md sections 23-25, and docs/SECURITY.md sections
+36, 39 (all in the repository root) for the full design record. This
 README covers what a developer needs to build, run, and test the app
 locally.
 
@@ -25,30 +25,67 @@ locally.
 - Customer favorites.
 - Secure workspace selection between the customer workspace and one or
   more business workspaces, and a subscription-aware, permission-driven
-  business workspace (Overview/Setup/Services/Team/More).
+  business workspace: a bottom navigation bar computed from the
+  workspace's own granted permissions (Overview plus up to four more
+  destinations, ranked by priority — Queue, Appointments, My Work,
+  Checkout, Reports, Transactions, Verifications, Disputes, Earnings,
+  Receipts), with everything else, plus Setup/Services/Team/Business
+  hours/account actions, in a "More" list.
 - A resumable business-onboarding wizard: an owner creates a business
   (organization + first branch + trial subscription, one idempotent
   atomic call), adds services, sets weekly business hours, and
   optionally invites staff — reopening mid-setup revalidates against
   the server's own setup-status rather than trusting local progress.
 - Post-onboarding business-profile (visibility, publish/unpublish),
-  service-catalogue (create/archive), and business-hours management.
+  service-catalogue (create/archive), branch-service enablement, and
+  business-hours management.
 - The full staff-invitation lifecycle: create an invitation (role +
   optional branch), get a one-time share link (Copy/Share — no
   automated delivery yet), team directory, pending-invitation list,
   revoke, and deep-link acceptance (`kora://invite/{token}`) with
   email-verification-on-accept.
+- Appointment check-in and walk-in intake into a near-real-time (10-20s
+  jittered, foreground-only) live branch queue, with call/assign/
+  return-to-waiting/cancel/no-show/start-service commands.
+- Service sessions: start from an eligible queue entry, an active-
+  service screen with a locally-derived (never server-authoritative)
+  elapsed-time display, replace items, complete, cancel.
+- Checkout from a completed service session (create-or-recover with a
+  stable idempotency key, never a local duplicate on a
+  `CHECKOUT_ALREADY_EXISTS` conflict), adjustments with a required
+  reason, void.
+- Manual payment recording — CASH/MOBILE_MONEY/CARD/BANK_TRANSFER/OTHER
+  exactly as the backend defines them, integer minor units throughout, a
+  stable idempotency key, and a per-branch cash policy honored
+  client-side (a `REQUIRED` policy is never bypassed, only a different
+  method is offered). Always "Record payment," never "process
+  payment" — no payment gateway exists anywhere in this app.
+- Provider payment confirmation and dispute (self-confirmation forbidden
+  and never worked around client-side), and owner/manager dispute
+  resolution with a mandatory rejection reason and a prominent warning
+  before a solo-owner override.
+- Read-only Transaction and Receipt views — POSTED-only for revenue,
+  rendered as immutable server snapshots, never recalculated, never
+  called a tax invoice.
+- Staff earnings (today/this-week, a dedicated server-computed summary
+  plus line-level detail) and owner/manager reports (revenue by day,
+  staff/service/payment-method/commission breakdowns) over a selectable
+  7/30/90-day window.
 
 ## What is intentionally not connected yet
 
-Queue commands, service-session commands, checkout, payment recording
-or verification, refunds, cash-session operations, commission
-management, receipt management, branch-service price/duration
-overrides, staff-service assignment, schedule exceptions, booking
-policy, staff availability rules/exceptions, invitation resend/reissue,
-and custom-role management are not reachable from Android in this
-stage — see docs/ROADMAP.md for why, and where they land next. No
-screen represents any of those as an available action.
+Refund/reversal corrections, cash-session operations (opening,
+movements, closing, review — only the per-branch cash *policy* is read,
+to gate the payment form), commission-rule management and payout,
+branch-service price/duration overrides beyond enable/disable,
+staff-service assignment beyond what Branch Services already covers,
+schedule exceptions, booking policy, staff availability rules/
+exceptions, invitation resend/reissue, custom-role management, and
+branch create/deactivate are not reachable from Android in this stage —
+see docs/ROADMAP.md for why, and where they land next. No screen
+represents any of those as an available action. A real branch switcher
+also does not exist yet; every screen uses the workspace's first branch
+(docs/ARCHITECTURE.md section 25).
 
 There is no fake AI voice/microphone button anywhere in the app.
 Voice/AI-assisted discovery is a deferred roadmap item, not a
@@ -278,10 +315,20 @@ READ_ONLY/BLOCKED business-dashboard states; money-string parsing to
 integer minor units without floating point; the organization-creation
 idempotency key (stable across a snapshot-unchanged retry, refreshed
 only on a slug conflict, and a duplicate-tap guard verified with a
-held-open fake network call); and the invitation-preview/accept/reject
+held-open fake network call); the invitation-preview/accept/reject
 flow (loads regardless of auth state, a 403 on accept surfaces as a
 specific email-mismatch state rather than a generic error, and an
-already-expired invitation renders as terminal). Compose UI tests cover
+already-expired invitation renders as terminal); the checkout and
+walk-in idempotency-key lifecycle (stable across a retry of an
+unchanged submission, regenerated only when the request itself
+changes); a `REQUIRED` cash policy blocking a cash submission
+client-side without ever calling the payment endpoint; a
+`CHECKOUT_ALREADY_EXISTS` conflict recovering the real existing
+checkout rather than fabricating one; a self-confirmation-forbidden
+payment rejection reloading the authoritative list instead of being
+treated as a successful confirmation; and the solo-owner dispute-
+resolution override requiring a reason to reject but never to confirm.
+Compose UI tests cover
 the OTP entry screen, the customer home screen, and the workspace
 chooser. Screenshot captures exist for the customer home screen and the
 workspace chooser, reviewed manually for clipping, color, the logo, and
@@ -315,22 +362,33 @@ repository — set one up in Android Studio's Device Manager first.
 
 ## What is explicitly deferred
 
-- Full business-operation mobile integration (queue, service sessions,
-  checkout, payments, refunds, cash sessions, commissions, receipts).
-- Branch-service price/duration overrides, staff-service assignment,
-  schedule exceptions, booking policy, and staff availability
-  rules/exceptions — all backend-ready, none built into an Android
-  screen this stage.
+- Full mobile cash-session management (open/operate/close/review), and
+  refund/reversal corrections — the backend implements both; only the
+  per-branch cash *policy* is read from Android, to gate the payment
+  form.
+- Commission-rule management and commission payout.
+- Schedule exceptions, booking policy, staff availability rules/
+  exceptions — all backend-ready, none built into an Android screen
+  this stage.
 - Full branch CRUD (only the onboarding-created primary branch exists
-  per organization; the new branches-list endpoint is read-only).
+  per organization; the branches-list endpoint is read-only) and a real
+  multi-branch switcher (every screen uses the workspace's first
+  branch).
 - Invitation resend/reissue (the backend does not support it either)
   and custom-role creation.
 - A verified HTTPS Android App Link for the invitation deep link
   (currently a development-only custom scheme) and automated
   invitation-email delivery (currently Copy/Share only).
-- Compose UI and screenshot tests for the new onboarding/business-
-  management/invitation screens (ViewModel-level tests exist; screen-
-  level tests do not yet).
+- Compose UI and Roborazzi screenshot tests for the queue/checkout/
+  payments/verification/resolution/transactions/receipts/earnings/
+  reports screens, and for the onboarding/business-management/
+  invitation screens from the previous stage (ViewModel-level tests
+  exist for all of them; screen-level tests do not yet).
+- A full multi-role, real-money, end-to-end journey (walk-in through
+  posted Transaction/Receipt/CommissionAccrual, staff earnings, and
+  owner reports) has not been run with direct PostgreSQL cross-checks;
+  only individual screens have been spot-verified against a live
+  backend on an existing emulator.
 - iOS (a future stage, sharing the same backend contracts).
 - Push notifications and offline/background synchronization.
 - Voice/AI-assisted discovery (no fake or placeholder UI exists for

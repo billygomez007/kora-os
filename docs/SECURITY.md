@@ -1434,3 +1434,95 @@ distinguishes `PENDING`, `ACCEPTED`, `DECLINED`, `REVOKED`, and expired
 (`isExpired` on an otherwise-`PENDING` invitation) explicitly, so a
 staff member opening a stale or already-used link sees an accurate
 reason rather than a misleading generic failure.
+
+## 39. Android business-operations security (third integration stage)
+
+The third Android integration stage (docs/ROADMAP.md, docs/ARCHITECTURE.md
+section 25) connects checkout, manual payment recording, provider
+verification, owner/manager dispute resolution, transactions, receipts,
+and reporting/earnings to the real API. The six additive backend
+endpoints/fields this required (docs/API_SPEC.md section 34) each
+inherit the authorization of the resource they read or extend and add
+no new rule of their own — `staffProfileId` on the team directory is
+gated by the existing `staff.read` the endpoint already required;
+`serviceSessionId`/`transactionId` list filters are gated by the same
+`checkouts.read`/`receipts.read` the unfiltered list already required;
+`GET .../payment-verifications` is gated by the existing
+`payments.verify_own` and scoped to the caller's own StaffProfile
+exactly like the pre-existing `pending` route; the embedded `payment` on
+a `PaymentDispute` is visible only when the dispute itself already was,
+under the existing `payments.resolve` scope; and
+`.../me/earnings/summary` is gated by the existing `commissions.
+read_own` and resolves the caller's own StaffProfile server-side,
+identically to `.../me/earnings` — a client-supplied staff-profile id is
+never accepted by either route.
+
+**Manual payment recording never claims a gateway, processor, or bank
+confirmed anything.** Every screen and every string in
+`RecordPaymentScreen` says "Record payment," never "process payment";
+the payment-method chips are populated only from the server-defined
+`PaymentMethod` constants (CASH/MOBILE_MONEY/CARD/BANK_TRANSFER/OTHER)
+and never an invented value; recording an electronic method is
+presented as a manually recorded claim awaiting the assigned provider's
+confirmation, identical in kind to a recorded cash payment, never as a
+completed or externally settled transaction. `PaymentRecordDto`'s
+`externalReference` field is treated as an already-server-safe display
+value (the backend never stores or returns a raw card number, CVV, PIN,
+OTP, or bank credential in this field — section 33) and is never
+additionally logged; `SafeDebugLoggingInterceptor` (section 23) logs
+only method, path, status, and duration for every request including
+payment recording, never a request or response body, so a payment
+reference can never appear in device logs regardless of build type.
+
+**A branch's `CashPolicyDto.mode` is read and honored client-side, but
+is explicitly documented as a UX convenience, not a security
+boundary.** `RecordPaymentViewModel` blocks a CASH submission locally
+when the policy is `REQUIRED`, offering a different payment method
+instead of a fake or bypassed cash session — but Android has no cash-
+session management this stage (opening/operating/closing a
+`CashSession` remains unreachable, docs/ROADMAP.md), so this check
+cannot verify an eligible open session actually exists and must not be
+mistaken for enforcement. The server's own `REQUIRED`-policy rule
+(section 35) is the only rule that actually matters; a future Android
+cash-session stage must not weaken it, and this stage's client-side
+check was written so that it fails toward "offer another method,"
+never toward "let the payment through anyway."
+
+**A `PAYMENT_SELF_CONFIRMATION_FORBIDDEN` rejection is treated as an
+expected, correctly-functioning outcome, not an error to work around.**
+`VerificationsViewModel` maps it through the existing
+`DomainError.Forbidden(code, details)` vocabulary (section 23) and
+shows the server's own message; no code path in the Android client
+attempts to detect "am I the recorder" locally and hide the confirm
+button pre-emptively, since doing so could create a false impression
+that the restriction is a UI nicety rather than a server-enforced rule
+that holds regardless of what the client shows. The one exception — a
+solo owner/provider's management override — is not exposed as a
+generic "confirm anyway" affordance anywhere in the provider-facing
+Verifications screen; only the owner/manager Dispute Resolution screen
+(gated by `payments.resolve`, a different permission and a different
+screen entirely) can invoke it, with the mandatory reason and prominent
+warning the backend's own override audit trail expects (section 33).
+
+**Every checkout- and payment-adjacent write reuses one idempotency-key
+lifecycle, never a fresh key per tap.** Checkout creation, payment
+recording, and walk-in intake each hold exactly one `UUID` per logical
+attempt in their ViewModel, comparing the just-built request against a
+snapshot of the last-submitted one before ever deciding whether to
+reuse or regenerate it (docs/ARCHITECTURE.md section 25) — the same
+"stable Idempotency-Key across a safe retry, new key only after a
+genuine change" contract already established for onboarding (section
+36) and required again here specifically so a lost network response,
+or a user tapping "Record payment" twice out of impatience, can never
+create a second `PaymentRecord` or a duplicate `Checkout`.
+
+**Reports, staff earnings, and receipts never fabricate or locally
+compute an authoritative figure.** `ReportsViewModel` and
+`StaffEarningsViewModel` display exactly what each server endpoint
+returned for the selected window, including an explicit empty state
+("—", or a real `0`) rather than inventing a placeholder number when a
+report has nothing to show for a brand-new organization; `ReceiptScreen`
+renders a `ReceiptDto` as an immutable snapshot only, with no total
+recomputed from its line items and no VAT/TIN/tax-compliance field
+anywhere in the model or the UI, matching the receipt's own explicit
+non-tax-invoice status (section 34).

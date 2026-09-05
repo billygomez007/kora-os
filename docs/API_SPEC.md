@@ -1213,3 +1213,76 @@ Covered by `apps/api/test/organizations-and-invitations.e2e-spec.ts`
 staff-limit including a concurrent-request test, invitation listing,
 team directory, subscription detail) and
 `apps/api/test/onboarding.e2e-spec.ts`.
+
+## 34. Mobile-contract additions for the third Android integration stage
+
+Six small, additive, narrowly-scoped changes closed real gaps found
+while building Android's operations, checkout/payments, verification,
+transactions/receipts, and earnings screens (docs/ROADMAP.md). Every one
+is covered by a new e2e test; none duplicates existing domain logic or
+introduces a new authorization rule beyond what the underlying resource
+already enforces.
+
+**`GET /v1/organizations/:organizationId/staff` now includes
+`staffProfileId`** (`string | null`) per entry — `null` for a
+membership with no `StaffProfile` (an owner, or any membership that has
+never performed work), otherwise the id Android needs to filter
+`service_sessions`/`.../me/earnings` results down to "my own." No new
+endpoint: this is a one-field addition to the existing team-directory
+response (section 33), since the safe workspace projection's own
+`userId` was already resolvable client-side and needed only a stable id
+to match against.
+
+**`GET /v1/organizations/:organizationId/checkouts` now accepts a
+`serviceSessionId` filter.** Lets a client resolve "does this completed
+ServiceSession already have a checkout" (the `CHECKOUT_ALREADY_EXISTS`
+recovery path — section 18) with one filtered list call instead of
+paging the full checkout list looking for a match.
+
+**`GET /v1/organizations/:organizationId/receipts` now accepts a
+`transactionId` filter.** Lets the Android Transaction detail screen
+resolve "view receipt" (at most one receipt per Transaction, DB-unique)
+without a new endpoint.
+
+**`GET /v1/organizations/:organizationId/payment-verifications`**
+(`payments.verify_own`, optional `?status=`) is a new base route
+alongside the existing `.../payment-verifications/pending` — returns
+the caller's own PaymentRecords needing action *or already resolved*,
+ordered by `recordedAt` descending, so a single provider-facing screen
+can show pending/disputed/resolved tabs from one endpoint family rather
+than needing `pending` for one tab and a separate query for the other
+two. Scoped identically to the existing `pending` route: the caller's
+own StaffProfile only, resolved server-side.
+
+**Every `PaymentDispute` returned by `GET`/`GET .../payment-disputes/:id`
+and the resolve response now embeds `payment`** (the full
+`PaymentRecordView` it disputes) — previously the client had to make a
+second call to `GET .../checkouts/:checkoutId/payments` and find the
+matching record by id to show any payment context (amount, method,
+masked reference) alongside a dispute. Optional and additive: a caller
+not authorized to see the payment record simply never receives a
+dispute referencing it, since dispute visibility is already scoped to
+the same `payments.resolve` authorization as before.
+
+**`GET /v1/organizations/:organizationId/me/earnings/summary`**
+(`commissions.read_own`, optional `?from=&to=`) is a new endpoint
+returning one currency-separated `{staffProfileId, policyAccrued,
+noPolicyAccrued, refunded, reversed, net}` object for the caller's own
+accruals over the given range — the same aggregation
+(`aggregateCommissionsBySource`) the owner/manager `.../reports/
+commissions` endpoint already uses, so the two figures can never drift
+apart, but scoped to one staff profile so a provider's own "My
+earnings" summary never requires `commissions.read_all`. Added because
+`.../me/earnings` only ever returned a paged line list — Android's own
+locked rule against calculating authoritative totals client-side (never
+summing a page of `calculatedAmountMinor` values into a "total") meant
+a real summary figure needed a real server-computed source.
+
+Covered by `apps/api/test/organizations-and-invitations.e2e-spec.ts`
+(staffProfileId), `apps/api/test/checkouts.e2e-spec.ts`
+(serviceSessionId filter), `apps/api/test/receipts.e2e-spec.ts`
+(transactionId filter), `apps/api/test/payment-verifications-and-disputes.e2e-spec.ts`
+(base verifications route, embedded `payment` on disputes), and
+`apps/api/test/commission-accrual-posting.e2e-spec.ts` (earnings
+summary, including the permission check and the other-provider
+isolation check).

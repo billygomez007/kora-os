@@ -215,7 +215,13 @@ who performed them, and completing it is the only way work is ever
 recorded as done. Checkout and payments — what happens *immediately
 after* a `ServiceSession` completes — are now implemented too (see the
 next two sections); commissions and receipts remain future work
-(docs/ROADMAP.md item 8).
+(docs/ROADMAP.md item 8). All of it is reachable from Android now, too:
+appointment check-in, walk-in intake, a near-real-time (foreground-only,
+polled, never a WebSocket) live queue with call/assign/cancel/no-show/
+start-service commands, and starting/replacing/completing/cancelling a
+service session — with an elapsed-time display derived purely locally
+from the server's own `startedAt` timestamp, never sent back to the
+server and never treated as authoritative (docs/ROADMAP.md section 2).
 
 ### Transactions and payments
 
@@ -243,7 +249,15 @@ as the `TransactionCorrection` workflow described in the "Commission,
 reconciliation, receipts, and reporting" section below, since a
 correction posts its own new immutable Transaction rather than editing
 or voiding the original. See docs/API_SPEC.md sections 18-19, 18a and
-docs/DATA_MODEL.md section 8.
+docs/DATA_MODEL.md section 8. Android now creates a checkout for a
+completed session (recovering the existing one on a
+`CHECKOUT_ALREADY_EXISTS` conflict rather than ever creating a local
+duplicate), applies adjustments, voids, and records payments with a
+stable idempotency key, labelled "Record payment" everywhere — never
+"process payment," since no payment gateway exists and nothing on
+Android ever claims a card, bank, or mobile-money transaction was
+externally settled. Refund/reversal and cash-session controls are not
+yet reachable from Android (docs/ROADMAP.md section 2).
 
 ### Verification
 
@@ -266,7 +280,13 @@ it: a disputed payment never contributes to, and can never trigger,
 posting a `Transaction`. Manager resolution requires both a permission
 (`payments.resolve`) and — for a rejection — a resolution note, and
 writes both a `PaymentVerificationEvent` and an `AuditEvent`. See
-docs/ARCHITECTURE.md section 12 and docs/SECURITY.md section 33.
+docs/ARCHITECTURE.md section 12 and docs/SECURITY.md section 33. Android
+now surfaces both sides of this: a provider's own pending/disputed/
+resolved confirmation queue (never another provider's), and an owner/
+manager's dispute-resolution screen with a mandatory reason to reject
+and a prominent warning before a solo-owner override — every conflict
+(already-confirmed, already-disputed, stale version, forbidden) reloads
+the authoritative state rather than ever guessing locally.
 
 ### Commission, reconciliation, receipts, and reporting
 
@@ -313,16 +333,20 @@ refunded amount, reversed amount, and net posted revenue — "refunded"
 reporting is implemented; "outstanding" (an unpaid balance concept)
 does not apply to Kora's cash/claim model and remains not applicable.
 "Owners can monitor live branch activity from the mobile dashboard" is
-partially implemented: an initial Android business dashboard now shows
-organization identity, role names, and a 30-day overview report pulled
-live from `GET .../reports/overview` for a membership holding
-`reports.read` (a membership without it never calls the endpoint at
-all, and sees a minimal role-appropriate landing state instead) — but
-this is an on-demand query, not live/streaming branch activity, and no
-push or scheduled delivery mechanism exists yet. Queue, service-session,
-checkout, and payment operations are not yet reachable from Android at
-all (docs/ROADMAP.md). See
-docs/API_SPEC.md sections 18a, 20-22, 27c and docs/SECURITY.md
+partially implemented: the Android business dashboard shows organization
+identity, role names, and a 30-day overview report pulled live from
+`GET .../reports/overview` for a membership holding `reports.read` (a
+membership without it never calls the endpoint at all, and sees a
+minimal role-appropriate landing state instead), and a dedicated Reports
+screen now also surfaces revenue-by-day, staff/service/payment-method,
+and commission breakdowns over a selectable 7/30/90-day window — but
+these are all on-demand queries, not live/streaming branch activity, and
+no push or scheduled delivery mechanism exists yet. Queue, service-
+session, checkout, and payment operations, and a dedicated staff
+earnings screen (today/this-week/custom range, a server-computed
+summary rather than a client-side sum of paged lines), are now reachable
+from Android too; cash-session reconciliation is not (docs/ROADMAP.md).
+See docs/API_SPEC.md sections 18a, 20-22, 27c and docs/SECURITY.md
 sections 34-35.
 
 ### Notifications and audit

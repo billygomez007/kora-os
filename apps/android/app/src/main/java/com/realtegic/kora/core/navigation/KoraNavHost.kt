@@ -382,13 +382,7 @@ private fun NavGraphBuilder.businessGraph(navController: NavHostController, cont
             }
             BusinessHomeScreen(
                 organizationId = organizationId,
-                workspacesRepository = container.workspacesRepository,
-                reportsRepository = container.reportsRepository,
-                organizationsRepository = container.organizationsRepository,
-                serviceCatalogueRepository = container.serviceCatalogueRepository,
-                schedulingRepository = container.schedulingRepository,
-                staffRepository = container.staffRepository,
-                subscriptionRepository = container.subscriptionRepository,
+                container = container,
                 onSwitchWorkspace = {
                     navController.navigate(KoraRoutes.WORKSPACE_GRAPH) { popUpTo(KoraRoutes.BUSINESS_GRAPH_PATTERN) { inclusive = true } }
                 },

@@ -191,12 +191,14 @@ mutation acquires first, which is what makes exactly one `Transaction`
 ever get posted per `Checkout` true even under concurrent confirmations
 (proven in `test/transaction-posting-and-concurrency.e2e-spec.ts`). A
 posted `Transaction` is the only thing a future reporting phase may
-ever count as business revenue; it cannot be edited, deleted, reversed,
-or refunded through any public route yet. Refunds, reconciliation, and
-payment-gateway integration remain deliberately unimplemented — but
-commissions, receipts, and reports (the next paragraph) are now built.
-See `docs/ARCHITECTURE.md` sections 11-12 and `docs/SECURITY.md`
-section 33 for the full model.
+ever count as business revenue; it cannot be edited or deleted through
+any public route — refunding or reversing it (see the "Cash controls
+and refund/reversal corrections" paragraph below) always posts a
+*separate*, new immutable Transaction instead, never an edit to this
+one. Payment-gateway integration remains deliberately unimplemented —
+but commissions, receipts, reports, cash controls, and corrections (the
+next two paragraphs) are now built. See `docs/ARCHITECTURE.md` sections
+11-12 and `docs/SECURITY.md` section 33 for the full model.
 
 ## Commissions, receipts, and reports in one paragraph
 
@@ -236,10 +238,63 @@ performance,services,payment-methods,commissions}`) derive every figure
 from these same immutable records — a RECORDED or DISPUTED payment
 claim never inflates revenue, appearing only as a separate operational
 counter, and every monetary total stays strictly separated by currency.
-Cash-session reconciliation, refunds, reversals, payouts, and any
-"paid" status for a commission remain deliberately unimplemented. See
-`docs/ARCHITECTURE.md` section 21 and `docs/SECURITY.md` section 34 for
-the full model.
+Payouts and any "paid" status for a commission remain deliberately
+unimplemented — but cash-session reconciliation, refunds, and reversals
+(the next paragraph) are now built. See `docs/ARCHITECTURE.md` section
+21 and `docs/SECURITY.md` section 34 for the full model.
+
+## Cash controls and refund/reversal corrections in one paragraph
+
+A per-branch `BranchCashPolicy` (OPTIONAL by default — a branch that
+never configures one behaves exactly as before this stage existed, or
+REQUIRED) governs whether recording a CASH payment or executing a CASH
+refund needs an open `CashSession` on a named `CashRegister`
+(`cash_registers.*`, `POST .../branches/:branchId/cash-registers`). At
+most one OPEN session may exist per register+currency, enforced by a
+hand-written partial unique index (proven under five concurrent open
+attempts); every `CashLedgerEntry` (OPENING_FLOAT/PAYMENT_RECEIVED/
+CASH_IN/CASH_OUT/SAFE_DROP/REFUND_PAID) is append-only and always a
+positive magnitude, with a `BEFORE INSERT` database trigger rejecting
+any entry against a non-OPEN session as a hard backstop behind
+`CashSessionsService`'s own row lock — confirmed against a real
+PostgreSQL instance with the application layer bypassed entirely.
+Closing (`cash_sessions.close`) computes `expectedClosingCashMinor`
+(opening float + cash payments + manual cash in − manual cash out −
+safe drops − cash refunds) from the session's own immutable entries and
+transitions OPEN → CLOSED exactly once; reviewing
+(`cash_sessions.reconcile`, owner/manager only) records a MATCHED/
+ACCEPTED_VARIANCE/INVESTIGATION_REQUIRED outcome without ever touching
+that snapshot. None of this is revenue — it is physical drawer custody
+only, surfaced separately via `GET .../reports/cash-reconciliation`.
+Separately, a `TransactionCorrection` (`POST .../transactions/:id/
+{refund,reversal}-requests`) requests a REFUND (partial or full,
+cumulative-capped against each line's own remaining refundable amount)
+or a REVERSAL (one full negation, only before any prior refund/reversal
+against that sale) against a posted SALE Transaction — never mutating
+or deleting it. The workflow (REQUESTED → APPROVED/REJECTED/CANCELLED,
+APPROVED → EXECUTED/CANCELLED) enforces separation of duties: the
+requester can never approve or reject their own request
+(`refunds.approve`), except a solo owner with no other eligible
+approver in the organization, who may do so only with an explicit,
+separately audited override reason. Executing (`refunds.execute`, a
+distinct action and permission from approval) locks the correction and
+then the *original* sale Transaction — a higher-level aggregate root —
+before recomputing what remains from every other executed correction
+against that sale, then atomically posts one immutable REFUND/REVERSAL
+Transaction (`Transaction.kind`, non-negative magnitude with the sign
+always derived from `kind`, never stored), its own corrective
+`CommissionAccrual` rows (calculated only from the *original* EARNED
+accrual's own snapshot, never the current `CommissionRule`), a
+corrective `Receipt` (`REFUND_RECEIPT`/`REVERSAL_RECORD`, referencing
+the original sale receipt, never called a tax invoice or credit note),
+and — for cash — one `REFUND_PAID` ledger entry: all inside one database
+transaction that commits or rolls back completely, proven exactly-once
+under five concurrent execution attempts. Reports gain explicit
+`grossPostedSales`/`refundAmount`/`reversalAmount`/`netPostedRevenue`
+fields and per-source refunded/reversed/net breakdowns everywhere,
+while every previously existing field keeps its original gross-SALE-only
+meaning unchanged. See `docs/ARCHITECTURE.md` section 22 and
+`docs/SECURITY.md` section 35 for the full model.
 
 ## Useful root-level scripts
 

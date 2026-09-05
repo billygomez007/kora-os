@@ -187,8 +187,11 @@ integer, validated for overflow before it ever reaches the database.
 Partial/split payments are supported; recording one requires an
 `Idempotency-Key`. Voiding is implemented for both a `Checkout` (before
 settlement) and a mistaken `PaymentRecord` (before confirmation) —
-*refunding* a posted `Transaction` is not, and is deferred alongside
-commissions and receipts. See docs/API_SPEC.md sections 18-19 and
+*refunding* or *reversing* a posted `Transaction` is implemented too,
+as the `TransactionCorrection` workflow described in the "Commission,
+reconciliation, receipts, and reporting" section below, since a
+correction posts its own new immutable Transaction rather than editing
+or voiding the original. See docs/API_SPEC.md sections 18-19, 18a and
 docs/DATA_MODEL.md section 8.
 
 ### Verification
@@ -223,9 +226,9 @@ docs/ARCHITECTURE.md section 12 and docs/SECURITY.md section 33.
 - Reports distinguish recorded, verified, disputed, refunded, and outstanding.
 - Owners can monitor live branch activity from the mobile dashboard.
 
-Commissions, receipts, and reports are implemented; cash-session
-reconciliation is not. Commission rules are PERCENTAGE, FIXED, or NONE
-— not distinct "service-specific" or "tiered" strategies as such, but a
+Commissions, receipts, reports, and cash-session reconciliation are all
+implemented. Commission rules are PERCENTAGE, FIXED, or NONE — not
+distinct "service-specific" or "tiered" strategies as such, but a
 service-specific (or staff-specific, or branch-specific) rate is
 expressed as a scoped PERCENTAGE/FIXED rule through the same eight-level
 precedence every scope dimension shares (docs/ARCHITECTURE.md section
@@ -235,15 +238,35 @@ same database transaction that posts a Transaction, never for a
 merely-recorded or disputed payment claim — there is no separate
 "finalized" step, since posting itself is the only trigger. Receipt
 numbers are a stable `{branchCode}-{year}-{sequence}` format, atomically
-issued from a per-branch/year counter. Reports distinguish posted
-revenue from RECORDED/DISPUTED payment claims (`pendingPaymentClaimCount`/
-`disputedPaymentClaimCount`, explicitly never summed into revenue);
-"refunded" and "outstanding" reporting await refunds themselves, which
-remain unimplemented. "Owners can monitor live branch activity from the
-mobile dashboard" remains future work — the reporting endpoints exist
-as a real-time query API (`GET .../reports/*`), but no push/scheduled
-dashboard delivery mechanism or Android integration exists yet. See
-docs/API_SPEC.md sections 20-22 and docs/SECURITY.md section 34.
+issued from a per-branch/year counter. "Cash sessions record opening,
+expected, actual, variance, cashier, and branch" is implemented as a
+`CashRegister`/`CashSession`/`CashLedgerEntry`/`CashSessionReview` model
+— opening float, cash payments/refunds, manual cash in/out, safe drops,
+and a server-calculated expected-vs-counted variance, reviewed with a
+MATCHED/ACCEPTED_VARIANCE/INVESTIGATION_REQUIRED outcome — described
+throughout as physical drawer custody, never itself a revenue figure
+(docs/ARCHITECTURE.md section 22). A posted `Transaction` can now be
+corrected: a `TransactionCorrection` (REFUND, partial or full and
+cumulative-capped; or REVERSAL, one full negation before any prior
+refund/reversal) goes through a REQUESTED → APPROVED/REJECTED/CANCELLED
+→ EXECUTED workflow with separation of duties (the requester cannot
+approve their own request, except a solo owner's explicitly reasoned,
+audited override) before atomically posting an immutable, non-editable
+REFUND/REVERSAL Transaction, its own commission adjustment, and a
+corrective receipt — the original SALE Transaction, its receipt, and
+its commission accrual are never mutated. Reports distinguish posted
+revenue from RECORDED/DISPUTED payment claims
+(`pendingPaymentClaimCount`/`disputedPaymentClaimCount`, explicitly
+never summed into revenue) and now also separate gross posted sales,
+refunded amount, reversed amount, and net posted revenue — "refunded"
+reporting is implemented; "outstanding" (an unpaid balance concept)
+does not apply to Kora's cash/claim model and remains not applicable.
+"Owners can monitor live branch activity from the mobile dashboard"
+remains future work — the reporting endpoints exist as a real-time
+query API (`GET .../reports/*`), but no push/scheduled dashboard
+delivery mechanism or Android integration exists yet. See
+docs/API_SPEC.md sections 18a, 20-22, 27c and docs/SECURITY.md
+sections 34-35.
 
 ### Notifications and audit
 

@@ -880,11 +880,11 @@ Generic financial-command idempotency, covering both Checkout creation's optiona
 
 Unique: `(membership_id, operation, idempotency_key)`.
 
-Refunds are not modeled yet — deferred to a later phase alongside commissions, receipts, and reconciliation (section 9 below).
+`transactions` additionally carries a `kind` (SALE | REFUND | REVERSAL, existing rows migrated to SALE) and a nullable, self-referencing `corrected_transaction_id` — a REFUND/REVERSAL Transaction's `checkout_id`/`service_session_id` are both null (a correction has neither of its own), and its `*_minor` columns remain non-negative magnitudes exactly like a SALE's; the sign is derived from `kind` only at the reporting layer, never stored. Refunds and reversals are modeled in full in section 9 below, alongside commissions, receipts, and cash-session reconciliation.
 
 ## 9. Commissions, receipts, and reconciliation
 
-Commissions and receipts are implemented (docs/ROADMAP.md Phase 7); cash-session reconciliation is not — `cash_sessions` below remains the original aspirational sketch. Both implemented tables are derived exclusively from an already-POSTED `transactions` row — see docs/ARCHITECTURE.md section 21 for why, and for the rounding/allocation/precedence rules the columns below only summarize.
+Commissions, receipts, and cash-session reconciliation are all implemented (docs/ROADMAP.md Phase 7). The commission and receipt tables are derived exclusively from an already-POSTED `transactions` row — see docs/ARCHITECTURE.md section 21 for why, and for the rounding/allocation/precedence rules the columns below only summarize. Cash-session reconciliation is a physical-drawer-custody model, never itself a revenue calculation — see docs/ARCHITECTURE.md section 22.
 
 ### `commission_rules`
 
@@ -908,11 +908,13 @@ Immutable once created — never edited, never recalculated even if the matched 
 - `id`, `organization_id`, `transaction_id`, `transaction_line_item_id`, `staff_profile_id`
 - `commission_rule_id` nullable — null exactly when `source = NO_POLICY`
 - `source`: POLICY (a rule was matched and used, even one that calculates to zero), NO_POLICY (no rule matched any precedence level — an explicit zero-value accrual, never a missing one)
-- `rule_type_snapshot`, `rate_basis_points_snapshot`, `fixed_amount_minor_snapshot` — nullable, snapshotted from the matched rule
+- `kind`: EARNED (the original accrual on a SALE) | REFUNDED | REVERSED — a REFUNDED/REVERSED row is always a corrective adjustment against an `original_accrual_id`, never a replacement for it
+- `original_accrual_id` nullable, self-referencing — set only on a REFUNDED/REVERSED row, pointing back at the original EARNED accrual it adjusts; null on every EARNED row
+- `rule_type_snapshot`, `rate_basis_points_snapshot`, `fixed_amount_minor_snapshot` — nullable, snapshotted from the matched rule (on a corrective row, copied from the *original* accrual, never re-resolved from the current `CommissionRule`)
 - `basis_snapshot`, `basis_amount_minor`, `calculated_amount_minor`, `currency`
 - `calculated_at`, `created_at`
 
-Unique: `(transaction_line_item_id, staff_profile_id)`, `(organization_id, transaction_line_item_id)`, `(organization_id, id)` — exactly one accrual per line item.
+Unique: `(transaction_line_item_id, staff_profile_id)`, `(organization_id, transaction_line_item_id)`, `(organization_id, id)` — exactly one accrual per line item (a corrective Transaction's own corrective line items each still get exactly one accrual row, same rule). CHECK constraints enforce `original_accrual_id IS NULL` for `kind = EARNED` and `original_accrual_id IS NOT NULL` for `kind IN (REFUNDED, REVERSED)`.
 
 ### `branch_receipt_sequences`
 
@@ -926,8 +928,12 @@ Unique: `(organization_id, branch_id, year)`.
 
 Not a statutory VAT/tax invoice — a plain, immutable service receipt. Every value is a snapshot taken atomically at issuance time, inside the same database transaction as transaction posting and commission accrual — never a later live read of a mutable `branches`/`customer_records`/`payment_records` row.
 
-- `id`, `organization_id`, `branch_id`, `branch_receipt_sequence_id`, `transaction_id` (unique — exactly one receipt per transaction), `customer_record_id`
+- `id`, `organization_id`, `branch_id`, `branch_receipt_sequence_id`, `transaction_id` (unique — exactly one receipt per transaction, sale or corrective alike), `customer_record_id`
 - `receipt_number` (`{branchCode}-{year}-{sequence}`, e.g. `MAIN-2026-00001` — no UUID, PII, or credential), `sequence_number`
+- `kind`: SALE_RECEIPT | REFUND_RECEIPT | REVERSAL_RECORD — never a statutory tax invoice or credit note regardless of kind
+- `original_receipt_id` nullable, self-referencing — set only on a REFUND_RECEIPT/REVERSAL_RECORD, pointing back at the original sale's own receipt; null on every SALE_RECEIPT
+- `correction_reason` nullable — set only on a corrective receipt, copied from its `TransactionCorrection.reason`
+- `remaining_refundable_minor_snapshot` nullable — set only on a REFUND_RECEIPT, the remaining refundable balance immediately after this execution; always null on SALE_RECEIPT/REVERSAL_RECORD
 - `business_name_snapshot`, `branch_name_snapshot`, `branch_phone_snapshot`/`branch_address_snapshot` nullable, `customer_name_snapshot`
 - `currency`, `subtotal_minor_snapshot`, `adjustment_total_minor_snapshot`, `total_minor_snapshot`
 - `issued_at`, `issued_by_membership_id`, `created_at`
@@ -938,16 +944,88 @@ Unique: `(organization_id, id)`, `(organization_id, transaction_id)`, and `(orga
 
 Immutable snapshots copied at issuance time from `transaction_line_items` and from the confirmed `payment_records` that funded the transaction, respectively — never a later live read of either. `receipt_payment_summaries.safe_reference_snapshot` copies only the already-safe-code-validated `payment_records.external_reference`, never `note` (unvalidated free text) or anything resembling a credential.
 
-### `cash_sessions` (not implemented)
+### `branch_cash_policies`
 
-- `id`, `organization_id`, `branch_id`, `cashier_membership_id`
-- `status`: open, submitted, approved, rejected
-- `opened_at`, `closed_at` nullable
-- `opening_cash_minor`, `expected_cash_minor`, `actual_cash_minor`, `variance_minor`
-- `currency`, `notes` nullable
-- `approved_by_membership_id`, `approved_at` nullable
+One row per branch; a branch with no row at all behaves as OPTIONAL (see docs/ARCHITECTURE.md section 22).
 
-Only one open cash session per cashier and branch would be permitted. Deferred alongside refunds/reversals and payouts.
+- `id`, `organization_id`, `branch_id` (unique — one policy per branch), `mode`: OPTIONAL | REQUIRED
+- `updated_by_membership_id`, `created_at`, `updated_at`
+
+### `cash_registers`
+
+A named physical drawer at a branch — archived, never hard-deleted, once it has ever had a session.
+
+- `id`, `organization_id`, `branch_id`, `code` (branch-scoped, e.g. `MAIN`), `name`
+- `created_by_membership_id`, `archived_at`/`archived_by_membership_id` nullable, `created_at`, `updated_at`
+
+Unique: `(organization_id, branch_id, code)`, `(organization_id, id)`. Archiving is rejected while the register has an open session.
+
+### `cash_sessions`
+
+Physical drawer custody for one register, one currency, one continuous open-to-closed-to-reviewed lifecycle. `expected_closing_cash_minor`/`counted_cash_minor`/`variance_minor` are a custody calculation only — never revenue.
+
+- `id`, `organization_id`, `branch_id`, `register_id`, `currency`
+- `opened_by_membership_id`, `opening_float_minor`, `opened_at`
+- `closed_at`/`closed_by_membership_id`/`expected_closing_cash_minor`/`counted_cash_minor`/`variance_minor` nullable — all-null while OPEN, all-set together once CLOSED
+- `status`: OPEN | CLOSED | REVIEWED
+- `version`, `created_at`, `updated_at`
+
+Unique: `(organization_id, id)`. A hand-written partial `UNIQUE` index on `(register_id, currency)` restricted to `WHERE status = 'OPEN'` enforces "at most one OPEN session per register+currency" — the same "Prisma's schema DSL has no declarative support for a partial index" pattern `commission_rules` already established, confirmed against the real database. CHECK constraints enforce non-negative money, `variance_minor = counted_cash_minor - expected_closing_cash_minor`, and the close columns' all-null/all-set shape.
+
+### `cash_ledger_entries`
+
+Append-only — no update or delete path is exposed. `amount_minor` is always a positive magnitude; `type` alone determines its direction in the expected-cash formula (docs/ARCHITECTURE.md section 22).
+
+- `id`, `organization_id`, `branch_id`, `register_id`, `cash_session_id`, `currency`
+- `type`: OPENING_FLOAT | PAYMENT_RECEIVED | CASH_IN | CASH_OUT | SAFE_DROP | REFUND_PAID
+- `amount_minor`, `payment_record_id` nullable (set only on PAYMENT_RECEIVED), `corrective_transaction_id` nullable (set only on REFUND_PAID), `reason` nullable (required for CASH_IN/CASH_OUT/SAFE_DROP)
+- `actor_membership_id`, `occurred_at`
+
+Unique: `(organization_id, id)`, `payment_record_id` (at most one ledger entry per PaymentRecord). CHECK constraints enforce `amount_minor > 0`, a non-blank `reason` for the three manual movement types, and that `payment_record_id`/`corrective_transaction_id` are set only on their one matching `type` each. A `BEFORE INSERT` trigger (`reject_cash_ledger_entry_on_non_open_session`) independently rejects any insert whose session is not OPEN, taking its own row lock on the session so it stays race-safe against a concurrent close — a hard database-level backstop behind `CashSessionsService`'s own application-level lock, confirmed against a real PostgreSQL instance with the application layer bypassed entirely.
+
+### `cash_session_reviews`
+
+At most one review per session (1:1) — append-only, never modifies the session's own close snapshot.
+
+- `id`, `organization_id`, `cash_session_id` (unique), `outcome`: MATCHED | ACCEPTED_VARIANCE | INVESTIGATION_REQUIRED
+- `reason`, `reviewed_by_membership_id`, `reviewed_at`, `created_at`
+
+CHECK constraint: `reason` non-blank after trimming.
+
+### `transaction_corrections`
+
+A refund or reversal request/decision/execution record — never itself a Transaction. States REQUESTED → APPROVED/REJECTED/CANCELLED, APPROVED → EXECUTED/CANCELLED; every other state terminal.
+
+- `id`, `organization_id`, `branch_id`, `original_transaction_id`, `correction_type`: REFUND | REVERSAL
+- `status`: REQUESTED | APPROVED | REJECTED | CANCELLED | EXECUTED
+- `reason`, `currency`, `return_method`, `total_requested_minor`
+- `requested_by_membership_id`, `requested_at`
+- `approved_by_membership_id`/`approved_at` nullable, `rejected_by_membership_id`/`rejected_at`/`rejection_reason` nullable, `cancelled_by_membership_id`/`cancelled_at`/`cancellation_reason` nullable, `executed_by_membership_id`/`executed_at` nullable
+- `corrective_transaction_id` nullable — set only once EXECUTED
+- `solo_owner_override`, `solo_owner_override_reason` nullable — set only when the approve/reject decision used the solo-owner escape hatch
+- `version`, `created_at`, `updated_at`
+
+Unique: `(organization_id, id)`. CHECK constraints enforce the REFUND/REVERSAL and per-status field shapes (e.g. `corrective_transaction_id` set if and only if `status = EXECUTED`).
+
+### `transaction_correction_items`
+
+Immutable per-line detail of one correction — which original line, and how much of it.
+
+- `id`, `organization_id`, `correction_id`, `original_transaction_line_item_id`, `requested_amount_minor`, `created_at`
+
+### `transaction_correction_payments`
+
+How the correction's amount was actually returned — recorded once, at execution.
+
+- `id`, `organization_id`, `correction_id`, `method`, `amount_minor`, `original_payment_record_id` nullable, `created_at`
+
+### `transaction_correction_status_history`
+
+Append-only lifecycle ledger for one correction — the `TransactionCorrection` equivalent of `service_session_status_history`, distinct from the platform-wide `audit_events` trail.
+
+- `id`, `organization_id`, `correction_id`, `previous_status` nullable, `new_status`, `actor_user_id`/`actor_membership_id`, `reason` nullable, `created_at`
+
+`financial_idempotency_keys.operation` (section 8) gains two more values for this domain: `REQUEST_CORRECTION` and `EXECUTE_CORRECTION` — reusing the same generic table rather than a table per command, exactly as every other financial operation already does.
 
 ## 10. Platform reliability tables
 

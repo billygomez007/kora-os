@@ -559,6 +559,62 @@ Example adjustment request:
 
 Adjustments are append-only (a correction is a new compensating adjustment, never an edit) and require `checkouts.adjust`; a discount can never take the total below zero. Once any PaymentRecord has ever been created against a Checkout, its line items and adjustments lock permanently, even if that payment is later voided.
 
+## 18a. Cash controls and refund/reversal corrections
+
+Implemented (docs/ROADMAP.md Phase 7) — see docs/ARCHITECTURE.md section 22 for the full model. Two related but independent additions: branch cash-drawer custody, and correcting a posted Transaction.
+
+### Cash policy and registers
+
+- `GET`/`PUT /organizations/{organizationId}/branches/{branchId}/cash-policy`
+- `GET`/`POST /organizations/{organizationId}/branches/{branchId}/cash-registers`
+- `PATCH /organizations/{organizationId}/branches/{branchId}/cash-registers/{registerId}`
+- `POST /organizations/{organizationId}/branches/{branchId}/cash-registers/{registerId}/archive`
+
+`PUT .../cash-policy` (`cash_registers.manage`) sets `mode` to `OPTIONAL` or `REQUIRED`; a branch with no policy configured behaves as `OPTIONAL`. `POST .../cash-registers` (`cash_registers.manage`) requires a branch-unique `code`; archiving is rejected while the register has an open session (`409 CASH_REGISTER_HAS_OPEN_SESSION`).
+
+### Cash sessions
+
+- `GET`/`POST /organizations/{organizationId}/cash-sessions` (`POST` at `.../cash-sessions/open`)
+- `GET /organizations/{organizationId}/cash-sessions/{cashSessionId}`
+- `POST /organizations/{organizationId}/cash-sessions/{cashSessionId}/movements`
+- `POST /organizations/{organizationId}/cash-sessions/{cashSessionId}/close`
+- `POST /organizations/{organizationId}/cash-sessions/{cashSessionId}/review`
+
+Example open request:
+
+```json
+{ "registerId": "reg_...", "currency": "GHS", "openingFloatMinor": 5000 }
+```
+
+Opening (`cash_sessions.open`) fails `409 CASH_SESSION_ALREADY_OPEN` if the register already has an open session in that currency. `.../movements` (`cash_sessions.operate`) only ever accepts a manual `type` — `CASH_IN`, `CASH_OUT`, or `SAFE_DROP`, each requiring a non-blank `reason`; `OPENING_FLOAT`, `PAYMENT_RECEIVED`, and `REFUND_PAID` are system-written only and rejected at the request-validation level if supplied here. `.../close` (`cash_sessions.close`) accepts `countedCashMinor`, computes `expectedClosingCashMinor` from the session's own ledger entries, and transitions `OPEN` → `CLOSED` exactly once. `.../review` (`cash_sessions.reconcile`, owner/manager only) accepts an `outcome` (`MATCHED` | `ACCEPTED_VARIANCE` | `INVESTIGATION_REQUIRED`) and a `reason`, moving `CLOSED` → `REVIEWED`. A cashier may only open/operate/close a session they themselves opened, unless they additionally hold `cash_sessions.reconcile`. Recording a CASH payment (section 19) or executing a CASH refund (below) accepts an optional `cashSessionId` — required when the branch's cash policy is `REQUIRED`, validated (and its `PAYMENT_RECEIVED`/`REFUND_PAID` ledger entry created atomically) when supplied under `OPTIONAL`.
+
+### Refund and reversal requests
+
+- `GET /organizations/{organizationId}/transaction-corrections`
+- `GET /organizations/{organizationId}/transaction-corrections/{correctionId}`
+- `POST /organizations/{organizationId}/transactions/{transactionId}/refund-requests`
+- `POST /organizations/{organizationId}/transactions/{transactionId}/reversal-requests`
+- `POST /organizations/{organizationId}/transaction-corrections/{correctionId}/approve`
+- `POST /organizations/{organizationId}/transaction-corrections/{correctionId}/reject`
+- `POST /organizations/{organizationId}/transaction-corrections/{correctionId}/cancel`
+- `POST /organizations/{organizationId}/transaction-corrections/{correctionId}/execute`
+
+Example refund request (`refunds.request`, `Idempotency-Key` required):
+
+```json
+{
+  "reason": "Customer dissatisfied with one service",
+  "returnMethod": "CASH",
+  "lines": [{ "originalTransactionLineItemId": "txli_...", "requestedAmountMinor": 2500 }]
+}
+```
+
+Only `originalTransactionLineItemId` and `requestedAmountMinor` are ever consulted per line — a client-supplied price, currency, staff id, or total is never accepted, and any unrecognized field in the request body is rejected outright (`400`, global whitelist validation), not silently ignored. A requested amount exceeding that line's own remaining refundable amount is rejected (`409 CORRECTION_LINE_AMOUNT_EXCEEDS_ORIGINAL` at request time, `409 CORRECTION_EXCEEDS_REMAINING_REFUNDABLE` if a race is only caught at execution). A reversal request (`transactions.reverse`; owner/manager only, deliberately narrower than `refunds.request`) takes no line-level input at all — it always covers every original line at its full original amount — and is rejected (`409 CORRECTION_ALREADY_EXECUTED`) once any refund or reversal has already been executed against that transaction, both at request time and, defensively, again at execution.
+
+`.../approve` and `.../reject` (`refunds.approve`) enforce separation of duties: the membership that requested a correction can never approve or reject it themselves (`403 CORRECTION_SELF_DECISION_FORBIDDEN`), with one exception — an active owner with no other membership in the organization holding `refunds.approve` may self-decide, but only by supplying a non-empty `overrideReason` (`400` without one), and the decision is recorded with `soloOwnerOverride: true` plus a separate `correction.solo_owner_override` audit event. `.../cancel` (`refunds.request`) is available to the requester themselves, or to anyone holding `refunds.approve`, only while the correction is still `REQUESTED` or `APPROVED`. `.../execute` (`refunds.execute`, `Idempotency-Key` required) is a distinct action from approval — an authorized cashier/manager/owner other than (or the same as) the approver may execute — and only ever succeeds on an `APPROVED` correction, atomically posting the immutable corrective Transaction described in docs/ARCHITECTURE.md section 22.
+
+There is no unauthenticated or customer-facing refund endpoint anywhere — every correction action requires an authenticated business-workspace membership with the specific permission above.
+
 ## 19. Payments and verification
 
 ### Recording
@@ -575,11 +631,12 @@ Example recording request:
   "method": "CASH",
   "appliedAmountMinor": 8000,
   "tenderedAmountMinor": 10000,
-  "currency": "GHS"
+  "currency": "GHS",
+  "cashSessionId": "cashsess_..."
 }
 ```
 
-Recording a payment never creates a Transaction by itself — it only ever moves the Checkout to `AWAITING_VERIFICATION`.
+Recording a payment never creates a Transaction by itself — it only ever moves the Checkout to `AWAITING_VERIFICATION`. `cashSessionId` (section 18a) is optional unless the branch's cash policy is `REQUIRED`, and is rejected (`400`) for any non-CASH method; when supplied, its `PAYMENT_RECEIVED` `CashLedgerEntry` is created atomically alongside the `PaymentRecord` itself.
 
 ### Verification
 
@@ -640,7 +697,7 @@ Example rule creation:
 
 `GET .../commissions` (org-wide, `commissions.read_all`) supports `branchId`, `staffProfileId`, `source` (POLICY/NO_POLICY), `from`/`to`, and pagination filters. `GET .../me/earnings` (`commissions.read_own`) always resolves the caller's own StaffProfile server-side — a client-supplied staff id is never accepted — and returns line-level accrual detail enriched with the originating transaction's reference and the service name.
 
-There is no endpoint to create, edit, or delete a `CommissionAccrual` directly — every row is written only by the internal posting flow described in section 18.
+There is no endpoint to create, edit, or delete a `CommissionAccrual` directly — every row is written only by the internal posting flow described in section 18, or (as of docs/ROADMAP.md Phase 7) the correction-execution flow in section 18a. Every accrual now carries a `kind` (`EARNED` | `REFUNDED` | `REVERSED`); a REFUNDED/REVERSED row's `originalAccrualId` points back at the EARNED accrual it adjusts, and both `GET .../commissions` and `GET .../me/earnings` return it like any other row — a client aggregates earned/refunded/reversed/net per currency from the `kind` field, or reads the pre-aggregated breakdown on `GET .../reports/staff-performance`/`.../reports/commissions` (section 22).
 
 ## 21. Receipts
 
@@ -653,7 +710,7 @@ Implemented (docs/ROADMAP.md Phase 7) — a plain, immutable service receipt, no
 
 The business-side routes (`receipts.read`) are organization-scoped like every other endpoint in this document. The customer-side routes carry no `organizationId` at all — a receipt is visible to `/me/receipts` only when its `customerRecordId` is linked to the authenticated user's own `CustomerProfile`; a walk-in customer with no linked Kora account is visible only through the business-side routes, never through `/me/receipts`, and a customer can never see another customer's receipt (`404`, not `403`, either way — existence is never confirmed to a caller who cannot see it).
 
-Cash-session reconciliation (`cash-sessions`) remains unimplemented and deferred alongside refunds and payouts.
+As of docs/ROADMAP.md Phase 7, a receipt's `kind` is `SALE_RECEIPT`, `REFUND_RECEIPT`, or `REVERSAL_RECORD` — the latter two issued automatically, exactly once, the moment a `TransactionCorrection` executes (section 18a), through the identical business-side/customer-side access rules above. A corrective receipt additionally carries `originalReceiptId`/`originalReceiptNumber`/`originalTransactionReference` (pointing back at the sale it corrects), `correctionReason`, and — for a `REFUND_RECEIPT` only — `remainingRefundableMinor`. It is never called a statutory tax invoice or credit note, matching the plain-receipt stance above.
 
 ## 22. Reports
 
@@ -665,8 +722,9 @@ Implemented (docs/ROADMAP.md Phase 7), owner/manager only (`reports.read`). Ever
 - `GET /organizations/{organizationId}/reports/services`
 - `GET /organizations/{organizationId}/reports/payment-methods`
 - `GET /organizations/{organizationId}/reports/commissions`
+- `GET /organizations/{organizationId}/reports/cash-reconciliation` (docs/ROADMAP.md Phase 7)
 
-Every endpoint requires `from` and `to` (ISO date-times, `to` not before `from`, span capped at 366 days) and accepts an optional `branchId`. `revenue` additionally buckets by calendar day: a branch-scoped request groups by that branch's own local date automatically; an organization-wide request (no `branchId`) requires an explicit, IANA-validated `timezone` query parameter instead of silently picking one branch's zone or mixing ambiguous local-day boundaries (`400` without it). `staff-performance`, `services`, `payment-methods`, and `commissions` return a paginated list of aggregated entries (`cursor`/`limit`); every monetary figure across every endpoint is grouped strictly by currency — two currencies are never summed into one total.
+Every endpoint requires `from` and `to` (ISO date-times, `to` not before `from`, span capped at 366 days) and accepts an optional `branchId`. `revenue` additionally buckets by calendar day: a branch-scoped request groups by that branch's own local date automatically; an organization-wide request (no `branchId`) requires an explicit, IANA-validated `timezone` query parameter instead of silently picking one branch's zone or mixing ambiguous local-day boundaries (`400` without it). `staff-performance`, `services`, `payment-methods`, `commissions`, and `cash-reconciliation` return a paginated list of aggregated entries (`cursor`/`limit`); every monetary figure across every endpoint is grouped strictly by currency — two currencies are never summed into one total.
 
 Example overview response shape:
 
@@ -678,11 +736,24 @@ Example overview response shape:
   "completedServiceCount": 21,
   "commissionAccrued": [{ "currency": "GHS", "amountMinor": 85000 }],
   "pendingPaymentClaimCount": 2,
-  "disputedPaymentClaimCount": 0
+  "disputedPaymentClaimCount": 0,
+  "grossPostedSales": [{ "currency": "GHS", "amountMinor": 850000 }],
+  "refundAmount": [{ "currency": "GHS", "amountMinor": 25000 }],
+  "reversalAmount": [],
+  "netPostedRevenue": [{ "currency": "GHS", "amountMinor": 825000 }],
+  "refundTransactionCount": 1,
+  "reversalTransactionCount": 0
 }
 ```
 
-`pendingPaymentClaimCount`/`disputedPaymentClaimCount` describe RECORDED/DISPUTED `PaymentRecord`s — operational metrics, never revenue, and never combined with `postedRevenue` into one number.
+`pendingPaymentClaimCount`/`disputedPaymentClaimCount` describe RECORDED/DISPUTED `PaymentRecord`s — operational metrics, never revenue, and never combined with `postedRevenue` into one number. As of docs/ROADMAP.md Phase 7, `postedRevenue`/`transactionCount`/`averageTransactionValue`/`commissionAccrued` keep their original gross-SALE-only meaning unchanged, and every endpoint below gains an explicit gross/refunded/reversed/net split without redefining any existing field:
+
+- `staff-performance` entries keep `revenue`/`commissionAccrued` (gross SALE / EARNED only) and add `refundedRevenue`/`reversedRevenue`/`netRevenue`/`commissionRefunded`/`commissionReversed`/`netCommission`.
+- `services` entries keep `revenue`/`serviceCount` (gross SALE only, SALE-line count) and add `refundedAmount`/`reversedAmount`/`netAmount`.
+- `payment-methods` entries keep `total`/`count` (collections only) and add `returnedTotal`/`returnedCount`/`netTotal` (recorded returns).
+- `commissions` entries keep `policyAccrued`/`noPolicyAccrued` (EARNED only) and add `refunded`/`reversed`/`net`.
+
+`GET .../reports/cash-reconciliation` returns one entry per `CashSession` in range: `openingFloatMinor`, `paymentReceivedMinor`, `cashInMinor`, `cashOutMinor`, `safeDropMinor`, `cashRefundMinor`, `expectedClosingCashMinor`, `countedCashMinor`, `varianceMinor`, and `reviewOutcome` — every figure derived only from that session's own immutable `CashLedgerEntry` rows and close snapshot, described only as physical cash custody and never as revenue or bank settlement (docs/ARCHITECTURE.md section 22).
 
 ## 23. Notifications and audit
 
@@ -743,15 +814,18 @@ Mutable state-machine resources expose a `version`. Commands submit that version
 - `service_sessions.read`, `service_sessions.start`, `service_sessions.perform`, `service_sessions.manage`
 - `checkouts.read`, `checkouts.create`, `checkouts.adjust`, `checkouts.void`
 - `payments.read`, `payments.record`, `payments.verify_own`, `payments.resolve`
-- `transactions.read`
+- `transactions.read`, `transactions.reverse`
 - `commissions.read_own`, `commissions.read_all`, `commissions.manage`, `commissions.manage_rules`
 - `receipts.read`
+- `cash_registers.read`, `cash_registers.manage`
+- `cash_sessions.read`, `cash_sessions.open`, `cash_sessions.operate`, `cash_sessions.close`, `cash_sessions.reconcile`
+- `refunds.read`, `refunds.request`, `refunds.approve`, `refunds.execute`
 - `reconciliation.perform`, `reconciliation.approve`
 - `reports.read`, `reports.basic`, `reports.advanced`
 - `audit.read`
 - `business_profile.manage`
 
-`checkouts.*`, `payments.read`/`payments.record`/`payments.verify_own`/`payments.resolve`, and `transactions.read` are implemented as of docs/ROADMAP.md Phase 6; `commissions.read_own`/`commissions.read_all`/`commissions.manage`, `receipts.read`, and `reports.read` are implemented as of Phase 7 — see sections 27a and 27b below for the exact role grants. A handful of additional codes seeded ahead of their own future phase (`transactions.create`, `transactions.cancel`, `payments.void`, `payments.refund`, `verifications.*`, `commissions.manage_rules`, `reconciliation.*`, `reports.basic`, `reports.advanced`) exist in the permission vocabulary but are not yet wired to any route — `commissions.manage_rules` and `reports.basic`/`reports.advanced` in particular predate, and are superseded for this stage's purposes by, the newer `commissions.manage` and `reports.read` codes actually enforced below.
+`checkouts.*`, `payments.read`/`payments.record`/`payments.verify_own`/`payments.resolve`, and `transactions.read` are implemented as of docs/ROADMAP.md Phase 6; `commissions.read_own`/`commissions.read_all`/`commissions.manage`, `receipts.read`, `reports.read`, `cash_registers.*`, `cash_sessions.*`, `refunds.*`, and `transactions.reverse` are implemented as of Phase 7 — see sections 27a, 27b, and 27c below for the exact role grants. A handful of additional codes seeded ahead of their own future phase (`transactions.create`, `transactions.cancel`, `payments.void`, `payments.refund`, `verifications.*`, `commissions.manage_rules`, `reconciliation.*`, `reports.basic`, `reports.advanced`) exist in the permission vocabulary but are not yet wired to any route — `commissions.manage_rules` and `reports.basic`/`reports.advanced` in particular predate, and are superseded for this stage's purposes by, the newer `commissions.manage` and `reports.read` codes actually enforced below; `payments.refund` similarly predates, and is superseded by, the newer `refunds.*` codes actually enforced in section 27c.
 
 ### 27a. Financial-domain role grants (Phase 6)
 
@@ -780,6 +854,25 @@ A membership's effective permissions are the union across every role it holds (e
 | `reports.read` | ✓ | ✓ | | | |
 
 `commissions.read_own` only ever returns accruals belonging to the caller's own StaffProfile, resolved server-side — never a client-supplied staff id (`GET .../me/earnings`). A service provider deliberately has neither `receipts.read` nor `reports.read` by default.
+
+### 27c. Cash control and refund/reversal role grants (Phase 7)
+
+| Permission | OWNER | MANAGER | CASHIER | RECEPTIONIST | SERVICE_PROVIDER |
+| --- | --- | --- | --- | --- | --- |
+| `cash_registers.read` | ✓ | ✓ | ✓ | ✓ | |
+| `cash_registers.manage` | ✓ | ✓ | | | |
+| `cash_sessions.read` | ✓ | ✓ | ✓ | ✓ | |
+| `cash_sessions.open` | ✓ | ✓ | ✓ | | |
+| `cash_sessions.operate` | ✓ | ✓ | ✓ | | |
+| `cash_sessions.close` | ✓ | ✓ | ✓ | | |
+| `cash_sessions.reconcile` | ✓ | ✓ | | | |
+| `refunds.read` | ✓ | ✓ | ✓ | ✓ | |
+| `refunds.request` | ✓ | ✓ | ✓ | ✓ | |
+| `refunds.approve` | ✓ | ✓ | | | |
+| `refunds.execute` | ✓ | ✓ | ✓ | | |
+| `transactions.reverse` | ✓ | ✓ | | | |
+
+A cashier may open/operate/close only a cash session they themselves opened unless additionally holding `cash_sessions.reconcile` (owner/manager only); the same override permission is required to review a closed session at all. The correction workflow's separation of duties (docs/ARCHITECTURE.md section 22) sits on top of this table, not instead of it: holding `refunds.approve` is necessary but never sufficient to approve a specific correction, since the requester can never approve their own request regardless of which permissions they hold, and `refunds.approve`/`refunds.execute` are deliberately separate actions even when the same manager holds both. A receptionist may request a refund but never approve, execute, or reverse one; a service provider holds none of the permissions in this table.
 
 Permission codes are seeded and stable. Roles map to permissions and may later be customized by authorized organizations.
 

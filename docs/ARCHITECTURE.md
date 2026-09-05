@@ -38,29 +38,73 @@ The existing Google Play `applicationId` remains unchanged so production release
 
 ## 4. Mobile architecture
 
-The Android application uses four explicit layers:
+The Android application uses four explicit layers. The first production
+integration stage (docs/ROADMAP.md; full detail in section 23) replaced
+what had been an entirely local, disconnected demonstration UI with a
+real implementation of all four:
 
 ### Presentation
 
-- Jetpack Compose screens and reusable design-system components.
-- ViewModels expose immutable screen state and accept user intents.
-- Composables contain rendering and interaction wiring, not business rules.
+- Jetpack Compose screens organized by feature package
+  (`feature/auth`, `feature/workspace`, `feature/customer/{home,
+  discovery,booking,appointments,profile}`, `feature/business/dashboard`)
+  plus a shared `core/designsystem` (buttons, text fields, state views,
+  money/date-time formatting) preserving the existing Kora dark/gold
+  visual system.
+- ViewModels expose one immutable `StateFlow` of screen state each,
+  every screen modeling explicit initial/loading/content/empty/
+  recoverable-error/authentication-expired states (`ScreenState<T>`),
+  and accept user intents as plain method calls.
+- Composables contain rendering and interaction wiring only; server
+  responses are the only source of truth for anything that decides
+  money, availability, or authorization.
 
 ### Domain
 
-- Use cases for appointments, queue transitions, service sessions, checkout, verification, and subscriptions.
-- Platform-independent business types where practical.
-- State-transition validation shared conceptually with the backend, while the backend remains authoritative.
+- No separate use-case layer was introduced beyond what each
+  repository already expresses as a single-purpose suspend function —
+  the domain surface here is thin enough (booking, discovery,
+  appointments, favorites, workspaces, reports) that an additional
+  indirection layer would not have reduced risk.
+- `DomainError` (`core/network`) is the shared platform-independent
+  business-error vocabulary every screen reacts to, mirroring the
+  backend's own typed error codes without duplicating backend logic.
+- State-transition authority (can this be cancelled, is this slot
+  available, what does this cost) is never reimplemented on Android —
+  the backend remains the only place any of those questions is
+  answered (section 23).
 
 ### Data
 
-- Repositories coordinate remote APIs, Room cache, and synchronization.
-- API data-transfer objects are mapped into domain models.
-- Local entities are not exposed directly to UI code.
+- `core/data` repositories (`WorkspacesRepository`, `DiscoveryRepository`,
+  `AppointmentsRepository`, `FavoritesRepository`, `ReportsRepository`)
+  each wrap one Retrofit API interface and return a typed `ApiResult<T>`
+  — success or a mapped `DomainError`, never a raw exception.
+- Room is not used as an authoritative cache in this stage; automatic
+  demo-data seeding was removed entirely. Every screen's data comes
+  from a live API call, mapped directly from DTOs into the state each
+  ViewModel exposes.
+- `core/session` (`TokenStore`, `SessionManager`, `AuthRepository`) is
+  the one place session state is read or written; no other layer
+  touches a token directly.
 
 ### Infrastructure
 
-- HTTP client, secure token storage, database, connectivity, push notifications, telemetry, and background synchronization.
+- `core/network`: Retrofit/OkHttp/Moshi, request-id generation,
+  standard envelope/error parsing, an `Authenticator`-based refresh
+  pipeline, and debug-only redacted logging (section 23, docs/SECURITY.md
+  section 36).
+- `core/session`: Keystore-backed encrypted refresh-token storage and
+  single-flight refresh coordination (docs/SECURITY.md section 36).
+- `core/preferences`: a small DataStore-backed, explicitly
+  non-sensitive UX convenience (the last selected workspace) — never an
+  access decision on its own.
+- `core/location`: on-demand, approximate-only location for "Near you"
+  (docs/SECURITY.md section 36).
+- `core/di.AppContainer`: explicit, constructor-injection-based manual
+  dependency injection — no Hilt, no service locator (section 23).
+- Push notifications, telemetry, and background synchronization remain
+  unimplemented; this stage is online-only for the screens it covers.
 
 Future shared Kotlin Multiplatform modules may contain domain types, validation helpers, networking contracts, and synchronization rules. The iOS UI decision remains independent until the shared boundary is proven.
 
@@ -371,3 +415,172 @@ Implemented (docs/ROADMAP.md Phase 7): the stage after commissions, receipts, an
 **Reporting adds an explicit gross/net split without redefining any existing field.** `netByCurrency` (gross minus every deduction list, per currency) and `summarizeTransactionKinds` (SALE/REFUND/REVERSAL totals and counts) are the two new pure primitives every report endpoint's totals are built from. `postedRevenue`, `revenue`, `commissionAccrued`, `total`, and `policyAccrued` all keep their original gross-SALE-only (or EARNED-only) meaning exactly as before this stage; new fields (`grossPostedSales`/`refundAmount`/`reversalAmount`/`netPostedRevenue` on the overview, and `refundedRevenue`/`reversedRevenue`/`netRevenue`/`commissionRefunded`/`commissionReversed`/`netCommission`/`refundedAmount`/`netAmount`/`returnedTotal`/`netTotal`/`refunded`/`reversed`/`net` across the others) sit alongside them. A new `GET .../reports/cash-reconciliation` surfaces each session's own opening float, payment received, manual cash in/out, safe drops, cash refunds, expected closing cash, counted cash, and variance — described only as physical cash custody, never as revenue or bank settlement, and never derived from a live `PaymentRecord` or `CashLedgerEntry` read outside that one session's own immutable rows.
 
 Payment-gateway integration, external settlement matching, payouts, commission "paid"/settlement status, subscription billing, statutory tax invoicing, and receipt PDF/email delivery remain explicitly out of scope for this stage.
+
+## 23. Android application architecture and secure session management
+
+Implemented (docs/ROADMAP.md): the first stage that makes Android call
+the real API at all, covering email-OTP sign-in through session
+restoration, workspace selection, customer discovery/booking/appointment
+management, and an initial permission-gated business dashboard. The old
+Google-AI-Studio-origin app — a single-Activity, fully local, Room-backed
+POS simulation with zero networking and zero authentication — was
+classified item by item: the Kora visual system (`ui/theme`) and the
+official logo were kept unchanged; every business-logic screen, dialog,
+ViewModel, repository, and Room entity was replaced, since all of it
+represented either explicitly-deferred business operations (queue,
+checkout, payments, commissions) or hardcoded demonstration data
+("Urban Crown Salon", `Double`-based commission math) with no connection
+to the real backend.
+
+**Manual, constructor-injection dependency injection — no Hilt, no
+service locator.** `core/di.AppContainer` is a single class built once
+in `KoraApplication.onCreate()` and threaded down to `KoraNavHost`.
+Hilt was deliberately not adopted: it would add a new annotation-
+processing toolchain surface to a project that never used it, for a
+dependency graph small enough that plain constructor injection is
+sufficient and fully testable without it (every ViewModel test in this
+stage constructs its subject directly against fakes, with no DI
+framework involved at all). `AppContainer` resolves one circular
+dependency — `SessionManager` needs `AuthApi`, and the main OkHttp
+client's `Authenticator` needs `SessionManager` — by building two
+separate Retrofit/OkHttp clients: an auth-only client (request-id and
+debug-logging interceptors only, no `AuthInterceptor`/`Authenticator`)
+used solely to construct `AuthApi` and, from it, `SessionManager`; then
+the main client (adds `AuthInterceptor` and `TokenAuthenticator`, both
+depending on that now-constructed `SessionManager`) used for every other
+API interface.
+
+**Every screen models the same explicit state set.** `ScreenState<T>`
+(`Initial`, `Loading`, `Content`, `Empty`, `Error(DomainError)`,
+`AuthenticationExpired`) is the one shared vocabulary every feature
+ViewModel's `StateFlow` uses, so a Compose screen never has to guess
+whether an absent value means "still loading" or "loaded and empty."
+
+**The standard API envelope and every documented error code map to a
+closed, typed Kotlin vocabulary — never a raw exception reaching a
+screen.** `safeApiCall` wraps every Retrofit suspend call, parses a
+non-2xx body as the standard error envelope (docs/API_SPEC.md section
+5), and maps it to one of exactly the `DomainError` cases the product
+task specified (validation, unauthorized, forbidden, subscription
+read-only/blocked, rate-limited, not-found, conflict, slot-unavailable,
+server/network-unavailable, unknown-safe) — `SLOT_UNAVAILABLE` and a
+generic `409` are distinguished by error code, not just HTTP status,
+and `IOException` is mapped to network-unavailable rather than any
+generic failure. `CancellationException` is always rethrown, never
+swallowed, so cancelling a superseded coroutine (the discovery-search
+case below) never gets mistaken for a failed API call.
+
+**Refresh rotation is single-flight and safe under concurrent 401s.**
+`TokenAuthenticator` (an OkHttp `Authenticator`) calls
+`SessionManager.refreshIfNeeded(failedAccessToken)` through a
+`RefreshCoordinator` seam, which acquires a `Mutex` and checks whether
+the in-memory access token has already changed since the caller's
+request failed — if so, another caller already refreshed while this one
+waited, and the already-updated token is reused with no second network
+call. A definitive rejection (invalid, expired, or reused refresh
+token) clears local session state immediately; a transient failure
+(network/server unavailable) leaves the stored refresh token intact,
+distinguished via the same `DomainError` vocabulary above rather than
+by re-parsing an HTTP status a second time. The authenticator itself
+refuses a second retry of the same request and never intercepts the
+`auth/*` endpoints, so a failing refresh call can never trigger another
+refresh (docs/SECURITY.md section 36 has the full security framing).
+
+**A real architectural bug was caught and fixed before ever compiling
+against it: a `null`-valued "no workspace selected" preference could
+not be told apart from an explicit "chose Customer" selection.**
+`LocalPreferences.selectedWorkspace` is a `SelectedWorkspacePreference`
+sealed type (`NeverChosen`/`Customer`/`Organization(id)`) backed by one
+DataStore string key with a sentinel value for "Customer," rather than
+a nullable `String?` that would have conflated the two states.
+
+**A second real bug was caught before runtime: a value stored on a
+`NavBackStackEntry.savedStateHandle` does not survive an inclusive
+`popUpTo` of the entry that set it.** The original design meant to pass
+`organizationId` from the splash screen into the business-workspace
+graph via `savedStateHandle`, then call
+`navigate(...) { popUpTo(SPLASH, inclusive = true) }` — but that pop
+destroys the very entry the value was stored on before the destination
+route reads it back. The fix makes the organization id part of the
+business graph's own route pattern
+(`KoraRoutes.BUSINESS_GRAPH_PATTERN = "business/{organizationId}"`,
+matching a `navArgument`), so it survives any `popUpTo` regardless of
+which entry gets removed.
+
+**Workspace routing revalidates against the live server on every
+decision, never a cached list.** `decideInitialWorkspaceRoute` is a
+pure function over a freshly fetched `GET /v1/me/workspaces` response:
+no memberships plus customer available → customer home; exactly one
+business membership with customer unavailable → straight to that
+business; anything else (customer plus any business, multiple
+businesses, or neither available) → the chooser. `resolveAndNavigate`
+(the only caller) checks a locally remembered selection against that
+same fresh list and clears it if it is no longer valid before ever
+applying the pure decision function — a stale local selection can never
+substitute for a live membership check (docs/SECURITY.md section 36).
+
+**Discovery search is debounced and genuinely cancels stale work, not
+merely races it.** `DiscoveryViewModel` combines query/category/
+location `StateFlow`s, applies `debounce(300ms)` and
+`distinctUntilChanged()`, and collects with `collectLatest` — a query
+change arriving while a previous search is still awaiting its network
+response cancels that in-flight coroutine outright, verified directly
+by holding a fake API call open and proving it never reaches its
+completion branch once superseded, rather than only checking that the
+final UI state happens to look right.
+
+**Booking's idempotency key is generated once per attempt and reused
+across retries — never regenerated per HTTP call.**
+`BookingViewModel` derives a stable snapshot key from
+`serviceId|staffProfileId|slot.startAt|slot.staffProfileId`; a `UUID` is
+generated only the first time that snapshot is submitted, or when the
+snapshot itself changes (a different slot was picked), and is cleared
+only on a terminal outcome — a successful booking, or a
+`SLOT_UNAVAILABLE` conflict, which also forces availability to reload
+and returns the wizard to the time-selection step. Any other failure
+(network, server, validation) keeps the same key so a client-driven
+retry safely replays the identical request. A submission already in
+flight is rejected outright (`isSubmitting` guard), preventing a
+duplicate tap from ever reaching the network twice.
+
+**Money and time follow the backend's own authoritative shape,
+never a client-side reinterpretation.** `MoneyFormatter` operates only
+on the integer minor-unit amount and ISO currency code the API returns,
+looking up fraction digits from `java.util.Currency` rather than
+assuming two decimal places; `KoraDateTimeFormatter` converts a UTC ISO
+instant into the branch's own IANA time zone (never the phone's),
+verified directly across a DST-active and a DST-inactive date for the
+same zone. Core library desugaring is enabled specifically so
+`java.time` is available back to `minSdk = 24`.
+
+**Reschedule does not need a discovery-availability slug at all.** The
+authenticated `AppointmentDto` the customer already holds carries no
+business slug, so re-running the full discovery-based availability
+picker for a reschedule was not directly constructible from an
+appointment alone. Since the reschedule endpoint is itself the sole
+authority on whether a new time is actually available (the client must
+never precompute that — docs/API_SPEC.md section 15), the reschedule
+flow uses native date/time pickers interpreted in the appointment's own
+`branchTimeZone`, converts to a UTC instant, and lets the server accept
+or reject it — no client-side availability pre-check is needed or
+attempted.
+
+**Testing exercises real collaborators through fakes at the Retrofit-
+interface seam, never mocks of this app's own classes.** Unit and
+Compose UI tests (JVM, via Robolectric where an Android context is
+needed) construct real `SessionManager`/`AuthRepository`/*Repository*
+instances against hand-written fakes of the Retrofit API interfaces —
+proving the actual envelope-parsing, refresh-coordination, and
+booking-key logic runs, not a mocked stand-in for it. One deliberate
+exception is documented directly in the test suite:
+`EncryptedSharedPreferences`/Android Keystore has no working provider
+inside a plain-JVM Robolectric process (confirmed directly —
+`KeyStoreException: AndroidKeyStore not found`), so `TokenStore`
+accepts a test-only `prefsProvider` seam that substitutes a plain
+`SharedPreferences` to verify its own field-mapping logic, while a
+dedicated test using the real default factory confirms the "Keystore
+unavailable" path fails safe exactly as designed rather than crashing —
+the true hardware-backed encrypted round trip is left to a connected/
+instrumented test on a real device or emulator, which this stage did
+not have available (no `adb` device was connected; per this stage's own
+constraints, no emulator was created without approval).

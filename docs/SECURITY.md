@@ -1131,3 +1131,176 @@ Implemented (docs/ROADMAP.md Phase 7) — see docs/ARCHITECTURE.md section 22 fo
 **`READ_ONLY` and `BLOCKED` subscription behavior, and cross-tenant/cross-branch safety, follow the identical unconditional mechanisms established in sections 10 and 33** and are re-verified for every route introduced in this stage: every mutating cash-control, correction, and reporting route is a non-`GET` method with no `@AllowReadOnlyAccess` override, so `READ_ONLY` blocks all of them by HTTP method alone while every read remains permitted; a cash register, cash session, or correction id from another organization returns `404` regardless of which permission the caller holds, never confirming its existence, proven directly for each new resource type.
 
 **Explicitly out of scope for this stage, and not implemented:** payment-gateway integration, external settlement matching, commission payouts, payroll, a "paid"/settlement status for any commission, subscription billing, statutory tax invoicing, and receipt PDF/email delivery or public share links. A manually recorded cash refund never claims to prove external settlement — it is described throughout as a manually recorded return, exactly like a manually recorded payment (section 33).
+
+## 36. Android application security
+
+The first production Android integration (docs/ROADMAP.md) connects a
+real customer-facing vertical slice — sign-in, home, discovery,
+booking, appointment management — plus workspace selection and an
+initial business dashboard, to the real API. Two small additive backend
+endpoints exist purely to let the client make that connection safely
+(sections 31-32); everything below this paragraph describes how the
+Android application itself is built to never become the thing that
+decides what a user is allowed to do or see.
+
+**The two new endpoints follow every existing tenant-isolation rule
+unchanged, and add no new authorization surface.** `GET
+/v1/me/workspaces` is a read-only projection derived from the same
+`OrganizationMembership`/`BranchAssignment`/`SubscriptionAccessService`
+facts every other authorized route already consults — it grants
+nothing by existing, and every protected request the client makes
+afterward is independently re-authorized by `TenantAccessGuard` exactly
+as before this endpoint existed. Favorites (`/v1/me/favorites`) are
+scoped to `CustomerProfileService.getOrCreateId(userId)`, isolated per
+customer the same way `CustomerRecord` already is, and re-derive
+visibility from `PublicBusinessProfile` on every read rather than
+trusting whatever was true at favorite-time — a business that turns
+PRIVATE after being favorited disappears from the list without any
+cleanup job or stale-data exposure window.
+
+**Passwordless email OTP is the only credential, on Android exactly as
+everywhere else, and the client never learns anything a generic
+response wouldn't reveal.** `POST /v1/auth/email-otp/request` and
+`/verify` are called with an email normalized the same way the backend
+normalizes it (trimmed, lower-cased) so a client-side difference can
+never cause a spurious "account not found"; the response is
+intentionally generic regardless of whether the address has an
+account, matching the backend's own account-enumeration defense
+(section 2). The OTP code itself is held only in a single Compose
+`TextFieldValue` inside `AuthViewModel`'s in-memory `StateFlow` — never
+written to Room, DataStore, `SharedPreferences`, a log line, a crash
+report, `onSaveInstanceState`, or any analytics event — and is
+explicitly cleared (reset to an empty string) on every terminal
+outcome: a successful sign-in, or a rejected/expired/consumed/
+rate-limited verification. The field accepts numeric paste and the
+platform's own SMS-style one-time-code autofill (`KeyboardType.
+NumberPassword` plus the system autofill framework) without the
+application ever requesting the SMS-read or SMS-retriever permission —
+Kora OS delivers the code by email, never SMS, so there is nothing for
+that permission to read in the first place.
+
+**A refresh token and minimal session metadata are the only things
+ever persisted for signed-in state, and they are persisted only inside
+an Android Keystore-backed encrypted store.** `TokenStore` is built on
+`androidx.security.crypto.EncryptedSharedPreferences`, itself backed by
+a Keystore-managed `MasterKey` (AES-256-GCM), with AES-256-SIV key
+encryption and AES-256-GCM value encryption — never plain
+`SharedPreferences`, never Room, never a custom hand-rolled Cipher/
+KeyStore integration. It stores exactly `{refreshToken, sessionId,
+userId, displayName, email}`; the **access token is never persisted
+anywhere** — it lives only as an in-memory field inside
+`SessionManager`, is lost on process death by design, and is
+transparently re-obtained through the stored refresh token on the next
+cold start. If the underlying Keystore key is later invalidated (device
+credentials changed, key deleted at the OS level) or the encrypted file
+is otherwise unreadable, every `TokenStore` method fails safe: the
+corrupted file is deleted and the caller is told "no stored session" —
+never a decryption exception surfaced to the user and never a crash.
+
+**Refresh-token rotation is single-flight, atomically replaces the
+stored token before any retry, and can never loop.**
+`SessionManager.refreshIfNeeded` (implementing the network layer's
+`RefreshCoordinator` seam) takes a `Mutex` before touching the network;
+a second caller that arrives while a refresh is already in flight for
+the same failed access token waits for that lock and then simply reuses
+the already-rotated token with no second network call, rather than
+racing a second refresh — proven directly with two concurrent callers
+against a single enqueued server response. `TokenAuthenticator` (an
+OkHttp `Authenticator`, not an interceptor) retries an original request
+at most once (`responseCount(response) >= 2` refuses a second retry)
+and never intercepts the auth endpoints themselves at all (`auth/...`
+paths are excluded before any refresh attempt), so a 401 from the
+refresh endpoint's own failure can never trigger another refresh — the
+one structural guarantee that rules out a refresh loop by construction,
+not merely by convention. A definitive refresh rejection (the stored
+refresh token was invalid, expired, or already rotated — i.e. reuse
+detection tripped) clears all local session material immediately; a
+transient failure (the device is offline, or the server is
+unreachable) leaves the stored refresh token untouched so the user is
+not signed out by a network blip, distinguished explicitly by
+`DomainError` case, not by guessing from an HTTP status alone.
+
+**Debug logging is redacted by construction; release builds carry no
+network logging at all.** `SafeDebugLoggingInterceptor` (debug builds
+only) logs method, a safe route template, HTTP status, and duration —
+never a header, never a query parameter, never a request or response
+body. Authorization headers, OTP codes, full email addresses, customer
+or payment details, and invitation tokens are therefore structurally
+unloggable, since the interceptor never reads the body or the
+`Authorization` header at all, rather than attempting to redact them
+after the fact. The release `OkHttpClient` build omits this interceptor
+entirely — there is no logging code path to accidentally leave enabled
+in a release build; body/header logging is never enabled in either
+build variant.
+
+**Cleartext HTTP is possible only in debug, only to the emulator's host
+loopback, and is structurally impossible in release.** The base network
+security config (`res/xml/network_security_config.xml`, shipped in
+every build variant) sets `cleartextTrafficPermitted="false"`
+unconditionally. A debug-source-set-only override
+(`src/debug/res/xml/network_security_config.xml`) permits cleartext to
+`10.0.2.2` alone, and that file is never included in a release
+artifact — not disabled by a build flag, but physically absent from the
+release APK's resources. `assertSafeReleaseApiBaseUrl` additionally
+refuses to build any `Release`-variant task at all (checked once,
+lazily, at task-graph-configuration time so it never breaks a plain
+debug build or test run) unless the configured release API base URL is
+non-blank, `https://`-prefixed, and not a localhost/`10.0.2.2`/
+placeholder host — a release build with a broken or forgotten
+production URL fails the build outright rather than shipping silently
+pointed at a development server.
+
+**A locally selected workspace is a UX convenience only, and can never
+bypass a fresh membership check.** `LocalPreferences` (plain DataStore
+— explicitly *not* sensitive, since it stores only a workspace choice,
+never a token) remembers the last selected workspace
+(`SelectedWorkspacePreference`: never-chosen, customer, or a specific
+organization id) purely so a cold start can jump back to where the user
+left off. Every cold start and every post-sign-in routing decision
+re-fetches `GET /v1/me/workspaces` fresh and checks the locally
+remembered selection against that live list before trusting it; a
+selection that no longer appears (membership revoked, organization
+suspended, subscription now `BLOCKED` in a way that removes it) is
+cleared and the user is routed by the same rules as if nothing had ever
+been selected — the mobile client never has, and is never given, the
+authority to decide workspace access on its own.
+
+**Location is requested only on explicit intent, only approximate, and
+never persisted.** `ApproximateLocationProvider` is invoked only from
+the "Near you" tap handler — never on app startup, never on a timer,
+never in the background — and requests
+`Priority.PRIORITY_BALANCED_POWER_ACCURACY` (coarse), never
+`PRIORITY_HIGH_ACCURACY`. Only `ACCESS_COARSE_LOCATION` is declared;
+`ACCESS_BACKGROUND_LOCATION` is never requested and never will be for
+this feature. A resolved coordinate pair is sent to the discovery
+search call and otherwise held only in `DiscoveryViewModel`'s in-memory
+state for the current screen session — it is never written to Room,
+DataStore, or a log line, and is discarded when the user leaves search
+or explicitly clears "Near you". Denied, permanently-denied, and
+service-unavailable outcomes all degrade to "text and category search
+still work," never a dead end.
+
+**Booking's idempotency key is a defense against duplicate financial
+side effects, not merely a retry convenience.** A stable UUID is
+generated once per distinct booking attempt (the service/provider/slot
+triple) and reused verbatim across a client-side retry of that exact
+attempt — never regenerated per HTTP call — so a dropped connection
+during a request that actually succeeded server-side cannot produce a
+second appointment when the app retries; the key is replaced only on a
+terminal outcome (success, or a `SLOT_UNAVAILABLE` conflict, since that
+specifically means the previously-targeted slot is gone and any further
+attempt is necessarily a different booking). The client never computes
+whether a slot is available, whether a cancellation is within policy,
+or what a booking costs — every one of those figures and decisions
+comes from the server response and is only ever displayed, never
+derived.
+
+**Explicitly out of scope for this stage, and not implemented on
+Android:** queue commands, service-session commands, checkout, payment
+recording or verification, refunds, cash-session operations, commission
+management, and receipt management. No screen, button, or state in the
+Android application this stage represents any of those operations as
+available, and the business dashboard calls the reports endpoint at all
+only for a membership that already holds `reports.read` — a membership
+without it never triggers that network call, so there is no `403`
+response for that case to even occur.

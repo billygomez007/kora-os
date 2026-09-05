@@ -25,6 +25,20 @@ can expand beyond salons and barbershops.
 - PostgreSQL database with strict organization isolation.
 - Push and in-app notifications for important events.
 
+The Android application now genuinely calls this backend for one
+complete customer-facing vertical slice — passwordless email OTP sign-in,
+session restoration, a real customer home screen with branded search and
+discovery, business/branch/service browsing, real availability, atomic
+appointment booking with a stable idempotency key, and appointment
+management (list, detail, cancel, reschedule) — plus secure workspace
+selection (customer vs. one or more businesses) and an initial,
+permission-gated business dashboard (org/branch identity, role names,
+subscription-access state, and an overview report only for a membership
+holding `reports.read`). Queue, service-session, checkout, payment,
+refund, cash-session, and commission operations are not yet reachable
+from Android; they remain the next Android integration stage
+(docs/ROADMAP.md).
+
 ### Future
 
 - iOS application using the same backend and business contracts.
@@ -49,9 +63,19 @@ One Kora account carries two independent workspaces:
 The same person can be a customer of one business and staff at another
 using the same account; the two workspaces never share data with each
 other (see docs/SECURITY.md section 29 for how discovery stays isolated
-from tenant data). Public business search is available today
-(`GET /v1/discovery/businesses` and related endpoints); booking, receipts,
-and loyalty remain future work per the "Future" list above.
+from tenant data). Public business search, appointment booking, and
+appointment management are available today, both through the API
+(`GET /v1/discovery/businesses` and related endpoints, section 15's
+appointment routes) and through the Android application itself; a
+customer can also save businesses as favorites
+(`GET`/`POST`/`DELETE /v1/me/favorites[/:organizationId]`,
+docs/API_SPEC.md section 32). Receipts and richer CRM/loyalty remain
+future work per the "Future" list above. Workspace selection
+(`GET /v1/me/workspaces`, docs/API_SPEC.md section 31) is how the
+Android app decides whether a signed-in person lands on the customer
+home screen, a single business workspace, or a chooser between several —
+never a client-side guess, and never trusted without a fresh check on
+the next protected request.
 
 ## 3. Roles (business workspace)
 
@@ -261,10 +285,16 @@ never summed into revenue) and now also separate gross posted sales,
 refunded amount, reversed amount, and net posted revenue — "refunded"
 reporting is implemented; "outstanding" (an unpaid balance concept)
 does not apply to Kora's cash/claim model and remains not applicable.
-"Owners can monitor live branch activity from the mobile dashboard"
-remains future work — the reporting endpoints exist as a real-time
-query API (`GET .../reports/*`), but no push/scheduled dashboard
-delivery mechanism or Android integration exists yet. See
+"Owners can monitor live branch activity from the mobile dashboard" is
+partially implemented: an initial Android business dashboard now shows
+organization identity, role names, and a 30-day overview report pulled
+live from `GET .../reports/overview` for a membership holding
+`reports.read` (a membership without it never calls the endpoint at
+all, and sees a minimal role-appropriate landing state instead) — but
+this is an on-demand query, not live/streaming branch activity, and no
+push or scheduled delivery mechanism exists yet. Queue, service-session,
+checkout, and payment operations are not yet reachable from Android at
+all (docs/ROADMAP.md). See
 docs/API_SPEC.md sections 18a, 20-22, 27c and docs/SECURITY.md
 sections 34-35.
 

@@ -1009,3 +1009,99 @@ services/availability) → `CustomerRecord`/`CustomerProfile` → the
 database-enforced double-booking constraint with a client-generated
 idempotency key. That chain is done; the next data-model boundary is
 Walk-in/Queue → Service Session (docs/ROADMAP.md).
+
+## 31. Safe workspace projection
+
+`GET /v1/organizations` (section 8) returns only `{id, name, slug,
+status, membershipId}` per organization — enough to list memberships,
+not enough to safely route a mobile client between a customer home
+screen, a single business workspace, or a chooser between several. `GET
+/v1/me/workspaces` closes that gap with a deliberately minimal,
+additive, read-only projection built for exactly that decision, added
+for the first Android integration stage (docs/ROADMAP.md):
+
+```json
+{
+  "data": {
+    "customerWorkspaceAvailable": true,
+    "organizations": [
+      {
+        "organizationId": "org_...",
+        "membershipId": "mem_...",
+        "name": "Urban Crown Salon",
+        "slug": "urban-crown",
+        "logoUrl": "https://.../logo.png",
+        "roleCodes": ["owner"],
+        "permissionCodes": ["reports.read", "branches.manage", "..."],
+        "accessMode": "FULL",
+        "membershipStatus": "ACTIVE",
+        "branches": [{ "branchId": "branch_...", "name": "Main Branch" }]
+      }
+    ]
+  },
+  "meta": { "requestId": "..." }
+}
+```
+
+Rules, all enforced server-side regardless of what a client later does
+with the response:
+
+- Only `ACTIVE` memberships are listed; suspended or inactive ones are
+  omitted entirely rather than marked non-selectable, since there is
+  nothing safe to select.
+- `branches` lists every `ACTIVE` branch when the membership holds the
+  broad `branches.manage` permission (the same rule `TenantAccessGuard`
+  already applies), otherwise only the branches the membership has an
+  explicit `BranchAssignment` for.
+- `accessMode` comes from `SubscriptionAccessService.resolveAccessMode`
+  and defaults to `BLOCKED` when the organization has no subscription
+  row at all — never `FULL` by omission.
+- `roleCodes`/`permissionCodes` are read fresh from the database on
+  every call. This endpoint is a UI-routing convenience only; it grants
+  nothing, and every protected request downstream is still independently
+  authorized by `TenantAccessGuard` regardless of what this endpoint
+  most recently returned. A client must never cache this response as an
+  access decision, and must never let a locally remembered organization
+  selection bypass a fresh membership check on the next protected call
+  (docs/SECURITY.md section 36).
+- `customerWorkspaceAvailable` is currently always `true` for an
+  authenticated user (every signed-in user can act as a customer); it is
+  modeled as a field rather than assumed so a future restriction (e.g. a
+  staff-only account type) has somewhere to express `false`.
+- No subscription internals, audit data, staff-private fields, or
+  financial figures beyond `accessMode` itself are ever included.
+
+This is additive and backward-compatible: `GET /v1/organizations`
+is unchanged, and nothing about organization creation, staff invitation,
+or existing RBAC enforcement changes. Covered by
+`apps/api/test/workspaces.e2e-spec.ts`.
+
+## 32. Customer favorites
+
+A customer may save and unsave a public business profile. Grounded in
+the pre-existing `CustomerFavorite` model (`customerProfileId`,
+`organizationId`, unique together), which had a schema but no
+application-layer code before this stage:
+
+- `GET /v1/me/favorites` → `ApiSuccessEnvelope<DiscoveryBusinessSummaryDto[]>`,
+  the same public-safe shape discovery search already returns (section
+  29). Re-filters visibility on every read: a business that was PUBLIC
+  or LINK_ONLY when favorited but has since turned PRIVATE simply no
+  longer appears — no cleanup job, no stale-reference error.
+- `POST /v1/me/favorites/:organizationId` → `{favorited: true}`.
+  Idempotent (an `upsert` on the composite key): favoriting an
+  already-favorited business is not an error. 404s if the organization's
+  `PublicBusinessProfile` is not PUBLIC/LINK_ONLY and published — the
+  same visibility rule discovery itself enforces (section 29), so a
+  PRIVATE business can never be favorited even by its own future
+  customer.
+- `DELETE /v1/me/favorites/:organizationId` → `{favorited: false}`.
+  Idempotent (`deleteMany`): unfavoriting something never favorited, or
+  already removed, is not an error.
+
+All three require an authenticated customer (`CustomerProfileService.
+getOrCreateId(userId)` creates the `CustomerProfile` row on first use,
+matching how a first booking already does). Favorites are strictly
+per-customer: one customer's favorites are never visible to, or
+affected by, another's, and never cross into business-workspace data.
+Covered by `apps/api/test/favorites.e2e-spec.ts`.

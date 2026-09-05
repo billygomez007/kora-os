@@ -296,6 +296,35 @@ while every previously existing field keeps its original gross-SALE-only
 meaning unchanged. See `docs/ARCHITECTURE.md` section 22 and
 `docs/SECURITY.md` section 35 for the full model.
 
+## Workspaces and favorites in one paragraph
+
+Two small, additive modules exist solely to let the Android app answer
+"what can this signed-in person see?" and "what has this customer saved?"
+without ever putting authorization authority on the client. `GET
+/v1/me/workspaces` (`WorkspacesModule`) returns
+`{customerWorkspaceAvailable, organizations: [{organizationId,
+membershipId, name, slug, logoUrl, roleCodes, permissionCodes,
+accessMode, membershipStatus, branches}]}` — only ACTIVE memberships,
+`accessMode` from `SubscriptionAccessService.resolveAccessMode`
+(`BLOCKED` if no subscription row exists at all), and `branches` limited
+to the membership's own `BranchAssignment` rows unless it holds the
+broad `branches.manage` permission (mirroring `TenantAccessGuard`'s own
+rule), in which case every ACTIVE branch is listed. No subscription,
+audit, staff-private, or financial detail beyond that safe projection is
+ever included, and roles/permissions still come from the database on
+every call — nothing here is cached into a token or trusted from the
+client on a later request. `GET`/`POST`/`DELETE
+/v1/me/favorites[/:organizationId]` (`FavoritesModule`) lets an
+authenticated customer save and unsave a `PublicBusinessProfile`;
+`add()` re-validates the organization is PUBLIC or LINK_ONLY and
+published before upserting (404 otherwise), `remove()` is an idempotent
+delete, and `list()` re-filters visibility on every read so a business
+that turned PRIVATE after being favorited simply disappears from the
+list with no cleanup job required. Both endpoints are covered by
+dedicated tenant/security e2e suites
+(`test/workspaces.e2e-spec.ts`, `test/favorites.e2e-spec.ts`). See
+`docs/API_SPEC.md` sections 31-32 and `docs/SECURITY.md` section 36.
+
 ## Useful root-level scripts
 
 Run from the repository root (see the root `package.json` for the full

@@ -54,6 +54,7 @@ export async function createBookableFixture(
   const slug = unique('org');
   const orgResponse = await authed(testApp, owner.accessToken)
     .post('/v1/organizations')
+    .set('Idempotency-Key', randomUUID())
     .send({
       name: `Kora Fixture ${slug}`,
       slug,

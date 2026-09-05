@@ -94,6 +94,7 @@ describe('OnboardingService (integration)', () => {
       countryCode: 'GH',
       primaryBranch: { name: 'Main branch', code: 'MAIN' },
       requestId: `req-${unique}`,
+      idempotencyKey: randomUUID(),
       ...overrides,
     };
   }

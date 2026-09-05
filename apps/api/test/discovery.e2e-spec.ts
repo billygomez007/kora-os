@@ -33,6 +33,7 @@ async function registerAndLogin(testApp: TestApp) {
 async function onboardOrganization(testApp: TestApp, accessToken: string, name?: string) {
   const response = await authed(testApp, accessToken)
     .post('/v1/organizations')
+    .set('Idempotency-Key', randomUUID())
     .send({
       name: name ?? `Kora Test Org ${unique()}`,
       slug: unique(),

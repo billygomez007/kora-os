@@ -453,6 +453,8 @@ model Organization {
   transactionCorrectionPayments      TransactionCorrectionPayment[]
   transactionCorrectionStatusHistory TransactionCorrectionStatusHistory[]
 
+  organizationIdempotencyKeys OrganizationIdempotencyKey[]
+
   @@map("organizations")
 }
 
@@ -523,6 +525,28 @@ model Branch {
   @@index([organizationId])
   @@index([organizationId, isDiscoverable])
   @@map("branches")
+}
+
+/// Guarantees a client-generated Idempotency-Key header is honored for
+/// organization onboarding (docs task "Business onboarding contract"),
+/// mirroring AppointmentIdempotencyKey's shape. Scoped per owner user,
+/// not per-organization -- there is no organization yet when the very
+/// first request in a retry sequence is being checked, so the lookup
+/// key must be something that exists before onboarding runs. The
+/// organization row and this key are created together, in the same
+/// transaction, so a row only ever exists once fully resolved.
+model OrganizationIdempotencyKey {
+  id                 String   @id @default(uuid()) @db.Uuid
+  ownerUserId        String   @map("owner_user_id") @db.Uuid
+  idempotencyKey     String   @map("idempotency_key")
+  requestFingerprint String   @map("request_fingerprint")
+  organizationId     String   @map("organization_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerUserId, idempotencyKey])
+  @@map("organization_idempotency_keys")
 }
 
 // ---------------------------------------------------------------------------

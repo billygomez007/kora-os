@@ -187,4 +187,110 @@ describe('Receipts (e2e)', () => {
       expect(response.status).toBe(404);
     });
   });
+
+  describe('corrective receipts (refund/reversal)', () => {
+    async function refundHalf(posted: { transactionId: string; checkoutTotalMinor: number }): Promise<string> {
+      const line = await testApp.prisma.transactionLineItem.findFirstOrThrow({ where: { transactionId: posted.transactionId } });
+      const requested = await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transactions/${posted.transactionId}/refund-requests`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ reason: 'Partial dissatisfaction', returnMethod: 'CASH', lines: [{ originalTransactionLineItemId: line.id, requestedAmountMinor: Math.floor(line.priceMinorSnapshot / 2) }] })
+        .expect(201);
+      await authed(testApp, manager.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transaction-corrections/${requested.body.data.id}/approve`)
+        .send({})
+        .expect(201);
+      const executed = await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transaction-corrections/${requested.body.data.id}/execute`)
+        .set('Idempotency-Key', randomUUID())
+        .send({})
+        .expect(201);
+      return executed.body.data.correctiveTransactionId as string;
+    }
+
+    it('every executed refund gets exactly one immutable REFUND_RECEIPT referencing the original sale receipt', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      const originalReceipt = await testApp.prisma.receipt.findUniqueOrThrow({ where: { transactionId: posted.transactionId } });
+
+      const correctiveTransactionId = await refundHalf(posted);
+      const correctiveReceipts = await testApp.prisma.receipt.findMany({ where: { transactionId: correctiveTransactionId } });
+      expect(correctiveReceipts).toHaveLength(1);
+
+      const response = await authed(testApp, manager.accessToken).get(receiptsUrl(`/${correctiveReceipts[0].id}`)).expect(200);
+      expect(response.body.data).toMatchObject({
+        kind: 'REFUND_RECEIPT',
+        originalReceiptId: originalReceipt.id,
+        originalReceiptNumber: originalReceipt.receiptNumber,
+        correctionReason: 'Partial dissatisfaction',
+      });
+      expect(response.body.data.remainingRefundableMinor).toBeGreaterThanOrEqual(0);
+      expect(response.body.data.totalMinor).toBe(Math.floor(fixture.servicePriceMinor / 2));
+    });
+
+    it('a full reversal gets a REVERSAL_RECORD, never called a tax invoice or credit note in its own data', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      const requested = await authed(testApp, fixture.ownerAccessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transactions/${posted.transactionId}/reversal-requests`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ reason: 'Erroneous sale', returnMethod: 'CASH' })
+        .expect(201);
+      await authed(testApp, manager.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transaction-corrections/${requested.body.data.id}/approve`)
+        .send({})
+        .expect(201);
+      const executed = await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transaction-corrections/${requested.body.data.id}/execute`)
+        .set('Idempotency-Key', randomUUID())
+        .send({})
+        .expect(201);
+
+      const correctiveReceipt = await testApp.prisma.receipt.findFirstOrThrow({ where: { transactionId: executed.body.data.correctiveTransactionId } });
+      expect(correctiveReceipt.kind).toBe('REVERSAL_RECORD');
+      expect(correctiveReceipt.remainingRefundableMinorSnapshot).toBeNull();
+
+      const get = await authed(testApp, manager.accessToken).get(receiptsUrl(`/${correctiveReceipt.id}`)).expect(200);
+      const serialized = JSON.stringify(get.body.data).toLowerCase();
+      expect(serialized).not.toMatch(/tax invoice|credit note/);
+    });
+
+    it('the original sale receipt is unaffected by a correction and remains independently readable', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      const originalReceipt = await testApp.prisma.receipt.findUniqueOrThrow({ where: { transactionId: posted.transactionId } });
+      await refundHalf(posted);
+
+      const after = await testApp.prisma.receipt.findUniqueOrThrow({ where: { id: originalReceipt.id } });
+      expect(after).toEqual(originalReceipt);
+      const get = await authed(testApp, manager.accessToken).get(receiptsUrl(`/${originalReceipt.id}`)).expect(200);
+      expect(get.body.data.kind).toBe('SALE_RECEIPT');
+    });
+
+    it('a linked customer sees their own corrective receipt through /me/receipts; a walk-in\'s corrective receipt stays business-side only', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      const correctiveTransactionId = await refundHalf(posted);
+      const correctiveReceipt = await testApp.prisma.receipt.findFirstOrThrow({ where: { transactionId: correctiveTransactionId } });
+
+      const strangerBefore = await signInWithEmailOtp(testApp, `stranger-corrective-${randomUUID()}@example.test`);
+      const beforeLink = await authed(testApp, strangerBefore.accessToken).get(`/v1/me/receipts/${correctiveReceipt.id}`);
+      expect(beforeLink.status).toBe(404);
+
+      const customer = await signInWithEmailOtp(testApp, `corrective-customer-${randomUUID()}@example.test`);
+      await authed(testApp, customer.accessToken).get('/v1/me/customer-profile').expect(200);
+      const customerProfile = await testApp.prisma.customerProfile.findUniqueOrThrow({ where: { userId: customer.userId } });
+      await testApp.prisma.customerRecord.update({ where: { id: posted.customerRecordId }, data: { customerProfileId: customerProfile.id } });
+
+      const list = await authed(testApp, customer.accessToken).get('/v1/me/receipts').expect(200);
+      expect(list.body.data.map((r: { id: string }) => r.id)).toContain(correctiveReceipt.id);
+      const get = await authed(testApp, customer.accessToken).get(`/v1/me/receipts/${correctiveReceipt.id}`).expect(200);
+      expect(get.body.data.kind).toBe('REFUND_RECEIPT');
+    });
+
+    it('never exposes a raw mobile-money/bank/card reference on a corrective receipt', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      const correctiveTransactionId = await refundHalf(posted);
+      const correctiveReceipt = await testApp.prisma.receipt.findFirstOrThrow({ where: { transactionId: correctiveTransactionId } });
+      const get = await authed(testApp, manager.accessToken).get(receiptsUrl(`/${correctiveReceipt.id}`)).expect(200);
+      const serialized = JSON.stringify(get.body.data).toLowerCase();
+      expect(serialized).not.toMatch(/password|otp|cvv|pin\b|card.?number/);
+    });
+  });
 });

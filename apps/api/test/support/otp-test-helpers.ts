@@ -183,6 +183,10 @@ export function authed(testApp: TestApp, accessToken: string) {
       request(testApp.app.getHttpServer())
         .put(url)
         .set('Authorization', `Bearer ${accessToken}`),
+    patch: (url: string) =>
+      request(testApp.app.getHttpServer())
+        .patch(url)
+        .set('Authorization', `Bearer ${accessToken}`),
     delete: (url: string) =>
       request(testApp.app.getHttpServer())
         .delete(url)

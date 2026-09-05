@@ -242,7 +242,16 @@ function toVisibility(value: 'PUBLIC' | 'LINK_ONLY' | 'PRIVATE'): BusinessProfil
  * Checkout (the financial-integrity stage) sit one layer further out
  * still — each RESTRICTs against ServiceSession/Branch/CustomerRecord/
  * StaffProfile/OrganizationMembership too — so they must go before even
- * ServiceSession does, in this order: Receipt (its own ReceiptLineItem/
+ * ServiceSession does. The cash-controls and correction-workflow stage
+ * (docs task Phase 1/3) adds two more layers still further out:
+ * TransactionCorrection (whose own TransactionCorrectionItem/Payment/
+ * StatusHistory rows cascade away with it) RESTRICTs against both the
+ * original and corrective Transaction, so it must go before Transaction;
+ * CashSessionReview and CashLedgerEntry both RESTRICT against CashSession
+ * (and CashLedgerEntry also RESTRICTs against PaymentRecord, CashRegister,
+ * and a corrective Transaction), so both must go before CashSession,
+ * PaymentRecord, and Transaction. The full order: TransactionCorrection,
+ * CashSessionReview, CashLedgerEntry, Receipt (its own ReceiptLineItem/
  * ReceiptPaymentSummary rows cascade away with it) and CommissionAccrual
  * (both RESTRICT against Transaction, so both must go before it) before
  * Transaction (its own TransactionLineItem/TransactionPaymentAllocation
@@ -250,16 +259,28 @@ function toVisibility(value: 'PUBLIC' | 'LINK_ONLY' | 'PRIVATE'): BusinessProfil
  * PaymentVerificationEvent/PaymentDispute rows cascade away with it, and
  * which TransactionPaymentAllocation itself RESTRICTs against) before
  * Checkout (whose CheckoutLineItem/CheckoutAdjustment rows cascade away
- * with it, and which PaymentRecord itself RESTRICTs against).
- * CommissionRule needs no explicit delete — by the time Organization's
- * own cascade reaches it, CommissionAccrual (the only RESTRICT against
- * it) is already gone.
+ * with it, and which PaymentRecord itself RESTRICTs against), then
+ * CashSession (RESTRICTs against CashRegister) before CashRegister and
+ * BranchCashPolicy (both RESTRICT against Branch, so both must be
+ * cleared explicitly rather than left to Organization's own cascade
+ * into Branch). CommissionRule needs no explicit delete — by the time
+ * Organization's own cascade reaches it, CommissionAccrual (the only
+ * RESTRICT against it) is already gone.
  */
 export async function cleanupAllBookableFixtures(testApp: TestApp): Promise<void> {
   const organizationIds = createdOrganizationIdsByTestApp.get(testApp) ?? [];
   if (organizationIds.length === 0) {
     return;
   }
+  await testApp.prisma.transactionCorrection.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.cashSessionReview.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.cashLedgerEntry.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
   await testApp.prisma.receipt.deleteMany({
     where: { organizationId: { in: organizationIds } },
   });
@@ -273,6 +294,15 @@ export async function cleanupAllBookableFixtures(testApp: TestApp): Promise<void
     where: { organizationId: { in: organizationIds } },
   });
   await testApp.prisma.checkout.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.cashSession.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.cashRegister.deleteMany({
+    where: { organizationId: { in: organizationIds } },
+  });
+  await testApp.prisma.branchCashPolicy.deleteMany({
     where: { organizationId: { in: organizationIds } },
   });
   await testApp.prisma.serviceSession.deleteMany({

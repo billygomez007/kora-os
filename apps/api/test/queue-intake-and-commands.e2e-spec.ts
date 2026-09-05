@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
+import { utcToLocalDate } from '../src/common/scheduling/local-time.util.js';
 import {
   cleanupAllBookableFixtures,
   createBookableFixture,
@@ -8,6 +9,36 @@ import {
 } from './support/appointment-test-fixtures.js';
 import { authed, createTestApp, type TestApp } from './support/otp-test-helpers.js';
 import { extendWithQueueRoles, type QueueFixtureExtras } from './support/queue-test-fixtures.js';
+
+/** `nearFutureSlotStart(180)` alone can drift into tomorrow whenever
+ * "now" is already within three hours of UTC/Accra midnight (the
+ * fixture's branch is always Africa/Accra, which has no UTC offset),
+ * which would silently break every "same-day check-in" test below —
+ * their premise is a same-calendar-day appointment — purely based on
+ * what time of day the suite happens to run. Falls back to
+ * progressively shorter offsets until one lands on today's Accra date.
+ * `nearFutureSlotStart`'s round-up-to-the-next-15-minute-boundary can
+ * itself land within the fixture's 5-minute minimum booking lead time of
+ * "now" (whenever "now" sits just before a grid line), or past midnight
+ * entirely (the next grid line after that) — a narrow, real gap where NO
+ * 15-minute-aligned same-day slot satisfying the lead time exists at
+ * all. The booking API itself has no grid-alignment requirement (that is
+ * only this helper's own readability convention), so the last resort is
+ * a raw, ungridded timestamp that still safely clears the lead time. */
+function sameDayNearFutureSlotStart(): Date {
+  const today = utcToLocalDate(new Date(), 'Africa/Accra');
+  for (const minutes of [180, 60, 30, 15]) {
+    const candidate = nearFutureSlotStart(minutes);
+    if (utcToLocalDate(candidate, 'Africa/Accra') === today) {
+      return candidate;
+    }
+  }
+  const rawFallback = new Date(Date.now() + 6 * 60_000);
+  if (utcToLocalDate(rawFallback, 'Africa/Accra') === today) {
+    return rawFallback;
+  }
+  throw new Error('No same-day near-future slot is available this close to Africa/Accra midnight — re-run shortly.');
+}
 
 describe('Walk-in intake, appointment check-in, and queue commands (e2e)', () => {
   let testApp: TestApp;
@@ -216,7 +247,7 @@ describe('Walk-in intake, appointment check-in, and queue commands (e2e)', () =>
   });
 
   describe('appointment check-in', () => {
-    async function bookConfirmedAppointment(startAt: Date = nearFutureSlotStart(180)) {
+    async function bookConfirmedAppointment(startAt: Date = sameDayNearFutureSlotStart()) {
       const response = await authed(testApp, fixture.ownerAccessToken)
         .post(`/v1/organizations/${fixture.organizationId}/branches/${fixture.branchId}/appointments`)
         .send({

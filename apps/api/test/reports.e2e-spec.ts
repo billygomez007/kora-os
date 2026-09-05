@@ -259,4 +259,133 @@ describe('Owner/manager reports (e2e)', () => {
       expect(currencies).toEqual(['GHS', 'USD']);
     });
   });
+
+  describe('gross vs. net reporting after a correction', () => {
+    async function refundHalf(transactionId: string): Promise<void> {
+      const line = await testApp.prisma.transactionLineItem.findFirstOrThrow({ where: { transactionId } });
+      const requested = await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transactions/${transactionId}/refund-requests`)
+        .set('Idempotency-Key', randomUUID())
+        .send({ reason: 'reporting test', returnMethod: 'CASH', lines: [{ originalTransactionLineItemId: line.id, requestedAmountMinor: Math.floor(line.priceMinorSnapshot / 2) }] })
+        .expect(201);
+      await authed(testApp, manager.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transaction-corrections/${requested.body.data.id}/approve`)
+        .send({})
+        .expect(201);
+      await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/transaction-corrections/${requested.body.data.id}/execute`)
+        .set('Idempotency-Key', randomUUID())
+        .send({})
+        .expect(201);
+    }
+
+    it('overview preserves postedRevenue/transactionCount as gross SALE-only, and adds explicit gross/refund/net fields', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      await refundHalf(posted.transactionId);
+      const halfRefund = Math.floor(fixture.servicePriceMinor / 2);
+
+      const response = await authed(testApp, manager.accessToken).get(reportsUrl('overview')).expect(200);
+      expect(response.body.data.postedRevenue).toEqual([{ currency: fixture.serviceCurrency, amountMinor: posted.checkoutTotalMinor }]);
+      expect(response.body.data.transactionCount).toBe(1);
+      expect(response.body.data.grossPostedSales).toEqual([{ currency: fixture.serviceCurrency, amountMinor: posted.checkoutTotalMinor }]);
+      expect(response.body.data.refundAmount).toEqual([{ currency: fixture.serviceCurrency, amountMinor: halfRefund }]);
+      expect(response.body.data.reversalAmount).toEqual([]);
+      expect(response.body.data.netPostedRevenue).toEqual([{ currency: fixture.serviceCurrency, amountMinor: posted.checkoutTotalMinor - halfRefund }]);
+      expect(response.body.data.refundTransactionCount).toBe(1);
+      expect(response.body.data.reversalTransactionCount).toBe(0);
+    });
+
+    it('staff-performance shows refundedRevenue/netRevenue and commissionRefunded/netCommission alongside the unchanged revenue/commissionAccrued fields', async () => {
+      await authed(testApp, manager.accessToken).post(`/v1/organizations/${fixture.organizationId}/commission-rules`).send({ type: 'PERCENTAGE', rateBasisPoints: 1000 }).expect(201);
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      await refundHalf(posted.transactionId);
+      const halfRefund = Math.floor(fixture.servicePriceMinor / 2);
+
+      const response = await authed(testApp, manager.accessToken).get(reportsUrl('staff-performance')).expect(200);
+      const entry = response.body.data.find((e: { staffProfileId: string }) => e.staffProfileId === fixture.providerStaffProfileId);
+      expect(entry.revenue).toEqual([{ currency: fixture.serviceCurrency, amountMinor: fixture.servicePriceMinor }]);
+      expect(entry.refundedRevenue).toEqual([{ currency: fixture.serviceCurrency, amountMinor: halfRefund }]);
+      expect(entry.netRevenue).toEqual([{ currency: fixture.serviceCurrency, amountMinor: fixture.servicePriceMinor - halfRefund }]);
+      expect(entry.commissionRefunded[0].amountMinor).toBeGreaterThan(0);
+      expect(entry.netCommission[0].amountMinor).toBe(entry.commissionAccrued[0].amountMinor - entry.commissionRefunded[0].amountMinor);
+    });
+
+    it('services distinguishes sold vs. refunded amounts for the same service', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      await refundHalf(posted.transactionId);
+      const halfRefund = Math.floor(fixture.servicePriceMinor / 2);
+
+      const response = await authed(testApp, manager.accessToken).get(reportsUrl('services')).expect(200);
+      const entry = response.body.data.find((e: { serviceId: string }) => e.serviceId === fixture.serviceId);
+      expect(entry.revenue).toEqual([{ currency: fixture.serviceCurrency, amountMinor: fixture.servicePriceMinor }]);
+      expect(entry.refundedAmount).toEqual([{ currency: fixture.serviceCurrency, amountMinor: halfRefund }]);
+      expect(entry.netAmount).toEqual([{ currency: fixture.serviceCurrency, amountMinor: fixture.servicePriceMinor - halfRefund }]);
+    });
+
+    it('payment-methods distinguishes collections from recorded returns for the same method', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      await refundHalf(posted.transactionId);
+      const halfRefund = Math.floor(fixture.servicePriceMinor / 2);
+
+      const response = await authed(testApp, manager.accessToken).get(reportsUrl('payment-methods')).expect(200);
+      const cash = response.body.data.find((e: { method: string }) => e.method === 'CASH');
+      expect(cash.total).toEqual([{ currency: fixture.serviceCurrency, amountMinor: posted.checkoutTotalMinor }]);
+      expect(cash.returnedTotal).toEqual([{ currency: fixture.serviceCurrency, amountMinor: halfRefund }]);
+      expect(cash.netTotal).toEqual([{ currency: fixture.serviceCurrency, amountMinor: posted.checkoutTotalMinor - halfRefund }]);
+    });
+
+    it('commissions distinguishes refunded/reversed/net alongside the unchanged policyAccrued/noPolicyAccrued fields', async () => {
+      await authed(testApp, manager.accessToken).post(`/v1/organizations/${fixture.organizationId}/commission-rules`).send({ type: 'PERCENTAGE', rateBasisPoints: 1000 }).expect(201);
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      await refundHalf(posted.transactionId);
+
+      const response = await authed(testApp, manager.accessToken).get(reportsUrl('commissions')).expect(200);
+      const entry = response.body.data.find((e: { staffProfileId: string }) => e.staffProfileId === fixture.providerStaffProfileId);
+      expect(entry.refunded[0].amountMinor).toBeGreaterThan(0);
+      expect(entry.reversed).toEqual([]);
+      expect(entry.net[0].amountMinor).toBe(entry.policyAccrued[0].amountMinor - entry.refunded[0].amountMinor);
+    });
+
+    it('the revenue time-series buckets only SALE transactions, never a REFUND/REVERSAL', async () => {
+      const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+      await refundHalf(posted.transactionId);
+
+      const response = await authed(testApp, manager.accessToken).get(reportsUrl('revenue', { branchId: fixture.branchId })).expect(200);
+      const totalBucketed = response.body.data.buckets.reduce((sum: number, b: { totalMinor: number }) => sum + b.totalMinor, 0);
+      expect(totalBucketed).toBe(posted.checkoutTotalMinor);
+    });
+  });
+
+  describe('cash reconciliation report', () => {
+    it('reports per-session physical cash custody, never described as revenue', async () => {
+      const register = await authed(testApp, manager.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/branches/${fixture.branchId}/cash-registers`)
+        .send({ code: `REP-${randomUUID().slice(0, 6)}`, name: 'Report drawer' })
+        .expect(201);
+      const session = await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/cash-sessions/open`)
+        .send({ registerId: register.body.data.id, currency: fixture.serviceCurrency, openingFloatMinor: 1000 })
+        .expect(201);
+      await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/cash-sessions/${session.body.data.id}/movements`)
+        .send({ type: 'CASH_OUT', amountMinor: 200, reason: 'petty expense' })
+        .expect(201);
+      await authed(testApp, cashier.accessToken)
+        .post(`/v1/organizations/${fixture.organizationId}/cash-sessions/${session.body.data.id}/close`)
+        .send({ countedCashMinor: 750 })
+        .expect(201);
+
+      const response = await authed(testApp, manager.accessToken).get(reportsUrl('cash-reconciliation')).expect(200);
+      const entry = response.body.data.find((e: { cashSessionId: string }) => e.cashSessionId === session.body.data.id);
+      expect(entry).toMatchObject({
+        openingFloatMinor: 1000,
+        cashOutMinor: 200,
+        expectedClosingCashMinor: 800,
+        countedCashMinor: 750,
+        varianceMinor: -50,
+      });
+      const serialized = JSON.stringify(response.body.data).toLowerCase();
+      expect(serialized).not.toMatch(/revenue|settlement/);
+    });
+  });
 });

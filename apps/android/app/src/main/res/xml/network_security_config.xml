@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Base network security policy for every build variant: cleartext HTTP is
+  never permitted. A debug-only override in src/debug/res/xml permits
+  cleartext solely to the Android emulator's host-loopback alias
+  (10.0.2.2) so a local backend can be reached without HTTPS during
+  development; that override never ships in a release build, which
+  therefore always rejects cleartext traffic outright (docs task "API
+  configuration and network security").
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

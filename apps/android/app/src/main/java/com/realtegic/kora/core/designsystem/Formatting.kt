@@ -1,0 +1,62 @@
+package com.realtegic.kora.core.designsystem
+
+import java.math.BigDecimal
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
+import java.util.Currency
+import java.util.Locale
+
+/**
+ * Money is always formatted from an integer minor-units amount plus its
+ * own currency code -- never a Double/Float, and never an assumption
+ * that every currency has 2 fraction digits (docs task Phase 7).
+ * Prefixes with the ISO currency code rather than a locale-guessed
+ * symbol glyph (which the JVM's ICU data may not even have for GHS),
+ * so every amount is unambiguous regardless of device locale.
+ */
+object MoneyFormatter {
+    fun format(amountMinor: Long, currencyCode: String): String {
+        val fractionDigits = runCatching { Currency.getInstance(currencyCode).defaultFractionDigits }
+            .getOrNull()
+            ?.takeIf { it >= 0 }
+            ?: 2
+        val major = BigDecimal(amountMinor).movePointLeft(fractionDigits)
+        return "$currencyCode ${major.toPlainString()}"
+    }
+}
+
+/**
+ * Every availability/appointment timestamp from the API is a UTC ISO
+ * instant; every display here converts it into the *branch's own* IANA
+ * timezone, never the phone's local timezone (docs task Phase 7: "do
+ * not reinterpret UTC timestamps using the phone timezone"). Backed by
+ * `java.time`, which resolves real IANA tzdata transitions (including
+ * DST) correctly without any hand-rolled offset math.
+ */
+object KoraDateTimeFormatter {
+    private val timeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.US)
+    private val dayFormatter = DateTimeFormatter.ofPattern("EEE, MMM d", Locale.US)
+
+    fun formatTime(utcIso: String, ianaTimeZone: String): String =
+        toZoned(utcIso, ianaTimeZone).format(timeFormatter)
+
+    fun formatDay(utcIso: String, ianaTimeZone: String): String =
+        toZoned(utcIso, ianaTimeZone).format(dayFormatter)
+
+    /** e.g. "Thu, Sep 3 at 2:30 PM (Africa/Accra)" -- the explicit zone
+     * suffix removes any ambiguity about which timezone a time is
+     * expressed in, matching "show the branch timezone or location
+     * context where ambiguity exists". */
+    fun formatDayTimeWithZone(utcIso: String, ianaTimeZone: String): String {
+        val zoned = toZoned(utcIso, ianaTimeZone)
+        return "${zoned.format(dayFormatter)} at ${zoned.format(timeFormatter)} ($ianaTimeZone)"
+    }
+
+    fun zoneShortName(ianaTimeZone: String): String =
+        ZoneId.of(ianaTimeZone).getDisplayName(TextStyle.SHORT, Locale.US)
+
+    private fun toZoned(utcIso: String, ianaTimeZone: String) =
+        Instant.parse(utcIso).atZone(ZoneId.of(ianaTimeZone))
+}

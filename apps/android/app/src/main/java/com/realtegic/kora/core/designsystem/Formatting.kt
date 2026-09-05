@@ -1,6 +1,7 @@
 package com.realtegic.kora.core.designsystem
 
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -24,6 +25,35 @@ object MoneyFormatter {
             ?: 2
         val major = BigDecimal(amountMinor).movePointLeft(fractionDigits)
         return "$currencyCode ${major.toPlainString()}"
+    }
+}
+
+/**
+ * The inverse of [MoneyFormatter] for a form field: converts what a
+ * business owner typed as a decimal major-unit string (e.g. "25.50")
+ * into an exact integer minor-units amount for the given currency --
+ * never a Double/Float for the authoritative value itself, only
+ * [BigDecimal] arithmetic (docs task "Money values must use integer
+ * minor units"). Returns `null` for anything that is not a valid
+ * non-negative decimal number.
+ */
+object MoneyParser {
+    fun parseMinorUnits(majorAmountText: String, currencyCode: String): Long? {
+        val amount = try {
+            BigDecimal(majorAmountText.trim())
+        } catch (_: NumberFormatException) {
+            return null
+        }
+        if (amount.signum() < 0) return null
+        val fractionDigits = runCatching { Currency.getInstance(currencyCode).defaultFractionDigits }
+            .getOrNull()
+            ?.takeIf { it >= 0 }
+            ?: 2
+        return try {
+            amount.movePointRight(fractionDigits).setScale(0, RoundingMode.HALF_UP).longValueExact()
+        } catch (_: ArithmeticException) {
+            null
+        }
     }
 }
 

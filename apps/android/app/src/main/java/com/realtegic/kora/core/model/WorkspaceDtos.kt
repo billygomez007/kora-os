@@ -15,6 +15,7 @@ data class WorkspaceOrganizationDto(
     val name: String,
     val slug: String,
     val logoUrl: String?,
+    val defaultCurrency: String,
     val roleCodes: List<String>,
     val permissionCodes: List<String>,
     val accessMode: String,

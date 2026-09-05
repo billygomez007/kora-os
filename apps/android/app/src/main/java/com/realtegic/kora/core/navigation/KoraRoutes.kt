@@ -37,6 +37,12 @@ object KoraRoutes {
     const val CUSTOMER_PROFILE = "customer/profile"
     const val CUSTOMER_FAVORITES = "customer/favorites"
     const val ACCOUNT_SETTINGS = "account/settings"
+    const val ONBOARDING = "onboarding"
+
+    // Invitation deep link -- a top-level route reachable regardless of
+    // current auth state, since the preview itself needs no auth (docs
+    // task "Invitation Deep Link and Acceptance").
+    const val INVITATION_PREVIEW = "invitation/{token}"
 
     // Business graph -- the organizationId is carried as part of the
     // graph's own route pattern (rather than a SavedStateHandle hand-off
@@ -46,6 +52,8 @@ object KoraRoutes {
     // SavedStateHandle-held value down with it.
     const val BUSINESS_GRAPH_PATTERN = "business/{organizationId}"
     const val BUSINESS_DASHBOARD = "business/dashboard"
+    const val BUSINESS_PROFILE = "business/profile"
+    const val BUSINESS_SUBSCRIPTION = "business/subscription"
 
     fun businessDetail(slug: String) = "customer/business/$slug"
     fun branchServices(slug: String, branchId: String) = "customer/business/$slug/branch/$branchId"
@@ -53,4 +61,5 @@ object KoraRoutes {
     fun bookingConfirmation(appointmentId: String) = "customer/booking-confirmation/$appointmentId"
     fun appointmentDetail(appointmentId: String) = "customer/appointments/$appointmentId"
     fun businessGraph(organizationId: String) = "business/$organizationId"
+    fun invitationPreview(token: String) = "invitation/$token"
 }

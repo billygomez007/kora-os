@@ -23,12 +23,32 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:label="@string/app_name"
             android:theme="@style/Theme.Kora">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Staff-invitation deep link, development-only custom
+                 scheme (docs task "Invitation Deep Link and
+                 Acceptance"): kora://invite/{token}. This is
+                 deliberately NOT declared as a verified HTTPS Android
+                 App Link: no production domain or assetlinks.json
+                 exists yet, so android:autoVerify is never set here.
+                 Verified production App Links remain a release
+                 prerequisite (see apps/android/README.md). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:scheme="kora"
+                    android:host="invite" />
             </intent-filter>
         </activity>
     </application>

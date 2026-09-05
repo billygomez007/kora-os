@@ -2,6 +2,7 @@ package com.realtegic.kora.core.network
 
 import com.realtegic.kora.core.model.ApiErrorEnvelope
 import com.realtegic.kora.core.model.ApiSuccessEnvelope
+import com.realtegic.kora.core.model.PageInfo
 import com.squareup.moshi.Moshi
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
@@ -27,6 +28,43 @@ suspend fun <T> safeApiCall(
                 ApiResult.Failure(DomainError.Unknown("Empty response from server."))
             } else {
                 ApiResult.Success(body.data, body.page)
+            }
+        } else {
+            ApiResult.Failure(mapHttpError(response.code(), errorAdapter, response.errorBody()?.string()))
+        }
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (io: IOException) {
+        ApiResult.Failure(DomainError.NetworkUnavailable)
+    } catch (unexpected: Exception) {
+        ApiResult.Failure(DomainError.Unknown(unexpected.message ?: "Something went wrong."))
+    }
+}
+
+/**
+ * Some endpoints' data legitimately may be absent at the JSON level
+ * (e.g. a business profile no organization has configured yet, returned
+ * as `"data": null` rather than a 404) -- Moshi's codegen for the
+ * shared generic [ApiSuccessEnvelope] cannot express a nullable `T` at
+ * one call site (it enforces non-null from the class's own unbound
+ * type-parameter declaration regardless of how a caller instantiates
+ * it), so callers use a concrete, purpose-built envelope class with a
+ * directly nullable `data` field instead of [ApiSuccessEnvelope].
+ */
+suspend fun <TEnvelope, T> safeNullableApiCall(
+    errorAdapter: Moshi,
+    extractData: (TEnvelope) -> T?,
+    extractPage: (TEnvelope) -> PageInfo?,
+    block: suspend () -> Response<TEnvelope>,
+): ApiResult<T?> {
+    return try {
+        val response = block()
+        if (response.isSuccessful) {
+            val body = response.body()
+            if (body == null) {
+                ApiResult.Failure(DomainError.Unknown("Empty response from server."))
+            } else {
+                ApiResult.Success(extractData(body), extractPage(body))
             }
         } else {
             ApiResult.Failure(mapHttpError(response.code(), errorAdapter, response.errorBody()?.string()))

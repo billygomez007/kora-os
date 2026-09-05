@@ -132,6 +132,7 @@ class ScreenshotTests {
                         name = "Urban Crown Salon",
                         slug = "urban-crown",
                         logoUrl = null,
+                        defaultCurrency = "GHS",
                         roleCodes = listOf("owner"),
                         permissionCodes = emptyList(),
                         accessMode = "FULL",
@@ -145,7 +146,7 @@ class ScreenshotTests {
 
         composeRule.setContent {
             KoraTheme {
-                WorkspaceChooserScreen(viewModel = viewModel, onCustomerSelected = {}, onOrganizationSelected = {})
+                WorkspaceChooserScreen(viewModel = viewModel, onCustomerSelected = {}, onOrganizationSelected = {}, onCreateBusiness = {})
             }
         }
 

@@ -25,8 +25,13 @@ import com.realtegic.kora.feature.auth.OtpVerifyScreen
 import com.realtegic.kora.feature.auth.SplashScreen
 import com.realtegic.kora.feature.auth.SplashViewModel
 import com.realtegic.kora.feature.auth.WelcomeScreen
-import com.realtegic.kora.feature.business.dashboard.BusinessDashboardScreen
-import com.realtegic.kora.feature.business.dashboard.BusinessDashboardViewModel
+import com.realtegic.kora.feature.business.dashboard.BusinessHomeScreen
+import com.realtegic.kora.feature.business.onboarding.OnboardingScreen
+import com.realtegic.kora.feature.business.onboarding.OnboardingViewModel
+import com.realtegic.kora.feature.business.profile.BusinessProfileScreen
+import com.realtegic.kora.feature.business.profile.BusinessProfileViewModel
+import com.realtegic.kora.feature.business.subscription.SubscriptionScreen
+import com.realtegic.kora.feature.business.subscription.SubscriptionViewModel
 import com.realtegic.kora.feature.customer.appointments.AppointmentDetailScreen
 import com.realtegic.kora.feature.customer.appointments.AppointmentDetailViewModel
 import com.realtegic.kora.feature.customer.appointments.AppointmentsListScreen
@@ -48,6 +53,8 @@ import com.realtegic.kora.feature.customer.profile.FavoritesScreen
 import com.realtegic.kora.feature.customer.profile.FavoritesViewModel
 import com.realtegic.kora.feature.customer.profile.ProfileScreen
 import com.realtegic.kora.feature.customer.profile.ProfileViewModel
+import com.realtegic.kora.feature.invitation.InvitationScreen
+import com.realtegic.kora.feature.invitation.InvitationViewModel
 import com.realtegic.kora.feature.workspace.WorkspaceChooserScreen
 import com.realtegic.kora.feature.workspace.WorkspaceDecision
 import com.realtegic.kora.feature.workspace.WorkspaceViewModel
@@ -59,6 +66,23 @@ import kotlinx.coroutines.launch
 fun KoraNavHost(container: AppContainer) {
     val navController = rememberNavController()
 
+    // A staff-invitation deep link takes priority over normal session
+    // routing regardless of when it arrives -- a cold start (this runs
+    // before Splash's own session-restoration effect resolves, since
+    // reading the in-memory token is synchronous) or a warm start (the
+    // app already running, a new intent updates this same observed
+    // state) both land here (docs task "Invitation Deep Link and
+    // Acceptance"). `popUpTo(SPLASH)` is a safe no-op when Splash is not
+    // on the back stack (the warm-start case).
+    val pendingInvitationToken by container.pendingInvitationToken
+    LaunchedEffect(pendingInvitationToken) {
+        pendingInvitationToken?.let { token ->
+            navController.navigate(KoraRoutes.invitationPreview(token)) {
+                popUpTo(KoraRoutes.SPLASH) { inclusive = true }
+            }
+        }
+    }
+
     NavHost(navController = navController, startDestination = KoraRoutes.SPLASH) {
         composable(KoraRoutes.SPLASH) {
             val splashViewModel = koraViewModel { SplashViewModel(container.authRepository) }
@@ -66,6 +90,7 @@ fun KoraNavHost(container: AppContainer) {
             SplashScreen(splashViewModel)
 
             LaunchedEffect(sessionState) {
+                if (container.pendingInvitationToken.value != null) return@LaunchedEffect
                 when (sessionState) {
                     is SessionState.SignedIn -> resolveAndNavigate(navController, container, popSplash = true)
                     SessionState.SignedOut -> navController.navigate(KoraRoutes.AUTH_GRAPH) {
@@ -80,6 +105,8 @@ fun KoraNavHost(container: AppContainer) {
         workspaceGraph(navController, container)
         customerGraph(navController, container)
         businessGraph(navController, container)
+        onboardingGraph(navController, container)
+        invitationGraph(navController, container)
     }
 }
 
@@ -157,7 +184,24 @@ private fun NavGraphBuilder.authGraph(navController: NavHostController, containe
                 authViewModel,
                 onBack = { navController.popBackStack() },
                 onSignedIn = {
-                    coroutineScope.launch { resolveAndNavigate(navController, container, popSplash = false) }
+                    coroutineScope.launch {
+                        // A pending staff-invitation deep link takes
+                        // priority over the normal post-sign-in
+                        // workspace decision -- the user came here only
+                        // because they tapped "Sign in to accept" from
+                        // the invitation screen (docs task "Invitation
+                        // Deep Link and Acceptance": "after
+                        // authentication, return to the invitation").
+                        val token = container.pendingInvitationToken.value
+                        if (token != null) {
+                            navController.navigate(KoraRoutes.invitationPreview(token)) {
+                                popUpTo(KoraRoutes.AUTH_GRAPH) { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        } else {
+                            resolveAndNavigate(navController, container, popSplash = false)
+                        }
+                    }
                 },
             )
         }
@@ -182,6 +226,7 @@ private fun NavGraphBuilder.workspaceGraph(navController: NavHostController, con
                 viewModel = viewModel,
                 onCustomerSelected = { navigateToCustomerHome(navController, popSplash = false) },
                 onOrganizationSelected = { organizationId -> navigateToBusiness(navController, organizationId, popSplash = false) },
+                onCreateBusiness = { navController.navigate(KoraRoutes.ONBOARDING) },
             )
         }
     }
@@ -302,6 +347,7 @@ private fun NavGraphBuilder.customerGraph(navController: NavHostController, cont
                 onSwitchWorkspace = {
                     navController.navigate(KoraRoutes.WORKSPACE_GRAPH) { popUpTo(KoraRoutes.CUSTOMER_GRAPH) { inclusive = true } }
                 },
+                onCreateBusiness = { navController.navigate(KoraRoutes.ONBOARDING) },
                 onSignedOut = { navigateToSignedOut(navController) },
             )
         }
@@ -334,14 +380,93 @@ private fun NavGraphBuilder.businessGraph(navController: NavHostController, cont
             val organizationId = remember(backStackEntry) {
                 navController.getBackStackEntry(KoraRoutes.BUSINESS_GRAPH_PATTERN).arguments?.getString("organizationId").orEmpty()
             }
-            val viewModel = koraViewModel { BusinessDashboardViewModel(organizationId, container.workspacesRepository, container.reportsRepository) }
-            BusinessDashboardScreen(
-                viewModel = viewModel,
+            BusinessHomeScreen(
+                organizationId = organizationId,
+                workspacesRepository = container.workspacesRepository,
+                reportsRepository = container.reportsRepository,
+                organizationsRepository = container.organizationsRepository,
+                serviceCatalogueRepository = container.serviceCatalogueRepository,
+                schedulingRepository = container.schedulingRepository,
+                staffRepository = container.staffRepository,
+                subscriptionRepository = container.subscriptionRepository,
                 onSwitchWorkspace = {
                     navController.navigate(KoraRoutes.WORKSPACE_GRAPH) { popUpTo(KoraRoutes.BUSINESS_GRAPH_PATTERN) { inclusive = true } }
                 },
+                onSubscription = { navController.navigate(KoraRoutes.BUSINESS_SUBSCRIPTION) },
+                onBusinessProfile = { navController.navigate(KoraRoutes.BUSINESS_PROFILE) },
             )
         }
+        composable(KoraRoutes.BUSINESS_PROFILE) { backStackEntry ->
+            val organizationId = remember(backStackEntry) {
+                navController.getBackStackEntry(KoraRoutes.BUSINESS_GRAPH_PATTERN).arguments?.getString("organizationId").orEmpty()
+            }
+            val viewModel = koraViewModel { BusinessProfileViewModel(organizationId, container.businessProfileRepository) }
+            BusinessProfileScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+        }
+        composable(KoraRoutes.BUSINESS_SUBSCRIPTION) { backStackEntry ->
+            val organizationId = remember(backStackEntry) {
+                navController.getBackStackEntry(KoraRoutes.BUSINESS_GRAPH_PATTERN).arguments?.getString("organizationId").orEmpty()
+            }
+            val viewModel = koraViewModel { SubscriptionViewModel(organizationId, container.subscriptionRepository) }
+            SubscriptionScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+        }
+    }
+}
+
+private fun NavGraphBuilder.onboardingGraph(navController: NavHostController, container: AppContainer) {
+    composable(KoraRoutes.ONBOARDING) {
+        val viewModel = koraViewModel {
+            OnboardingViewModel(
+                container.organizationsRepository,
+                container.serviceCatalogueRepository,
+                container.schedulingRepository,
+                container.staffRepository,
+                container.localPreferences,
+            )
+        }
+        val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+        val state by viewModel.state.collectAsState()
+        OnboardingScreen(
+            viewModel = viewModel,
+            onBack = { navController.popBackStack() },
+            onDone = {
+                val organizationId = state.organizationId
+                if (organizationId != null) {
+                    coroutineScope.launch {
+                        container.localPreferences.setSelectedOrganizationWorkspace(organizationId)
+                        navController.navigate(KoraRoutes.businessGraph(organizationId)) {
+                            popUpTo(KoraRoutes.ONBOARDING) { inclusive = true }
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
+
+private fun NavGraphBuilder.invitationGraph(navController: NavHostController, container: AppContainer) {
+    composable(
+        KoraRoutes.INVITATION_PREVIEW,
+        arguments = listOf(navArgument("token") { type = androidx.navigation.NavType.StringType }),
+    ) { backStackEntry ->
+        val token = backStackEntry.arguments?.getString("token").orEmpty()
+        val viewModel = koraViewModel { InvitationViewModel(token, container.staffRepository, container.authRepository) }
+        val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+        InvitationScreen(
+            viewModel = viewModel,
+            onSignInRequested = { navController.navigate(KoraRoutes.AUTH_GRAPH) },
+            onAccepted = { organizationId ->
+                container.pendingInvitationToken.value = null
+                coroutineScope.launch {
+                    container.localPreferences.setSelectedOrganizationWorkspace(organizationId)
+                    navigateToBusiness(navController, organizationId, popSplash = false)
+                }
+            },
+            onDone = {
+                container.pendingInvitationToken.value = null
+                navController.popBackStack()
+            },
+        )
     }
 }
 

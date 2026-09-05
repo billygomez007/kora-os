@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -29,6 +30,7 @@ fun ProfileScreen(
     onFavorites: () -> Unit,
     onAccountSettings: () -> Unit,
     onSwitchWorkspace: () -> Unit,
+    onCreateBusiness: () -> Unit,
     onSignedOut: () -> Unit,
 ) {
     val sessionState by viewModel.sessionState.collectAsState()
@@ -56,6 +58,11 @@ fun ProfileScreen(
                 headlineContent = { Text("Account & sessions") },
                 leadingContent = { Icon(Icons.Default.ManageAccounts, contentDescription = null) },
                 modifier = Modifier.fillMaxWidth().clickable(onClick = onAccountSettings),
+            )
+            ListItem(
+                headlineContent = { Text("Create a business") },
+                leadingContent = { Icon(Icons.Default.Add, contentDescription = null) },
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onCreateBusiness),
             )
             HorizontalDivider()
             ListItem(

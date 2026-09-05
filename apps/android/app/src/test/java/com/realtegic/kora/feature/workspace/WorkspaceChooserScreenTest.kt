@@ -36,6 +36,7 @@ private fun org(id: String, name: String) = WorkspaceOrganizationDto(
     name = name,
     slug = id,
     logoUrl = null,
+    defaultCurrency = "GHS",
     roleCodes = listOf("owner"),
     permissionCodes = emptyList(),
     accessMode = "FULL",
@@ -76,6 +77,7 @@ class WorkspaceChooserScreenTest {
                     viewModel = viewModel,
                     onCustomerSelected = {},
                     onOrganizationSelected = { selectedOrganizationId = it },
+                    onCreateBusiness = {},
                 )
             }
         }

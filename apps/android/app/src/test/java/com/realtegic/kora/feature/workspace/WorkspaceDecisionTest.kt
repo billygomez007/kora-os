@@ -13,6 +13,7 @@ class WorkspaceDecisionTest {
         name = "Org $id",
         slug = "org-$id",
         logoUrl = null,
+        defaultCurrency = "GHS",
         roleCodes = listOf("owner"),
         permissionCodes = emptyList(),
         accessMode = "FULL",

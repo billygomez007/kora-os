@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material3.Card
@@ -40,6 +41,7 @@ fun WorkspaceChooserScreen(
     viewModel: WorkspaceViewModel,
     onCustomerSelected: () -> Unit,
     onOrganizationSelected: (String) -> Unit,
+    onCreateBusiness: () -> Unit,
 ) {
     val screenState by viewModel.state.collectAsState()
 
@@ -56,7 +58,13 @@ fun WorkspaceChooserScreen(
                 is ScreenState.Content -> {
                     val workspaces = state.data
                     if (workspaces.organizations.isEmpty() && !workspaces.customerWorkspaceAvailable) {
-                        EmptyStateView(title = "No workspaces available", subtitle = "Contact your organization owner for access.")
+                        EmptyStateView(
+                            title = "No workspaces available",
+                            subtitle = "Contact your organization owner for access, or create your own business.",
+                            action = {
+                                WorkspaceCard(title = "Create a business", subtitle = "Set up your own Kora workspace", icon = Icons.Default.Add, onClick = onCreateBusiness)
+                            },
+                        )
                     } else {
                         LazyColumn(
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -79,6 +87,9 @@ fun WorkspaceChooserScreen(
                                     icon = Icons.Default.Store,
                                     onClick = { viewModel.selectOrganization(org.organizationId) { onOrganizationSelected(org.organizationId) } },
                                 )
+                            }
+                            item {
+                                WorkspaceCard(title = "Create a business", subtitle = "Set up another Kora workspace", icon = Icons.Default.Add, onClick = onCreateBusiness)
                             }
                         }
                     }

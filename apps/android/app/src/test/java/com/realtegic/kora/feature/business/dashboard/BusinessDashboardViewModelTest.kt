@@ -51,6 +51,7 @@ private fun org(
     name = "Urban Crown Salon",
     slug = "urban-crown",
     logoUrl = null,
+    defaultCurrency = "GHS",
     roleCodes = listOf("owner"),
     permissionCodes = permissionCodes,
     accessMode = accessMode,

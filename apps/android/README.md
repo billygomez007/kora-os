@@ -6,10 +6,11 @@ prototype or demo. It preserves the existing Google Play
 `applicationId` (`com.aistudio.chairside.ksghna`) for update continuity
 and the Kotlin namespace `com.realtegic.kora`.
 
-Status: first production integration stage. See docs/ROADMAP.md,
-docs/ARCHITECTURE.md section 23, and docs/SECURITY.md section 36 (all
-in the repository root) for the full design record. This README covers
-what a developer needs to build, run, and test the app locally.
+Status: second production integration stage. See docs/ROADMAP.md,
+docs/ARCHITECTURE.md sections 23-24, and docs/SECURITY.md sections
+36-38 (all in the repository root) for the full design record. This
+README covers what a developer needs to build, run, and test the app
+locally.
 
 ## What works today
 
@@ -23,16 +24,30 @@ what a developer needs to build, run, and test the app locally.
 - Customer appointment management: list, detail, cancel, reschedule.
 - Customer favorites.
 - Secure workspace selection between the customer workspace and one or
-  more business workspaces, and an initial business dashboard (org
-  identity, role names, subscription-access state, and an overview
-  report for a membership holding `reports.read`).
+  more business workspaces, and a subscription-aware, permission-driven
+  business workspace (Overview/Setup/Services/Team/More).
+- A resumable business-onboarding wizard: an owner creates a business
+  (organization + first branch + trial subscription, one idempotent
+  atomic call), adds services, sets weekly business hours, and
+  optionally invites staff — reopening mid-setup revalidates against
+  the server's own setup-status rather than trusting local progress.
+- Post-onboarding business-profile (visibility, publish/unpublish),
+  service-catalogue (create/archive), and business-hours management.
+- The full staff-invitation lifecycle: create an invitation (role +
+  optional branch), get a one-time share link (Copy/Share — no
+  automated delivery yet), team directory, pending-invitation list,
+  revoke, and deep-link acceptance (`kora://invite/{token}`) with
+  email-verification-on-accept.
 
 ## What is intentionally not connected yet
 
 Queue commands, service-session commands, checkout, payment recording
 or verification, refunds, cash-session operations, commission
-management, and receipt management are not reachable from Android in
-this stage — see docs/ROADMAP.md for why, and where they land next. No
+management, receipt management, branch-service price/duration
+overrides, staff-service assignment, schedule exceptions, booking
+policy, staff availability rules/exceptions, invitation resend/reissue,
+and custom-role management are not reachable from Android in this
+stage — see docs/ROADMAP.md for why, and where they land next. No
 screen represents any of those as an available action.
 
 There is no fake AI voice/microphone button anywhere in the app.
@@ -70,7 +85,15 @@ feature/
   customer/booking/           availability + booking wizard
   customer/appointments/      list, detail, cancel, reschedule
   customer/profile/           profile, account settings, favorites
-  business/dashboard/         initial business workspace dashboard
+  business/dashboard/         subscription-aware business home + bottom nav
+  business/onboarding/        resumable owner onboarding wizard
+  business/profile/           business-profile visibility + publish
+  business/services/          service catalogue create/archive
+  business/schedule/          weekly business-hours editor
+  business/team/              team directory, pending invitations, invite sheet
+  business/setup/             setup-progress checklist
+  business/subscription/      plan/trial/usage (read-only, no billing)
+  invitation/                 invitation deep-link preview + accept/reject
 ui/theme/                     the existing Kora visual system (kept
                                unchanged from before this stage)
 ```
@@ -170,6 +193,30 @@ never read from a runtime-editable setting.
   themselves — so a failing refresh call can never trigger another
   refresh. See docs/SECURITY.md section 36 for the full model.
 
+## Staff invitation deep link
+
+`kora://invite/{token}` is registered as a custom-scheme deep link
+(`AndroidManifest.xml`) — a **development-only scheme, not a verified
+HTTPS Android App Link**. No production domain or hosted
+`assetlinks.json` exists yet, so Android cannot cryptographically
+confirm this app is the legitimate handler for it the way a verified
+`https://` App Link would; shipping a verified App Link is a release
+prerequisite (docs/SECURITY.md section 38). `MainActivity` uses
+`android:launchMode="singleTop"` with an `onNewIntent` override so a
+warm-start deep link updates the running app rather than spawning a
+second Activity instance. The token itself is the real security
+boundary regardless of the scheme (high-entropy, single-use,
+server-validated, hashed at rest) — it lives only in an in-memory
+Compose state, is never logged, and is cleared on every terminal
+outcome. To test it locally against a real invitation created through
+the app or the API:
+
+```bash
+adb shell am start -a android.intent.action.VIEW \
+  -d "kora://invite/<raw-token-from-the-create-response>" \
+  com.aistudio.chairside.ksghna
+```
+
 ## Passwordless email OTP and local testing
 
 Kora OS has no password authentication anywhere, on any platform. Sign-in
@@ -226,13 +273,24 @@ invalidation; discovery search debounce and genuine mid-flight
 cancellation; money formatting; branch-timezone conversion; the stable
 booking idempotency key (including "never a fresh key per HTTP retry"
 and "a slot conflict forces a fresh key"); appointment cancel/reschedule
-without client-side eligibility checks; favorites isolation; and
-READ_ONLY/BLOCKED business-dashboard states. Compose UI tests cover the
-OTP entry screen, the customer home screen, and the workspace chooser.
-Screenshot captures exist for the customer home screen and the
+without client-side eligibility checks; favorites isolation;
+READ_ONLY/BLOCKED business-dashboard states; money-string parsing to
+integer minor units without floating point; the organization-creation
+idempotency key (stable across a snapshot-unchanged retry, refreshed
+only on a slug conflict, and a duplicate-tap guard verified with a
+held-open fake network call); and the invitation-preview/accept/reject
+flow (loads regardless of auth state, a 403 on accept surfaces as a
+specific email-mismatch state rather than a generic error, and an
+already-expired invitation renders as terminal). Compose UI tests cover
+the OTP entry screen, the customer home screen, and the workspace
+chooser. Screenshot captures exist for the customer home screen and the
 workspace chooser, reviewed manually for clipping, color, the logo, and
 label correctness — they are visual-review captures on every run, not
 yet a pixel-diff regression gate against a committed golden image.
+Dedicated Compose UI and screenshot coverage for the onboarding wizard,
+business-profile/services/hours/team screens, and the invitation screen
+itself does not exist yet — only their ViewModels are unit-tested; this
+is a known gap, not a silent omission.
 
 **A genuine Android Keystore does not exist inside a plain-JVM
 Robolectric test.** Tests that need to prove `TokenStore`'s own logic
@@ -259,6 +317,20 @@ repository — set one up in Android Studio's Device Manager first.
 
 - Full business-operation mobile integration (queue, service sessions,
   checkout, payments, refunds, cash sessions, commissions, receipts).
+- Branch-service price/duration overrides, staff-service assignment,
+  schedule exceptions, booking policy, and staff availability
+  rules/exceptions — all backend-ready, none built into an Android
+  screen this stage.
+- Full branch CRUD (only the onboarding-created primary branch exists
+  per organization; the new branches-list endpoint is read-only).
+- Invitation resend/reissue (the backend does not support it either)
+  and custom-role creation.
+- A verified HTTPS Android App Link for the invitation deep link
+  (currently a development-only custom scheme) and automated
+  invitation-email delivery (currently Copy/Share only).
+- Compose UI and screenshot tests for the new onboarding/business-
+  management/invitation screens (ViewModel-level tests exist; screen-
+  level tests do not yet).
 - iOS (a future stage, sharing the same backend contracts).
 - Push notifications and offline/background synchronization.
 - Voice/AI-assisted discovery (no fake or placeholder UI exists for

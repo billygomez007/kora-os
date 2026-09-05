@@ -325,6 +325,45 @@ dedicated tenant/security e2e suites
 (`test/workspaces.e2e-spec.ts`, `test/favorites.e2e-spec.ts`). See
 `docs/API_SPEC.md` sections 31-32 and `docs/SECURITY.md` section 36.
 
+## Business onboarding and staff invitations in one paragraph
+
+`POST /v1/organizations` requires an `Idempotency-Key` header and
+atomically creates the organization, owner membership, first branch,
+and trial subscription in one transaction
+(`OnboardingService.onboardOrganization`) — a pre-check against a
+per-owner-user `OrganizationIdempotencyKey` row plus a reactive catch
+of the same unique-constraint violation inside the transaction mean a
+retried request replays the original result rather than creating a
+second business, and a genuinely different payload reusing the same
+key gets `409 IDEMPOTENCY_CONFLICT`. `GET
+.../organizations/:organizationId/setup-status` computes seven
+booleans purely from current database state (branch/profile/service/
+hours/invitation existence) so a mobile client can safely resume an
+interrupted setup without trusting anything it remembered locally; the
+new `GET .../branches` (read-only, non-archived branches only — no
+branch CRUD exists) exists solely so a client can resolve a branch id
+after a resume, which nothing else exposed. Staff invitations
+(`staff.invite`, `POST .../staff-invitations`) can no longer grant the
+`owner` role (`403 OWNER_ROLE_NOT_INVITABLE` — a real
+privilege-escalation gap closed this stage), and the whole creation
+runs inside a transaction that row-locks the organization's
+subscription before counting ACTIVE memberships plus PENDING
+invitations against its `staff.max` entitlement, so two concurrent
+invitations against a plan with one remaining seat can no longer both
+succeed (`409 STAFF_LIMIT_REACHED` otherwise). `GET
+.../staff-invitations/assignable-roles` lists every invitable role
+except `owner`; `GET .../staff-invitations` lists every invitation
+(any status, never the token hash); `GET .../staff` is a new team
+directory built from `OrganizationMembership` (not `StaffProfile`,
+since an owner has no `StaffProfile` row); `GET .../subscription`
+returns plan/status/trial/entitlement-usage, computed fresh on every
+call — no invented prices, no billing. The invitation-accept contract
+itself (`GET/POST /v1/staff-invitations/:token/preview|accept|reject`)
+predates this stage and is unchanged; only an authenticated user whose
+email exactly matches the invitation may accept it. See
+`docs/API_SPEC.md` section 33 and `docs/SECURITY.md` sections 37-38
+for the full model.
+
 ## Useful root-level scripts
 
 Run from the repository root (see the root `package.json` for the full

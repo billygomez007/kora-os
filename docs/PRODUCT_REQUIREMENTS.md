@@ -25,19 +25,40 @@ can expand beyond salons and barbershops.
 - PostgreSQL database with strict organization isolation.
 - Push and in-app notifications for important events.
 
-The Android application now genuinely calls this backend for one
+The Android application now genuinely calls this backend for a
 complete customer-facing vertical slice — passwordless email OTP sign-in,
 session restoration, a real customer home screen with branded search and
 discovery, business/branch/service browsing, real availability, atomic
 appointment booking with a stable idempotency key, and appointment
 management (list, detail, cancel, reschedule) — plus secure workspace
-selection (customer vs. one or more businesses) and an initial,
-permission-gated business dashboard (org/branch identity, role names,
-subscription-access state, and an overview report only for a membership
-holding `reports.read`). Queue, service-session, checkout, payment,
-refund, cash-session, and commission operations are not yet reachable
-from Android; they remain the next Android integration stage
-(docs/ROADMAP.md).
+selection (customer vs. one or more businesses).
+
+A second vertical slice now covers business owner onboarding and the
+early workforce lifecycle: a genuine new owner can create a business
+(organization + first branch + trial subscription, one idempotent
+atomic call), add services, set weekly business hours, optionally
+invite staff, and reach a real, permission-gated business workspace —
+without any database seed or terminal command. The resumable
+onboarding wizard revalidates against the server's own
+`GET .../setup-status` on every reopen rather than trusting local
+progress. Post-onboarding, an owner or manager can manage the business
+profile (visibility, publish/unpublish), the service catalogue
+(create/archive), weekly business hours, and the team (pending
+invitations, directory, revoke) from a permission-driven business
+navigation. Staff invitation is a full loop: the owner gets a one-time
+`kora://invite/{token}` link (no automated delivery yet — Copy/Share
+is the only distribution mechanism this stage), a staff member opens
+it, sees a safe preview regardless of auth state, verifies the invited
+email via the same passwordless OTP flow if needed, and can only
+accept if their authenticated email matches the invitation exactly.
+Subscription state (plan, trial, branch/staff usage vs. entitlement)
+is visible read-only; no checkout or billing exists in the app.
+
+Queue, service-session, checkout, payment, refund, cash-session, and
+commission operations, branch-service price/duration overrides,
+staff-service assignment, schedule exceptions, booking policy, and
+staff availability rules are still not reachable from Android; they
+remain future Android integration stages (docs/ROADMAP.md).
 
 ### Future
 
@@ -112,6 +133,12 @@ enforced server-side (docs/SECURITY.md section 32).
 Appointments, service sessions, transactions, and payments are separate
 records. A walk-in can exist without an appointment, and an appointment may
 never result in a payment.
+
+Steps 1-3 (organization/branch creation, trial subscription, staff
+invitation with branch/role assignment) are now reachable end-to-end
+from the Android application itself, not only through the API
+directly; steps 4 onward remain API-only from a mobile client's
+perspective until their own Android integration stage.
 
 ## 5. V1 requirements
 

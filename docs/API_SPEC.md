@@ -1105,3 +1105,111 @@ matching how a first booking already does). Favorites are strictly
 per-customer: one customer's favorites are never visible to, or
 affected by, another's, and never cross into business-workspace data.
 Covered by `apps/api/test/favorites.e2e-spec.ts`.
+
+## 33. Business onboarding contract, setup status, and staff-invitation security
+
+Added for the second Android business-side integration stage
+(docs/ROADMAP.md): a resumable onboarding contract, plus closing real
+gaps found while building the mobile client against it.
+
+**`POST /v1/organizations` now requires an `Idempotency-Key` header**
+(400 if missing) — this endpoint is the entry point to
+`OnboardingService.onboardOrganization`, which atomically creates the
+organization, owner membership, first branch, and trial subscription
+in one transaction. A pre-check (`findUnique` by `[ownerUserId,
+idempotencyKey]`) plus a reactive catch of the unique-constraint
+violation inside the transaction both defer to a shared
+replay-or-conflict routine: an identical retry (same fingerprint of
+the semantically-relevant request fields) replays the original
+201/200 result; a *different* payload reusing the same key is rejected
+with `409 IDEMPOTENCY_CONFLICT`. A slug collision is mapped to a clean
+`409 ORGANIZATION_SLUG_TAKEN` rather than an unhandled 500. Scoped per
+owner user (`OrganizationIdempotencyKey`), not per-organization, since
+no organization exists yet on the first attempt.
+
+**`GET /v1/organizations/:organizationId/setup-status`** (any active
+membership, no specific permission) computes seven booleans purely
+from current database state — never from anything the client claims:
+`organizationCreated` (always true), `firstBranchCreated`,
+`businessProfileConfigured`, `serviceCreated` (non-archived count > 0),
+`branchHoursConfigured`, `staffInvitationSent` (any invitation, any
+status), `profilePublicationEligible` (mirrors
+`BusinessProfileService`'s actual publish prerequisite: a profile row
+exists and at least one branch is discoverable). This is the sole
+authority a resumed mobile onboarding session may trust.
+
+**`GET /v1/organizations/:organizationId/branches`** (any active
+membership) lists non-archived branches as `{id, organizationId, name,
+code, countryCode, timeZone, currency, status}`. Read-only — this is
+*not* the branch CRUD contract section 10 describes (that remains
+unimplemented; only the onboarding-created primary branch exists per
+organization). Added specifically because no other endpoint lets a
+client resolve a branch id after the fact, which had silently broken
+Android's resumed-session business-hours save and staff-invitation
+branch assignment (docs/ARCHITECTURE.md section 24).
+
+**Staff invitations can no longer grant the `owner` role.**
+`StaffInvitationService.create()` now throws `403
+OWNER_ROLE_NOT_INVITABLE` for `role.code === 'owner'` — previously any
+membership holding `staff.invite` could invite someone directly as
+owner, a real, previously-unguarded privilege-escalation gap
+(docs/SECURITY.md section 37). Ownership transfer remains a distinct,
+unimplemented future workflow.
+
+**Staff invitation creation is now transactional and enforces the
+subscription's staff entitlement atomically under concurrent
+requests.** The whole `create()` body runs inside `$transaction`,
+row-locking the organization's subscription
+(`SELECT ... FOR UPDATE`) before counting ACTIVE memberships plus
+PENDING invitations against `EntitlementsService`'s resolved `staff.max`
+for that same transaction — two concurrent invitation requests against
+a plan with one remaining seat can no longer both succeed. Returns
+`409 STAFF_LIMIT_REACHED` when exceeded (not 403, so the client's
+generic-Conflict path surfaces the specific server message rather than
+a misleading permission error).
+
+**`GET /v1/organizations/:organizationId/staff-invitations/assignable-roles`**
+(`staff.invite`) lists every invitable role (system roles plus any
+org-specific custom role) *except* `owner`, as `{id, code, name}[]` —
+added because no endpoint previously let a client resolve a role's
+database-generated id from its code.
+
+**`GET /v1/organizations/:organizationId/staff-invitations`**
+(`staff.read`, optional `?status=` filter) lists every invitation
+regardless of status as `{id, email, phone, roleId, roleName, roleCode,
+branchId, branchName, status, expiresAt, createdAt}` — the token hash
+is never included.
+
+**`GET /v1/organizations/:organizationId/staff`** (`staff.read`) is a
+new team-directory endpoint built from `OrganizationMembership` (not
+`StaffProfile`), since an owner — created through onboarding, not
+invitation — has no `StaffProfile` row but does have real role and
+branch assignments. Only `ACTIVE`/`SUSPENDED` memberships are included;
+`REMOVED` is excluded. Response per entry: `{membershipId, displayName,
+status, roleNames[], branches[], services[]}` — no OTP data, session
+tokens, audit metadata, other staff's earnings, or invitation tokens.
+
+**`GET /v1/organizations/:organizationId/subscription`**
+(`subscriptions.read`) returns `{planCode, planName, status,
+accessMode, trialEndsAt, currentPeriodEndsAt, entitlements,
+usage: {branchesUsed, branchesMax, staffUsed, staffMax}}`, computed
+fresh on every call — no invented prices, no checkout, no payment
+fields.
+
+**`defaultCurrency` was added to the safe workspace projection**
+(section 31) — a small, additive, non-sensitive field (the
+organization's own already-stored default currency) so the Android
+Services tab never has to guess a currency before a separate
+`OrganizationDto` fetch completes.
+
+The invitation-acceptance contract itself (`GET/POST .../invitations/
+:token/preview|accept|reject` — already implemented before this stage)
+is unchanged; see docs/SECURITY.md sections 37-38 for the security
+properties Android's deep-link flow depends on and verified against a
+running backend.
+
+Covered by `apps/api/test/organizations-and-invitations.e2e-spec.ts`
+(idempotency, setup-status, assignable-roles, OWNER-role block,
+staff-limit including a concurrent-request test, invitation listing,
+team directory, subscription detail) and
+`apps/api/test/onboarding.e2e-spec.ts`.

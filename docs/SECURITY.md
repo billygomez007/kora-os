@@ -1304,3 +1304,133 @@ available, and the business dashboard calls the reports endpoint at all
 only for a membership that already holds `reports.read` — a membership
 without it never triggers that network call, so there is no `403`
 response for that case to even occur.
+
+## 37. Business onboarding, entitlement, and privilege-escalation fixes
+
+Found and closed while building the second Android business-side
+integration stage (docs/ROADMAP.md, docs/API_SPEC.md section 33).
+
+**A real privilege-escalation gap: any membership holding
+`staff.invite` could invite a new staff member directly as `owner`.**
+Ownership was never meant to be grantable through the ordinary
+staff-invitation path — it is meant to be a distinct, deliberately
+unimplemented future transfer workflow. `StaffInvitationService.create()`
+now throws `403 OWNER_ROLE_NOT_INVITABLE` for `role.code === 'owner'`
+before any other work happens, and the new
+`GET .../staff-invitations/assignable-roles` endpoint excludes `owner`
+from the list a client would even present. Covered by a dedicated e2e
+test asserting the 403 and that no invitation row is created.
+
+**Staff entitlement limits are now enforced atomically under
+concurrency, not just checked-then-written.** Invitation creation
+previously counted active memberships and pending invitations, compared
+against the subscription's `staff.max` entitlement, and then wrote the
+new row — three separate steps with no lock between them, so two
+concurrent requests against a plan with exactly one remaining seat
+could both pass the count check before either write landed, exceeding
+the entitlement. The entire `create()` body now runs inside one
+`$transaction` that row-locks the organization's subscription
+(`SELECT id FROM organization_subscriptions WHERE organization_id = ...
+FOR UPDATE`) before counting and comparing, using
+`EntitlementsService.resolveForOrganization(organizationId, tx)`
+against the *same* transaction client so the count is read consistently
+with the lock. Exceeding the limit returns `409 STAFF_LIMIT_REACHED`.
+Verified directly with a test that fires two concurrent invitation
+requests against a dedicated test plan with a 2-seat staff limit and
+asserts exactly one succeeds — not merely that a sequential check
+works.
+
+**Organization creation is idempotent under retry and under genuine
+concurrency, following the same pattern payments/checkout/corrections
+already established, not a new one.** A required `Idempotency-Key`
+header, a pre-check against a per-owner-user
+`OrganizationIdempotencyKey` row, and a reactive catch of the
+underlying unique-constraint violation inside the same transaction
+together mean a network-retried "create business" request can never
+create two organizations, two owner memberships, two trial
+subscriptions, or two first branches — and a genuinely different
+payload attempting to reuse an old key is rejected
+(`409 IDEMPOTENCY_CONFLICT`) rather than silently returning stale data
+or silently succeeding twice.
+
+**The new `GET .../branches` endpoint (docs/API_SPEC.md section 33) is
+deliberately minimal and read-only, not a reopening of branch
+management.** It requires only the same active-membership check every
+bare organization-detail route already requires (`TenantAccessGuard`,
+no additional permission), returns only branch identity fields already
+non-sensitive elsewhere (`BranchDto`'s existing shape), and excludes
+archived branches. It exists solely to let a client resolve a branch id
+after the fact; it does not create, update, or archive anything, and
+full branch CRUD remains explicitly out of scope.
+
+## 38. Staff invitation deep link and acceptance security (Android)
+
+The invitation-accept API contract itself
+(`GET/POST /v1/staff-invitations/:token/preview|accept|reject`) already
+existed before this stage and is unchanged; what is new is the Android
+client that consumes it through a deep link, and the verification that
+its core security property holds end to end against the real backend.
+
+**The invited email, not any client-supplied role or branch data, is
+the only thing that determines who may accept.** The deep link
+(`kora://invite/{token}`) carries nothing but an opaque, high-entropy
+token — never a role, a branch, or an organization id — and the server
+independently re-resolves all of that from the token itself on every
+call. Android never trusts anything about the invitation beyond what
+`GET .../preview` and `.../accept` return in response to that token.
+Verified directly: accepting while authenticated as a different email
+(the organization's own owner, in a real test against a running
+backend) returned `403`, the app displayed a specific "this invitation
+was sent to a different email address" message rather than a generic
+error, and no membership was created for that organization as a result
+— confirmed by querying `organization_memberships` directly and
+finding the count unchanged. Accepting after signing out, then signing
+back in with the *invited* email through the ordinary passwordless OTP
+flow, succeeded and created exactly one new `ACTIVE` membership with
+the invited role; the invitation's own status moved from `PENDING` to
+`ACCEPTED` server-side.
+
+**The raw token is never logged, never put in analytics or crash
+messages, and lives only in memory.** `MainActivity.extractInvitationToken`
+reads it from the incoming `Intent` and stores it only in
+`AppContainer.pendingInvitationToken` (a Compose `MutableState`, not
+persisted to `LocalPreferences`, Room, or `SharedPreferences`); it is
+cleared on every terminal outcome (accepted, rejected, or the user
+navigates away) by the Composable layer, not by the ViewModel, keeping
+the ViewModel itself Compose-free. No process-death restoration of a
+pending token is attempted — a token lost to process death simply
+requires reopening the link, a deliberate, documented safety choice
+over persisting it anywhere durable.
+
+**The one-time invitation-creation token receives the same
+never-persisted treatment on the owner's side of the exchange.**
+`CreateStaffInvitationResponseDto.rawToken` is shown to the inviting
+owner exactly once, in a dialog with Copy (to the system clipboard,
+under the user's own control) and Share (a standard `ACTION_SEND`
+chooser, also user-directed) actions, then cleared from view-model
+state on dismissal. It is never written to `LocalPreferences` or any
+other persistent store, and the invitation-list endpoints
+(`GET .../staff-invitations`, the team directory) never return a token
+or its hash — only the database's `tokenHash` column exists after
+creation, confirmed directly by inspecting the stored row (a 64-character
+hex digest, not the raw value).
+
+**The deep link is a development-only custom URI scheme, not a
+production security boundary.** `kora://invite/{token}` is not a
+verified Android App Link — no production domain or hosted
+`assetlinks.json` exists, so Android cannot cryptographically confirm
+this app is the legitimate handler for that scheme the way a verified
+`https://` App Link would. This is an explicit, documented release
+prerequisite (docs/ROADMAP.md), not an oversight: the token itself
+remains the actual security boundary (high-entropy, single-use,
+server-validated, hashed at rest) regardless of which app happens to
+receive the intent, so the missing App Link verification is a
+phishing/spoofing-surface concern for a future release, not a way for
+an unintended party to actually accept someone else's invitation.
+
+**Invitation status states are rendered as distinct, safe UI, not
+collapsed into one generic "invalid" case.** `InvitationViewModel`
+distinguishes `PENDING`, `ACCEPTED`, `DECLINED`, `REVOKED`, and expired
+(`isExpired` on an otherwise-`PENDING` invitation) explicitly, so a
+staff member opening a stale or already-used link sees an accurate
+reason rather than a misleading generic failure.

@@ -584,3 +584,148 @@ the true hardware-backed encrypted round trip is left to a connected/
 instrumented test on a real device or emulator, which this stage did
 not have available (no `adb` device was connected; per this stage's own
 constraints, no emulator was created without approval).
+
+## 24. Business onboarding, staff invitations, and the invite deep link
+
+Implemented (docs/ROADMAP.md): a second Android vertical slice covering
+business owner onboarding, post-onboarding business management, and the
+full staff-invitation lifecycle including deep-link acceptance. Unlike
+section 23's stage, this one *did* have an existing AVD available and
+was verified against a running backend on it (Phase 11 of the task).
+
+**Organization creation is idempotent end to end, mirroring the
+booking-key pattern from section 23.** `OrganizationsApi.create` takes
+a required `Idempotency-Key` header; `OnboardingViewModel` computes a
+stable key from the submitted request's own snapshot, generating a new
+`UUID` only when that snapshot changes, and clearing it only on the one
+terminal failure that means the previous attempt is unrecoverable as
+submitted (`409 ORGANIZATION_SLUG_TAKEN`) — any other failure keeps the
+same key so a retry safely replays. The backend's own
+`OnboardingService` enforces this server-side with a pre-check plus a
+reactive unique-constraint catch inside the same transaction
+(docs/SECURITY.md section 37).
+
+**Resumability is revalidated against the server on every reopen, not
+trusted from local state.** `OnboardingViewModel.resume()` reads only
+an organization *id* from `LocalPreferences` (never progress or
+content), then re-derives everything else — organization name, setup
+status, and which step to land on — from
+`GET .../setup-status` and `GET .../branches`, the same
+revalidate-against-a-fresh-fetch discipline section 23 established for
+workspace routing. A resumed session whose remembered organization is
+no longer reachable (deleted, access revoked) falls back to starting
+fresh rather than getting stuck.
+
+**A real bug found only by resuming a session on a real device: the
+primary branch id was never re-resolved on resume.**
+`GET /v1/organizations/:organizationId` carries no branch data (branch
+CRUD is out of scope this stage — see below), so before this fix,
+reopening an in-progress or completed setup left
+`OnboardingUiState.primaryBranchId == null`, which made
+`saveHours()` silently return with no error and no network call, and
+made a staff invitation sent afterward carry no branch assignment.
+Fixed with a new minimal, read-only `GET .../branches` endpoint
+(docs/API_SPEC.md section 33) called during `resume()`. Found and
+fixed by literally resuming the wizard on an emulator, tapping "Save
+hours," and noticing nothing happened — then confirming server-side
+that no row had been written.
+
+**The one-time invitation token was being fetched and discarded.**
+`CreateStaffInvitationResponseDto.rawToken` is the *only* place the raw
+token is ever available (the server stores only its hash) — both
+invitation-creation call sites (the onboarding wizard's team step, and
+the standalone Team screen's invite sheet) originally read the
+response only for its `invitation` summary and threw the token away,
+leaving no way for an owner to actually hand the invite to staff, since
+no automated delivery exists this stage (docs/SECURITY.md section 38).
+Fixed by holding the formatted `kora://invite/{token}` link in
+transient view-model state, shown exactly once in a dialog with
+Copy/Share actions, cleared on dismissal — never written to
+`LocalPreferences` or any other persistent store.
+
+**A FloatingActionButton nested two `Scaffold`s deep silently failed to
+render or receive touches at all.** `TeamScreen` is only ever embedded
+as one tab's content inside `BusinessHomeScreen`'s own `Scaffold`
+(state-based tab switch, not a nested `NavController` — see below), but
+`TeamScreen` also wrapped its own content in a second `Scaffold` with a
+`floatingActionButton` slot. The FAB never appeared in the accessibility
+tree at all under that nesting — not merely visually clipped, genuinely
+absent as a composed node. Fixed by removing the FAB from `Scaffold`'s
+slot entirely and positioning it manually via
+`Box(Modifier.fillMaxSize()) { Scaffold(...); FloatingActionButton(
+Modifier.align(Alignment.BottomEnd)) }`. Found only by looking at the
+device screen directly — a screenshot test would not have caught this,
+since the FAB was absent, not misplaced.
+
+**`BusinessHomeScreen`'s bottom navigation swallowed its own tab
+content.** The outer `Scaffold`'s `content` lambda receives a
+`PaddingValues` reserving space for the `NavigationBar`, but only the
+`MORE` tab branch applied it (`Modifier.padding(padding)`); every other
+tab's content extended underneath the nav bar unpadded. Combined with
+the FAB bug above, this meant a fixed-position element at the bottom of
+*any* tab (a form field, the Team FAB) rendered behind opaque
+navigation-bar chrome, invisible and untappable regardless of the FAB
+fix alone. Fixed by wrapping the entire `when (selectedTab)` switch in
+one `Box(Modifier.padding(padding))` so every tab is inset uniformly.
+
+**`BusinessHomeScreen` remains a state-based tab switch, not a nested
+`NavController`, deliberately.** Overview/Setup/Services/Team/More are
+flat, non-push destinations selected via
+`rememberSaveable { mutableStateOf(BusinessTab.OVERVIEW) } ` inside one
+outer `Scaffold`; each tab's own screen supplies its own `KoraTopBar`
+(itself inside a per-tab `Scaffold` — the nesting the two bugs above
+came from, and which remains for the app-bar precisely because it
+*does* work correctly nested; only the FAB slot specifically did not).
+Business-profile and subscription screens are pushed as sibling
+destinations on the *outer* `KoraNavHost` graph instead, since they are
+not tabs.
+
+**The invitation deep link is a development-only custom scheme, not a
+verified Android App Link.** `kora://invite/{token}` is registered in
+`AndroidManifest.xml`; `MainActivity` uses
+`android:launchMode="singleTop"` with an `onNewIntent` override so a
+warm-start deep link updates the same `AppContainer.pendingInvitationToken`
+rather than spawning a second Activity instance.
+`KoraNavHost`'s top-level `LaunchedEffect(pendingInvitationToken)`
+navigates to the invitation-preview route regardless of current auth
+state, since the preview itself needs no auth — verified directly by
+firing `adb shell am start -a android.intent.action.VIEW -d
+"kora://invite/<token>"` against a real invitation token obtained from
+the live API, both while already signed in (in-process `onNewIntent`)
+and cold (fresh process, deep-link-first routing before the normal
+splash/session flow). Shipping a verified HTTPS App Link requires a
+production domain and a hosted `assetlinks.json`, neither of which
+exists yet (docs/ROADMAP.md).
+
+**The invitation-accept flow was verified against the real backend for
+both the reject and accept paths of its core security property: only
+the invited email may accept.** Accepting while authenticated as a
+*different* email (the organization's owner, in this case) returns
+`403` and the screen shows a specific "sent to a different email
+address" message rather than a generic error or, worse, silently
+succeeding — confirmed no membership was created for that mismatched
+attempt. Accepting after signing out, following "Sign in to accept"
+into the existing passwordless OTP flow with the *invited* email, and
+landing back on the same invitation screen (`OtpVerifyScreen` checks
+`pendingInvitationToken` before falling through to normal workspace
+routing) succeeded, created exactly one new `ACTIVE` membership with
+the invited role, and the invitation's server-side status moved from
+`PENDING` to `ACCEPTED`.
+
+**No full branch CRUD exists this stage, by deliberate scope
+decision.** `docs/API_SPEC.md` section 10 describes a branch CRUD
+contract that was never implemented; only the onboarding-created
+primary branch exists per organization. The new `GET .../branches`
+endpoint added this stage is read-only, added solely to fix the
+resume-bug above, and does not change this scope decision — Android's
+"Business basics" and "First branch" onboarding steps are one screen
+and one atomic API call for the same reason (no separate
+"create additional branch" endpoint exists to call).
+
+**Several backend-ready configuration screens are deliberately not
+built in Android this stage:** branch-service price/duration override,
+staff-service assignment, schedule exceptions, booking policy, staff
+availability rules/exceptions, and invitation resend/reissue (the
+backend does not support reissue either). Only weekly business hours
+got a dedicated editor. These are documented gaps, not silent
+omissions (docs/ROADMAP.md).

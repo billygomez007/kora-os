@@ -68,7 +68,7 @@ import retrofit2.Response
 
 private class ScreenshotDiscoveryApi(private val categories: List<BusinessCategoryDto>, private val businesses: List<DiscoveryBusinessSummaryDto>) : DiscoveryApi {
     override suspend fun categories() = Response.success(ApiSuccessEnvelope(data = categories, meta = ApiMeta("req")))
-    override suspend fun searchBusinesses(text: String?, category: String?, nearLat: Double?, nearLng: Double?, radiusKm: Int?, cursor: String?, limit: Int?) =
+    override suspend fun searchBusinesses(text: String?, category: String?, verificationStatus: String?, nearLat: Double?, nearLng: Double?, radiusKm: Int?, cursor: String?, limit: Int?) =
         Response.success(ApiSuccessEnvelope(data = businesses, meta = ApiMeta("req")))
     override suspend fun getBusiness(slug: String) = notImplemented()
     override suspend fun getBranches(slug: String) = notImplemented()
@@ -78,14 +78,64 @@ private class ScreenshotDiscoveryApi(private val categories: List<BusinessCatego
     private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this screenshot")
 }
 
-private class ScreenshotAppointmentsApi : AppointmentsApi {
+private class ScreenshotAppointmentsApi(private val appointments: List<AppointmentDto> = emptyList()) : AppointmentsApi {
     override suspend fun book(body: CreateAppointmentRequest) = notImplemented()
-    override suspend fun list(cursor: String?, limit: Int?) = Response.success(ApiSuccessEnvelope(data = emptyList<AppointmentDto>(), meta = ApiMeta("req")))
-    override suspend fun get(appointmentId: String) = notImplemented()
+    override suspend fun list(cursor: String?, limit: Int?) = Response.success(ApiSuccessEnvelope(data = appointments, meta = ApiMeta("req")))
+    override suspend fun get(appointmentId: String) = Response.success(ApiSuccessEnvelope(data = appointments.first { it.id == appointmentId }, meta = ApiMeta("req")))
     override suspend fun cancel(appointmentId: String, body: CancelAppointmentRequest) = notImplemented()
     override suspend fun reschedule(appointmentId: String, body: RescheduleAppointmentRequest) = notImplemented()
     private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this screenshot")
 }
+
+private class ScreenshotDiscoveryApiForAppointments : DiscoveryApi {
+    override suspend fun categories() = notImplemented()
+    override suspend fun searchBusinesses(text: String?, category: String?, verificationStatus: String?, nearLat: Double?, nearLng: Double?, radiusKm: Int?, cursor: String?, limit: Int?) = notImplemented()
+    override suspend fun getBusiness(slug: String) = notImplemented()
+    override suspend fun getBranches(slug: String) = Response.success(
+        ApiSuccessEnvelope(
+            data = listOf(
+                DiscoveryBranchSummaryDto(
+                    branchId = "branch-1", name = "Main branch", city = "East Legon", region = "Accra", countryCode = "GH",
+                    latitude = 5.65, longitude = -0.17, publicPhone = "+233241234567", publicEmail = null, openingHoursNote = null,
+                ),
+            ),
+            meta = ApiMeta("req"),
+        ),
+    )
+    override suspend fun getServices(slug: String, branchId: String) = notImplemented()
+    override suspend fun getProviders(slug: String, branchId: String, serviceId: String) = notImplemented()
+    override suspend fun getAvailability(slug: String, branchId: String, serviceIds: String, staffProfileId: String?, date: String?, fromDate: String?, toDate: String?) = notImplemented()
+    private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this screenshot")
+}
+
+private fun screenshotAppointment(id: String, status: String, startAt: String, serviceName: String) = AppointmentDto(
+    id = id,
+    reference = "KRA-$id",
+    organizationId = "org-1",
+    branchId = "branch-1",
+    status = status,
+    source = "CUSTOMER_APP",
+    customerProfileId = "customer-1",
+    customerRecordId = "record-1",
+    assignedStaffProfileId = "staff-1",
+    startAt = startAt,
+    endAt = startAt,
+    occupiedStartAt = startAt,
+    occupiedEndAt = startAt,
+    branchTimeZone = "Africa/Accra",
+    currency = "GHS",
+    totalPriceMinor = 18000,
+    cancelledAt = null,
+    cancelledReason = null,
+    noShowMarkedAt = null,
+    version = 1,
+    createdAt = startAt,
+    updatedAt = startAt,
+    items = listOf(com.realtegic.kora.core.model.AppointmentItemDto("service-1", serviceName, 180, 18000, "GHS", 0)),
+    businessName = "Naya Braids Studio",
+    businessSlug = "naya-braids",
+    providerDisplayName = "Abena Osei",
+)
 
 private class ScreenshotWorkspacesApi(private val workspaces: MyWorkspacesDto) : WorkspacesApi {
     override suspend fun getMyWorkspaces() = Response.success(ApiSuccessEnvelope(data = workspaces, meta = ApiMeta("req")))
@@ -169,6 +219,7 @@ class ScreenshotTests {
                 Moshi.Builder().build(),
             ),
             appointmentsRepository = AppointmentsRepository(ScreenshotAppointmentsApi(), Moshi.Builder().build()),
+            customerProfileRepository = CustomerProfileRepository(ScreenshotCustomerProfileApi(), Moshi.Builder().build()),
         )
 
         composeRule.setContent {
@@ -248,6 +299,43 @@ class ScreenshotTests {
         }
 
         composeRule.onRoot().captureRoboImage("build/outputs/roborazzi/customer_profile_setup_screen.png")
+    }
+
+    @Test
+    fun `appointments list screen -- upcoming and past`() {
+        val appointments = listOf(
+            screenshotAppointment("appt-1", "CONFIRMED", "2027-01-01T14:30:00Z", "Knotless Braids"),
+            screenshotAppointment("appt-2", "CANCELLED", "2025-01-01T14:30:00Z", "Deep Tissue Massage"),
+        )
+        val viewModel = com.realtegic.kora.feature.customer.appointments.AppointmentsListViewModel(
+            AppointmentsRepository(ScreenshotAppointmentsApi(appointments), Moshi.Builder().build()),
+        )
+
+        composeRule.setContent {
+            KoraTheme {
+                com.realtegic.kora.feature.customer.appointments.AppointmentsListScreen(viewModel = viewModel, onAppointmentTapped = {}, onBookNew = {})
+            }
+        }
+
+        composeRule.onRoot().captureRoboImage("build/outputs/roborazzi/appointments_list_screen.png")
+    }
+
+    @Test
+    fun `appointment detail screen`() {
+        val appointment = screenshotAppointment("appt-1", "CONFIRMED", "2027-01-01T14:30:00Z", "Knotless Braids")
+        val viewModel = com.realtegic.kora.feature.customer.appointments.AppointmentDetailViewModel(
+            "appt-1",
+            AppointmentsRepository(ScreenshotAppointmentsApi(listOf(appointment)), Moshi.Builder().build()),
+            DiscoveryRepository(ScreenshotDiscoveryApiForAppointments(), Moshi.Builder().build()),
+        )
+
+        composeRule.setContent {
+            KoraTheme {
+                com.realtegic.kora.feature.customer.appointments.AppointmentDetailScreen(viewModel = viewModel, onBack = {})
+            }
+        }
+
+        composeRule.onRoot().captureRoboImage("build/outputs/roborazzi/appointment_detail_screen.png")
     }
 
     private fun otpViewModel(api: ScreenshotAuthApi): AuthViewModel {

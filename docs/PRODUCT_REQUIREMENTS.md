@@ -60,6 +60,17 @@ staff-service assignment, schedule exceptions, booking policy, and
 staff availability rules are still not reachable from Android; they
 remain future Android integration stages (docs/ROADMAP.md).
 
+The customer marketplace vertical slice above was subsequently given a
+visual redesign against an approved design reference set
+(docs/design/mobile-customer/, docs/ARCHITECTURE.md section 26): a real
+five-tab customer navigation shell (Home, Search, Appointments,
+Favorites, Profile), provider selection as its own booking-wizard step,
+and honest business/provider names on appointment list and detail
+screens. AI-assisted voice search for discovery is an approved future
+design only — the current home screen shows an inert, honestly-labeled
+teaser with no microphone capture or model-provider integration
+(docs/ROADMAP.md).
+
 ### Future
 
 - iOS application using the same backend and business contracts.

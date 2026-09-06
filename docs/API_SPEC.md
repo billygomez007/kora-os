@@ -404,6 +404,22 @@ subscription eligibility are never accepted from the client.**
 A different customer's appointment id returns `404`, never `403` — its
 existence is never confirmed to a caller who does not own it.
 
+Every appointment response (customer and organization-side alike) also
+carries `businessName` (the organization's own registered name, always
+present), `businessSlug` (present only while the organization currently
+has a public discovery profile — `null` once unpublished, even for an
+appointment booked while it was public), and `providerDisplayName` (the
+assigned provider's public display name). These exist because
+`organizationId`/`branchId`/`assignedStaffProfileId` alone are opaque
+identifiers a client cannot turn into a human-readable business, branch,
+or provider name — added docs/ROADMAP.md Kora Customer Marketplace Design
+Batch 02, since the appointment list/detail/confirmation screens need to
+identify what an appointment is for. Richer public business/branch
+display data (images, phone, coordinates, hours) is deliberately **not**
+duplicated onto the appointment response — a client with a non-null
+`businessSlug` fetches that from the existing public discovery endpoints
+(section 29) instead.
+
 ### Organization (authenticated staff, `appointments.read`/`appointments.manage`, branch-scoped)
 
 - `GET /organizations/{organizationId}/branches/{branchId}/appointments?from=&to=&cursor=&limit=` — bounded date range, cursor-paginated

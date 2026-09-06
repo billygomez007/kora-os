@@ -80,3 +80,36 @@ feature-gate the voice entry point honestly.
 6. Appointment list and details
 7. AI voice-search foundation in a separately approved stage
 
+## Implementation status
+
+Items 1-6 above are implemented natively in Jetpack Compose, wired to
+the real backend (docs/ARCHITECTURE.md section 26, docs/SECURITY.md
+section 40). Every screen was cross-referenced against the real backend
+DTO shapes to decide what to keep or omit — ratings, reviews, "open
+now" status, precise distance/travel-time, a map view, and per-card
+prices on search results were omitted throughout because no endpoint
+returns them; where a mockup showed a value the API does not provide,
+the honest empty/omitted state was built instead, never a placeholder
+or fabricated number.
+
+Two implementation details deliberately depart from the static mockups
+for correctness, not preference:
+
+- The mockup's four-step wizard (Service → Professional → Date & Time →
+  Review) is preserved conceptually, but provider selection is its own
+  step inside the booking flow rather than folded into service
+  selection, because eligible providers must be re-resolved if the
+  customer backs up and changes the service or date.
+- The mockup's "Professional: To be assigned" copy is not shown as
+  literal UI text — a CONFIRMED appointment always has a specific
+  assigned provider server-side, so the real resolved name is shown
+  instead of a placeholder that would be factually wrong.
+
+Item 7, AI voice-search, is **not implemented**. `kora-customer-ai-
+voice-search-reference.png` is committed to this directory as an
+approved future design reference only. The current customer home
+screen shows an inert teaser card in its place — tapping it shows an
+honest "coming soon" message; there is no microphone capture, no
+speech-to-text, no model-provider integration, and no server-side
+intent service. Building any of that is explicitly deferred to a
+separately approved future stage (docs/ROADMAP.md).

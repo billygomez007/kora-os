@@ -1526,3 +1526,62 @@ renders a `ReceiptDto` as an immutable snapshot only, with no total
 recomputed from its line items and no VAT/TIN/tax-compliance field
 anywhere in the model or the UI, matching the receipt's own explicit
 non-tax-invoice status (section 34).
+
+## 40. Customer marketplace redesign security notes (Design Batch 02)
+
+The three new `AppointmentView` fields added this stage —
+`businessName`, `businessSlug`, `providerDisplayName`
+(docs/ARCHITECTURE.md section 26, docs/API_SPEC.md section 15) —
+introduce no new authorization surface. All three are computed from
+relations (`organization`, `organization.publicProfile`,
+`assignedStaffProfile.membership.user`) that every existing appointment
+query already loads and is already authorized to return in full to the
+appointment's own customer or the staff who can already read it; the
+change only widens what is projected out of an authorization decision
+that was already correct, never what triggers it.
+
+- **`businessSlug` is the only field that can be absent, and its
+  absence is deliberate, not a bug.** It resolves through
+  `organization.publicProfile?.slug`, which is `null` whenever the
+  business currently has no `PublicBusinessProfile` row or the row
+  exists but is unpublished — exactly the same condition that already
+  hides the business from `GET /discovery/businesses` and its
+  `:slug` sub-routes. A customer whose appointment predates an
+  unpublish therefore keeps seeing `businessName` (an immutable fact
+  about their own appointment) but loses the slug the Android client
+  would otherwise use to re-fetch richer public branch data (Call/
+  Directions) through the existing discovery endpoints — the client
+  correctly stops offering Call/Directions in that case rather than
+  caching or inventing stale contact details. Covered by a dedicated
+  e2e test that unpublishes a business after booking and asserts
+  `businessSlug` becomes `null` while `businessName` persists
+  (`apps/api/test/appointment-booking.e2e-spec.ts`).
+- **`providerDisplayName` discloses nothing beyond what the caller
+  already has a right to see.** It is only ever returned as part of an
+  `AppointmentView` the caller was already authorized to read — the
+  customer who owns the appointment, or staff with the existing
+  `appointments.read`/`appointments.manage` permission for that branch
+  — the same authorization boundary every other field on the same
+  response already crosses. No route was added or changed to expose it;
+  it rides on views that already existed.
+- **No staff contact detail, membership, role, private schedule, or
+  earnings figure was added anywhere in this projection.** The include
+  reaches `membership.user` only for `displayName` — the identical field
+  the team directory and business dashboard already expose to
+  authorized staff (section 39) — and nothing else on `User` or
+  `Membership` is selected or serialized.
+- The customer-facing bottom navigation shell added this stage (section
+  26) carries no permission model of its own, unlike the business
+  workspace's permission-driven bottom bar (section 25): every customer
+  workspace has identical, unconditional access to Home, Search,
+  Appointments, Favorites, and Profile, so there is no permission code
+  to compute or leak by construction. Session restoration, sign-out, and
+  workspace-switching entry points are unchanged from sections 23-24;
+  the redesign only rearranged how customer screens are reached, not the
+  session/workspace boundary itself.
+- No new client-side data was logged. The redesigned screens use the
+  same `SafeDebugLoggingInterceptor` (section 23) as every other screen
+  — method, route template, status, and duration only — so the new
+  fields, an approximate location line, and a customer's display name
+  never appear in a debug log line, matching a live logcat check across
+  this stage's full manual verification session (apps/android/README.md).

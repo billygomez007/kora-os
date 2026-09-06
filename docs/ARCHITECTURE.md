@@ -866,3 +866,93 @@ Covered by 26 new Android unit tests across five ViewModels
 `CheckoutViewModelTest`), bringing the Android unit-test count from 117
 to 143. Compose UI tests and Roborazzi screenshot coverage for these
 screens do not exist yet (docs/ROADMAP.md).
+
+## 26. Customer marketplace visual redesign (Design Batch 02)
+
+This stage (docs/ROADMAP.md) is a visual redesign and gap-filling pass
+over the customer-facing screens sections 23 and 25 already connected
+to the real API — not a ground-up build. Every screen in
+`docs/design/mobile-customer/` was recreated natively in Compose against
+the existing repositories, navigation graph, and design system; no
+second API client, token store, or theme was introduced. Two structural
+changes went beyond a pure visual refresh, each because the reference
+design implied a genuinely different screen boundary than the one
+section 23 originally built:
+
+**A real bottom navigation shell now exists for the customer
+workspace**, mirroring the pattern section 25 established for the
+business workspace. `CustomerBottomNavBar` (`core/designsystem`) defines
+five fixed destinations — Home, Search, Appointments, Favorites,
+Profile — wrapped by a `CustomerTabScaffold` private composable in
+`KoraNavHost` that applies the outer `Scaffold`'s padding uniformly to
+whichever tab is active, the same nested-`Scaffold` pattern already
+proven safe in section 24. Unlike the business shell, no permission
+gating applies here: a customer workspace carries no permission codes,
+and all five destinations are always available to every customer.
+Switching tabs uses the standard `popUpTo(start) { saveState = true }` /
+`restoreState = true` pattern so repeated tab bouncing does not grow the
+back stack, and pressing system back from any top-level customer tab
+exits the app rather than revealing a business or auth screen
+underneath (verified live — see apps/android/README.md "Building and
+testing").
+
+**Provider selection moved out of branch-service selection and into its
+own first step of the booking wizard.** The reference design shows
+Service → Professional → Date & Time → Review as four steps;
+section 23's original implementation resolved a provider as part of the
+service-selection screen. Because an eligible provider list depends on
+the selected service and can change if the customer backs up and picks
+a different one, embedding it in a wizard step (`BookingViewModel`'s new
+`BookingStep.PROVIDER`, with `DATE_TIME` and `REVIEW` following) rather
+than the standalone service screen is a correctness fix, not only a
+layout change — the eligible-providers endpoint is now re-queried
+naturally every time the wizard revisits that step, instead of being
+resolved once and carried forward stale. `BranchServicesScreen` keeps
+only service selection; `BookingFlowScreen` owns provider, date/time,
+and review internally. The idempotency-key snapshot
+(`"$serviceId|$selectedProviderId|${slot.startAt}|${slot.staffProfileId}"`)
+was extended to include the provider choice, and the review step's
+"I have reviewed my booking details" consent resets whenever a
+materially different slot or provider is chosen, so a stale consent can
+never carry forward onto a different booking.
+
+**One minimal, additive backend field set closes a real display gap.**
+The customer appointment list and detail screens need to show a
+business/branch/provider name, but no existing endpoint let the client
+resolve `organizationId`/`branchId`/`assignedStaffProfileId` into
+display names — every other screen in this app either receives display
+names embedded already or reaches them through a slug the client
+already holds. `AppointmentView` (`apps/api/src/modules/appointments/appointment-view.ts`)
+gained three fields — `businessName`, `businessSlug`, and
+`providerDisplayName` — computed from relations the appointment already
+has (`organization`, `organization.publicProfile`, `assignedStaffProfile.
+membership.user`) via a new shared `APPOINTMENT_VIEW_INCLUDE` constant,
+replacing ten literal `include: { items: true }` call sites across
+`appointment-queries.service.ts`, `appointment-commands.service.ts`, and
+`appointment-booking.service.ts`. `businessSlug` was chosen deliberately
+over denormalizing richer business data (images, phone, coordinates)
+onto the appointment response: it is enough for the client to re-fetch
+the full public business/branch record through the *existing* discovery
+endpoints (`GET /discovery/businesses/{slug}`, `.../branches`) when a
+business currently resolves publicly, and to fall back to showing only
+the name when it does not (an appointment always keeps `businessName`,
+even after the business unpublishes — proven by a dedicated e2e test).
+See docs/API_SPEC.md section 15 for the field contract and
+docs/SECURITY.md section 40 for why this addition introduces no new
+authorization surface.
+
+The mockup's "Professional: To be assigned" copy was deliberately not
+copied literally: a CONFIRMED appointment's `assignedStaffProfileId` is
+never null server-side (the availability engine always resolves "any
+available provider" to a specific staff member at booking time), so
+showing the real resolved `providerDisplayName` is the honest behavior,
+not the placeholder text a static mockup shows before real data exists.
+
+Covered by new Android unit and Compose UI tests across the customer
+home, discovery, booking, and appointments packages, plus new Roborazzi
+screenshot baselines for the appointments-list and appointment-detail
+screens, bringing the Android unit-test count from 191 to 206 — see
+apps/android/README.md "Building and testing" for what each group
+covers. `kora-customer-ai-voice-search-reference.png` was
+committed as a future design reference only; no functional voice-search
+entry point exists (docs/ROADMAP.md, docs/design/mobile-customer/README.md).

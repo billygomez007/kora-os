@@ -16,12 +16,24 @@ locally.
 
 - Passwordless email OTP sign-in, session restoration across app
   restarts, and secure sign-out (including "sign out everywhere").
-- A real customer home screen: branded search, service categories,
-  "Near you" approximate-location discovery, and an upcoming-appointment
-  card.
-- Business discovery, branch/service browsing, real availability, and
-  atomic appointment booking with a stable idempotency key.
-- Customer appointment management: list, detail, cancel, reschedule.
+- A real, five-tab customer navigation shell — Home, Search,
+  Appointments, Favorites, Profile — with no permission gating (every
+  customer workspace has identical access), correct back-stack behavior
+  (system back from any top-level tab exits the app, never revealing an
+  auth or business screen underneath), and state preserved per tab
+  across tab switches.
+- A real customer home screen: an honest greeting sourced from the
+  real customer profile (never a hardcoded name), branded search,
+  service categories, "Near you" approximate-location discovery, and an
+  upcoming-appointment card.
+- Business discovery, branch/service browsing, and a booking wizard —
+  provider selection, then real server availability, then review — that
+  ends in atomic appointment booking with a stable idempotency key
+  covering every field the request depends on, including the chosen
+  provider.
+- Customer appointment management: list (upcoming/past), detail
+  (business name, provider, and Call/Directions when the business still
+  resolves publicly), cancel, reschedule.
 - Customer favorites.
 - Secure workspace selection between the customer workspace and one or
   more business workspaces, and a subscription-aware, permission-driven
@@ -87,9 +99,22 @@ represents any of those as an available action. A real branch switcher
 also does not exist yet; every screen uses the workspace's first branch
 (docs/ARCHITECTURE.md section 25).
 
-There is no fake AI voice/microphone button anywhere in the app.
-Voice/AI-assisted discovery is a deferred roadmap item, not a
-placeholder UI element (docs/ROADMAP.md).
+There is no fake AI voice/microphone button anywhere in the app. The
+customer home screen shows an inert teaser card in the voice-search
+entry point's place — tapping it shows an honest "coming soon" message,
+never a working search. Voice/AI-assisted discovery is a deferred
+roadmap item, not a placeholder UI element (docs/ROADMAP.md,
+docs/design/mobile-customer/README.md).
+
+The local development database used for this stage's manual emulator
+verification had zero seeded/published businesses, so the business-
+profile-through-booking-confirmation-through-appointment-detail live
+click-through was not driven end to end on the emulator; sign-in,
+session restoration, the customer navigation shell (all five tabs), and
+the home/search screens' real empty states were. Those remaining flows
+are covered by comprehensive automated unit and Compose UI tests using
+fakes that mirror the real API contracts exactly, not by a live manual
+pass — see docs/ROADMAP.md "Current limitations."
 
 ## Architecture
 
@@ -110,7 +135,8 @@ core/
                 (last selected workspace)
   location/     On-demand, approximate-only location lookup
   designsystem/ Kora dark/gold buttons, text fields, state views,
-                money/date-time formatting
+                money/date-time formatting, the customer bottom nav
+                bar, the booking-wizard step indicator
   navigation/   Route constants, NavHost, auth/workspace/customer/
                 business nav graphs
   di/           AppContainer — manual, constructor-injection DI
@@ -315,6 +341,26 @@ navigation now always pops the correct entry-point graph inclusive,
 regardless of whether the user arrived via session restoration, a fresh
 OTP sign-in, or an invitation deep link.
 
+### Customer marketplace screen design (Design Batch 02)
+
+The customer home, discovery, business-profile, booking wizard, and
+appointment screens match the approved references in
+`docs/design/mobile-customer/` — recreated natively in Compose, never
+rendered as PNG backgrounds. Every visual element was checked against
+the real backend DTOs before being kept or dropped: ratings, reviews,
+"open now" status, distance/travel-time, a map view, and per-card
+prices on search results do not appear anywhere, because no endpoint
+returns them. Two departures from the static mockups are deliberate,
+not oversights — provider selection is its own booking-wizard step
+(`BookingStep.PROVIDER`) rather than folded into service selection,
+since eligible providers must be re-resolved if the customer changes
+the service or date after picking one; and a confirmed appointment
+always shows its real assigned provider's name rather than the
+mockup's literal "Professional: To be assigned" copy, since the
+availability engine always resolves a specific provider at booking
+time. See docs/design/mobile-customer/README.md "Implementation
+status" and docs/ARCHITECTURE.md section 26 for the full record.
+
 ## Building and testing
 
 ```bash
@@ -389,6 +435,22 @@ screens, and the invitation screen itself does not exist yet — only
 their ViewModels are unit-tested; this is a known gap, not a silent
 omission.
 
+The Design Batch 02 customer-marketplace redesign added coverage across
+the home, discovery, booking, and appointments packages, bringing the
+Android unit-test count from 191 to 206: the home screen's real
+greeting sourced from the customer profile (present, absent-name
+fallback, and the voice-search teaser staying inert on tap); discovery
+category loading and a `verifiedOnly` filter alongside the existing
+debounce/cancellation coverage; the booking wizard's new provider step
+(defaulting to "any available," a named pick overriding it, the date
+auto-selecting once availability loads, and a provider change minting a
+fresh idempotency key exactly like a slot change already did); the
+review step's "I have reviewed my booking details" checkbox gating
+"Confirm booking" (Compose UI test); appointment-detail branch-contact
+loading gated on a real `businessSlug` being present (and never
+attempted when it is not); and Roborazzi screenshot baselines added for
+the appointments-list (upcoming/past) and appointment-detail screens.
+
 **A genuine Android Keystore does not exist inside a plain-JVM
 Robolectric test.** Tests that need to prove `TokenStore`'s own logic
 (field mapping, partial updates, null handling) use a test-only
@@ -439,6 +501,17 @@ repository — set one up in Android Studio's Device Manager first.
   owner reports) has not been run with direct PostgreSQL cross-checks;
   only individual screens have been spot-verified against a live
   backend on an existing emulator.
+- A live emulator click-through of business profile → service selection
+  → provider selection → availability → booking review → confirmation →
+  appointment detail → reschedule/cancel was not performed for Design
+  Batch 02, because the local development database had zero seeded or
+  published businesses at verification time. Sign-in, session
+  restoration, the five-tab customer navigation shell (including
+  back-stack-exits-the-app), the home screen's real greeting and honest
+  empty state, and search/discovery's real filters and empty state were
+  verified live end to end. The unverified flows are covered by
+  automated unit and Compose UI tests using fakes that mirror the real
+  API contracts exactly, not by a live manual pass.
 - iOS (a future stage, sharing the same backend contracts).
 - Push notifications and offline/background synchronization.
 - Voice/AI-assisted discovery (no fake or placeholder UI exists for

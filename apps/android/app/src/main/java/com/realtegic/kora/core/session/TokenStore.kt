@@ -77,6 +77,19 @@ class TokenStore(
         }.onFailure { logAndReset(it) }
     }
 
+    /** Called after the customer changes their display name via profile
+     * setup, so a later cold-start's [RestorationFailed][SessionState.RestorationFailed]
+     * greeting (offline, refresh token still valid) shows the name the
+     * person actually saved rather than whatever name existed at their
+     * last sign-in. */
+    fun updateDisplayName(displayName: String) {
+        runCatching {
+            prefs().edit()
+                .putString(KEY_DISPLAY_NAME, displayName)
+                .apply()
+        }.onFailure { logAndReset(it) }
+    }
+
     fun load(): StoredSession? {
         return runCatching {
             val p = prefs()

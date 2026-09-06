@@ -136,6 +136,20 @@ class SessionManager(
         clearSessionInternal()
     }
 
+    /** Keeps the cached session in sync after the customer changes their
+     * display name via profile setup -- without this, every screen
+     * reading [sessionState] directly (rather than re-fetching the
+     * customer profile fresh) would keep showing the name captured at
+     * the last sign-in until the next full session restoration. A no-op
+     * when nobody is currently signed in. */
+    fun updateDisplayName(displayName: String) {
+        tokenStore.updateDisplayName(displayName)
+        val current = _sessionState.value
+        if (current is SessionState.SignedIn) {
+            _sessionState.value = current.copy(displayName = displayName)
+        }
+    }
+
     private fun isTransient(error: DomainError): Boolean =
         error is DomainError.NetworkUnavailable || error is DomainError.ServerUnavailable
 

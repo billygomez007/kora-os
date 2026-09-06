@@ -193,6 +193,30 @@ class SessionManagerTest {
     }
 
     @Test
+    fun `updateDisplayName updates the in-memory session state and the persisted cache`() = runTest {
+        val tokenStore = newTokenStore()
+        tokenStore.save(StoredSession("refresh-1", "session-1", "user-1", "Ama Owusu", null))
+        val sessionManager = SessionManager(tokenStore, FakeAuthApi(), moshi)
+        sessionManager.completeSignIn(authResult("access", "refresh-1"))
+
+        sessionManager.updateDisplayName("Ama Mensah")
+
+        val state = sessionManager.sessionState.value
+        assertTrue(state is SessionState.SignedIn)
+        assertEquals("Ama Mensah", (state as SessionState.SignedIn).displayName)
+        assertEquals("Ama Mensah", tokenStore.load()?.displayName)
+    }
+
+    @Test
+    fun `updateDisplayName is a safe no-op when nobody is signed in`() = runTest {
+        val sessionManager = SessionManager(newTokenStore(), FakeAuthApi(), moshi)
+
+        sessionManager.updateDisplayName("Someone")
+
+        assertEquals(SessionState.Unknown, sessionManager.sessionState.value)
+    }
+
+    @Test
     fun `logout clears local session material even when the server call fails`() = runTest {
         val tokenStore = newTokenStore()
         tokenStore.save(StoredSession("refresh-1", "session-1", "user-1", "Ama Owusu", null))

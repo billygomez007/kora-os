@@ -290,7 +290,11 @@ class ScreenshotTests {
     @Test
     fun `customer profile setup screen`() {
         val repository = CustomerProfileRepository(ScreenshotCustomerProfileApi(), Moshi.Builder().build())
-        val viewModel = CustomerProfileSetupViewModel(repository, ApproximateLocationProvider(context))
+        val tokenStore = TokenStore(context, prefsProvider = { context.getSharedPreferences("screenshot_customer_profile_setup_prefs", Context.MODE_PRIVATE) })
+        val authApi = ScreenshotAuthApi()
+        val sessionManager = SessionManager(tokenStore, authApi, Moshi.Builder().build())
+        val authRepository = AuthRepository(authApi, sessionManager, Moshi.Builder().build())
+        val viewModel = CustomerProfileSetupViewModel(repository, ApproximateLocationProvider(context), authRepository)
 
         composeRule.setContent {
             KoraTheme {

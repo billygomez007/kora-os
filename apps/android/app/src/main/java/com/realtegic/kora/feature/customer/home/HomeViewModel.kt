@@ -11,6 +11,7 @@ import com.realtegic.kora.core.model.BusinessCategoryDto
 import com.realtegic.kora.core.model.DiscoveryBusinessSummaryDto
 import com.realtegic.kora.core.network.ApiResult
 import java.time.Instant
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +40,18 @@ class HomeViewModel(
     private val _state = MutableStateFlow(HomeUiState())
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
 
+    // Each load*() call cancels its own previous job before relaunching, so
+    // a second call while the first is still in flight (e.g. tapping
+    // "Retry" before an earlier request has resolved) can never let a
+    // stale, late-arriving response overwrite a newer one -- the same
+    // "a newer request supersedes an older one" contract DiscoveryViewModel
+    // gets from collectLatest, expressed here as plain Job cancellation
+    // since each field has its own independent load, not a single stream.
+    private var categoriesJob: Job? = null
+    private var featuredJob: Job? = null
+    private var upcomingAppointmentJob: Job? = null
+    private var customerProfileJob: Job? = null
+
     init {
         load()
     }
@@ -51,7 +64,8 @@ class HomeViewModel(
     }
 
     private fun loadCategories() {
-        viewModelScope.launch {
+        categoriesJob?.cancel()
+        categoriesJob = viewModelScope.launch {
             _state.value = _state.value.copy(categories = ScreenState.Loading)
             _state.value = _state.value.copy(
                 categories = when (val result = discoveryRepository.categories()) {
@@ -63,7 +77,8 @@ class HomeViewModel(
     }
 
     private fun loadFeatured() {
-        viewModelScope.launch {
+        featuredJob?.cancel()
+        featuredJob = viewModelScope.launch {
             _state.value = _state.value.copy(featured = ScreenState.Loading)
             _state.value = _state.value.copy(
                 featured = when (val result = discoveryRepository.search(limit = 20)) {
@@ -75,7 +90,8 @@ class HomeViewModel(
     }
 
     private fun loadUpcomingAppointment() {
-        viewModelScope.launch {
+        upcomingAppointmentJob?.cancel()
+        upcomingAppointmentJob = viewModelScope.launch {
             when (val result = appointmentsRepository.list(limit = 20)) {
                 is ApiResult.Success -> {
                     val now = Instant.now()
@@ -90,7 +106,8 @@ class HomeViewModel(
     }
 
     private fun loadCustomerProfile() {
-        viewModelScope.launch {
+        customerProfileJob?.cancel()
+        customerProfileJob = viewModelScope.launch {
             when (val result = customerProfileRepository.get()) {
                 is ApiResult.Success -> _state.value = _state.value.copy(
                     customerDisplayName = result.value.displayName.ifBlank { null },

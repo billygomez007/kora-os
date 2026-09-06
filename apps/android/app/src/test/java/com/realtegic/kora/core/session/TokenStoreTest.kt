@@ -79,6 +79,20 @@ class TokenStoreTest {
     }
 
     @Test
+    fun `updateDisplayName changes only the display name, keeping every other field`() {
+        val store = newTestStore()
+        store.save(StoredSession("refresh", "session", "user-1", "Ama Owusu", "ama@example.test"))
+
+        store.updateDisplayName("Ama Mensah")
+        val loaded = store.load()
+
+        assertEquals("Ama Mensah", loaded?.displayName)
+        assertEquals("refresh", loaded?.refreshToken)
+        assertEquals("session", loaded?.sessionId)
+        assertEquals("ama@example.test", loaded?.email)
+    }
+
+    @Test
     fun `a null email is preserved as null, not coerced to a blank string`() {
         val store = newTestStore()
         store.save(StoredSession("rt", "sid", "uid", "No Email User", null))

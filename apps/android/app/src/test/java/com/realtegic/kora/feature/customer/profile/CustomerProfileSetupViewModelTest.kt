@@ -7,10 +7,24 @@ import com.realtegic.kora.core.data.CustomerProfileRepository
 import com.realtegic.kora.core.location.ApproximateLocationProvider
 import com.realtegic.kora.core.model.ApiMeta
 import com.realtegic.kora.core.model.ApiSuccessEnvelope
+import com.realtegic.kora.core.model.AuthResultDto
+import com.realtegic.kora.core.model.AuthSessionDto
+import com.realtegic.kora.core.model.AuthUserDto
 import com.realtegic.kora.core.model.CustomerProfileDto
+import com.realtegic.kora.core.model.MeDto
+import com.realtegic.kora.core.model.RefreshRequest
+import com.realtegic.kora.core.model.RequestEmailOtpRequest
+import com.realtegic.kora.core.model.RequestEmailOtpResponse
+import com.realtegic.kora.core.model.SessionSummaryDto
 import com.realtegic.kora.core.model.UpdateCustomerProfileRequest
+import com.realtegic.kora.core.model.VerifyEmailOtpRequest
+import com.realtegic.kora.core.network.AuthApi
 import com.realtegic.kora.core.network.CustomerProfileApi
 import com.realtegic.kora.core.network.DomainError
+import com.realtegic.kora.core.session.AuthRepository
+import com.realtegic.kora.core.session.SessionManager
+import com.realtegic.kora.core.session.SessionState
+import com.realtegic.kora.core.session.TokenStore
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
@@ -27,9 +41,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import retrofit2.Response
 
-private fun profile(phoneE164: String? = null) = CustomerProfileDto(
+private fun profile(phoneE164: String? = null, displayName: String = "") = CustomerProfileDto(
     id = "profile-1",
-    displayName = "",
+    displayName = displayName,
     email = "ama@example.test",
     phoneE164 = phoneE164,
     city = null,
@@ -38,6 +52,19 @@ private fun profile(phoneE164: String? = null) = CustomerProfileDto(
     longitude = null,
     locationConsentedAt = null,
 )
+
+private class NotImplementedAuthApi : AuthApi {
+    override suspend fun requestOtp(body: RequestEmailOtpRequest): Response<ApiSuccessEnvelope<RequestEmailOtpResponse>> = notImplemented()
+    override suspend fun verifyOtp(body: VerifyEmailOtpRequest): Response<ApiSuccessEnvelope<AuthResultDto>> = notImplemented()
+    override suspend fun refresh(body: RefreshRequest): Response<ApiSuccessEnvelope<AuthResultDto>> = notImplemented()
+    override suspend fun logout(): Response<Unit> = notImplemented()
+    override suspend fun logoutAll(): Response<Unit> = notImplemented()
+    override suspend fun me(): Response<ApiSuccessEnvelope<MeDto>> = notImplemented()
+    override suspend fun sessions(): Response<ApiSuccessEnvelope<List<SessionSummaryDto>>> = notImplemented()
+    override suspend fun revokeSession(sessionId: String): Response<Unit> = notImplemented()
+
+    private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this test")
+}
 
 private class FakeCustomerProfileApi : CustomerProfileApi {
     var lastUpdateRequest: UpdateCustomerProfileRequest? = null
@@ -75,9 +102,28 @@ class CustomerProfileSetupViewModelTest {
 
     private val context: Context = ApplicationProvider.getApplicationContext()
 
-    private fun buildViewModel(api: FakeCustomerProfileApi): CustomerProfileSetupViewModel {
+    private fun newSignedInSessionManager(): SessionManager {
+        val sessionManager = SessionManager(TokenStore(context), NotImplementedAuthApi(), Moshi.Builder().build())
+        sessionManager.completeSignIn(
+            AuthResultDto(
+                user = AuthUserDto(id = "user-1", email = "ama@example.test", displayName = "Ama"),
+                accessToken = "access-token",
+                accessTokenExpiresInSeconds = 900,
+                refreshToken = "refresh-token",
+                session = AuthSessionDto(id = "session-1", expiresAt = "2027-01-01T00:00:00Z"),
+            ),
+        )
+        return sessionManager
+    }
+
+    private fun buildViewModel(
+        api: FakeCustomerProfileApi,
+        sessionManager: SessionManager = newSignedInSessionManager(),
+    ): CustomerProfileSetupViewModel {
         val repository = CustomerProfileRepository(api, Moshi.Builder().build())
-        return CustomerProfileSetupViewModel(repository, ApproximateLocationProvider(context))
+        val moshi = Moshi.Builder().build()
+        val authRepository = AuthRepository(NotImplementedAuthApi(), sessionManager, moshi)
+        return CustomerProfileSetupViewModel(repository, ApproximateLocationProvider(context), authRepository)
     }
 
     @Test
@@ -90,6 +136,22 @@ class CustomerProfileSetupViewModelTest {
 
         assertTrue(saved)
         assertEquals(UpdateCustomerProfileRequest(), api.lastUpdateRequest)
+    }
+
+    @Test
+    fun `a successful save syncs the server's authoritative name into the cached session`() = runTest {
+        val api = FakeCustomerProfileApi().apply { updateResult = Response.success(ApiSuccessEnvelope(data = profile(displayName = "Kora Tester"), meta = ApiMeta("req"))) }
+        val sessionManager = newSignedInSessionManager()
+        val viewModel = buildViewModel(api, sessionManager)
+
+        viewModel.onFullNameChanged("Kora Tester")
+        var saved = false
+        viewModel.save { saved = true }
+
+        assertTrue(saved)
+        val state = sessionManager.sessionState.value
+        assertTrue(state is SessionState.SignedIn)
+        assertEquals("Kora Tester", (state as SessionState.SignedIn).displayName)
     }
 
     @Test

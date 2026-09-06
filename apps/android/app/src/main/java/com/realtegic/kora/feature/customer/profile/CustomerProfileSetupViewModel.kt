@@ -7,6 +7,7 @@ import com.realtegic.kora.core.location.ApproximateLocationProvider
 import com.realtegic.kora.core.location.LocationLookupResult
 import com.realtegic.kora.core.network.ApiResult
 import com.realtegic.kora.core.network.DomainError
+import com.realtegic.kora.core.session.AuthRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +40,7 @@ data class CustomerProfileSetupUiState(
 class CustomerProfileSetupViewModel(
     private val customerProfileRepository: CustomerProfileRepository,
     private val locationProvider: ApproximateLocationProvider,
+    private val authRepository: AuthRepository,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CustomerProfileSetupUiState())
     val state: StateFlow<CustomerProfileSetupUiState> = _state.asStateFlow()
@@ -115,7 +117,15 @@ class CustomerProfileSetupViewModel(
                 longitude = current.longitude,
             )
             when (result) {
-                is ApiResult.Success -> onSaved()
+                is ApiResult.Success -> {
+                    // Keeps the cached session in sync with the server's
+                    // authoritative name so screens reading the session
+                    // directly (e.g. Profile) reflect the change immediately,
+                    // instead of showing the name captured at last sign-in
+                    // until the next full session restoration.
+                    authRepository.updateDisplayName(result.value.displayName)
+                    onSaved()
+                }
                 is ApiResult.Failure -> _state.value = _state.value.copy(isSaving = false, error = result.error)
             }
         }

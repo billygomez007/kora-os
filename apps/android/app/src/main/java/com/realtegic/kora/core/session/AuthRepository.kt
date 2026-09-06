@@ -52,6 +52,8 @@ class AuthRepository(
     suspend fun revokeSession(sessionId: String): ApiResult<Unit> =
         safeUnitApiCall(moshi) { authApi.revokeSession(sessionId) }
 
+    fun updateDisplayName(displayName: String) = sessionManager.updateDisplayName(displayName)
+
     suspend fun logout() = sessionManager.logout()
 
     suspend fun logoutAllDevices() = sessionManager.logoutAll()

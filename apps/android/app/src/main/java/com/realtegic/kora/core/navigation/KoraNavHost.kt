@@ -301,7 +301,7 @@ private fun NavGraphBuilder.workspaceGraph(navController: NavHostController, con
 
 private fun NavGraphBuilder.customerProfileSetupGraph(navController: NavHostController, container: AppContainer) {
     composable(KoraRoutes.CUSTOMER_PROFILE_SETUP) {
-        val viewModel = koraViewModel { CustomerProfileSetupViewModel(container.customerProfileRepository, container.locationProvider) }
+        val viewModel = koraViewModel { CustomerProfileSetupViewModel(container.customerProfileRepository, container.locationProvider, container.authRepository) }
         CustomerProfileSetupScreen(
             viewModel = viewModel,
             onSaved = { navigateToCustomerHome(navController, popUpToRoute = KoraRoutes.CUSTOMER_PROFILE_SETUP) },

@@ -20,6 +20,8 @@ import com.realtegic.kora.core.network.ApiResult
 import com.realtegic.kora.core.preferences.SelectedWorkspacePreference
 import com.realtegic.kora.core.session.SessionState
 import com.realtegic.kora.feature.auth.AuthViewModel
+import com.realtegic.kora.feature.workspace.AccountTypeScreen
+import com.realtegic.kora.feature.workspace.AccountTypeViewModel
 import com.realtegic.kora.feature.auth.EmailEntryScreen
 import com.realtegic.kora.feature.auth.OtpVerifyScreen
 import com.realtegic.kora.feature.auth.SplashScreen
@@ -49,6 +51,8 @@ import com.realtegic.kora.feature.customer.home.HomeScreen
 import com.realtegic.kora.feature.customer.home.HomeViewModel
 import com.realtegic.kora.feature.customer.profile.AccountSettingsScreen
 import com.realtegic.kora.feature.customer.profile.AccountSettingsViewModel
+import com.realtegic.kora.feature.customer.profile.CustomerProfileSetupScreen
+import com.realtegic.kora.feature.customer.profile.CustomerProfileSetupViewModel
 import com.realtegic.kora.feature.customer.profile.FavoritesScreen
 import com.realtegic.kora.feature.customer.profile.FavoritesViewModel
 import com.realtegic.kora.feature.customer.profile.ProfileScreen
@@ -102,7 +106,9 @@ fun KoraNavHost(container: AppContainer) {
         }
 
         authGraph(navController, container)
+        accountTypeGraph(navController, container)
         workspaceGraph(navController, container)
+        customerProfileSetupGraph(navController, container)
         customerGraph(navController, container)
         businessGraph(navController, container)
         onboardingGraph(navController, container)
@@ -139,7 +145,9 @@ private suspend fun resolveAndNavigate(navController: NavHostController, contain
                         container.localPreferences.clearSelectedWorkspace()
                     }
                     when (val decision = decideInitialWorkspaceRoute(workspaces)) {
-                        WorkspaceDecision.CustomerHome -> navigateToCustomerHome(navController, popUpToRoute)
+                        WorkspaceDecision.ShowAccountTypeChoice -> navController.navigate(KoraRoutes.ACCOUNT_TYPE) {
+                            popUpTo(popUpToRoute) { inclusive = true }
+                        }
                         is WorkspaceDecision.BusinessWorkspace -> navigateToBusiness(navController, decision.organizationId, popUpToRoute)
                         WorkspaceDecision.ShowChooser -> navController.navigate(KoraRoutes.WORKSPACE_GRAPH) {
                             popUpTo(popUpToRoute) { inclusive = true }
@@ -159,6 +167,28 @@ private suspend fun resolveAndNavigate(navController: NavHostController, contain
 private fun navigateToCustomerHome(navController: NavHostController, popUpToRoute: String) {
     navController.navigate(KoraRoutes.CUSTOMER_GRAPH) {
         popUpTo(popUpToRoute) { inclusive = true }
+    }
+}
+
+/** The one place that decides whether a customer-bound account still
+ * needs [KoraRoutes.CUSTOMER_PROFILE_SETUP] -- called every time
+ * something actually commits to the customer workspace (docs task Phase
+ * 7), not just the first time, since a returning customer who already
+ * completed setup must reach Home exactly as fast as before. A failed
+ * profile fetch fails open to Home rather than blocking entry, matching
+ * how [resolveAndNavigate] itself never lets a transient error produce a
+ * dead end. */
+private suspend fun navigateToCustomerHomeOrProfileSetup(navController: NavHostController, container: AppContainer, popUpToRoute: String) {
+    val needsProfileSetup = when (val result = container.customerProfileRepository.get()) {
+        is ApiResult.Success -> result.value.phoneE164 == null
+        is ApiResult.Failure -> false
+    }
+    if (needsProfileSetup) {
+        navController.navigate(KoraRoutes.CUSTOMER_PROFILE_SETUP) {
+            popUpTo(popUpToRoute) { inclusive = true }
+        }
+    } else {
+        navigateToCustomerHome(navController, popUpToRoute)
     }
 }
 
@@ -228,17 +258,50 @@ private fun rememberAuthGraphViewModel(
     return viewModel(viewModelStoreOwner = parentEntry, factory = viewModelFactory { initializer { AuthViewModel(container.authRepository) } })
 }
 
+private fun NavGraphBuilder.accountTypeGraph(navController: NavHostController, container: AppContainer) {
+    composable(KoraRoutes.ACCOUNT_TYPE) {
+        val viewModel = koraViewModel { AccountTypeViewModel() }
+        val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+        AccountTypeScreen(
+            viewModel = viewModel,
+            onCustomerContinue = {
+                coroutineScope.launch {
+                    container.localPreferences.setSelectedCustomerWorkspace()
+                    navigateToCustomerHomeOrProfileSetup(navController, container, popUpToRoute = KoraRoutes.ACCOUNT_TYPE)
+                }
+            },
+            onBusinessContinue = { navController.navigate(KoraRoutes.ONBOARDING) { popUpTo(KoraRoutes.ACCOUNT_TYPE) { inclusive = true } } },
+        )
+    }
+}
+
 private fun NavGraphBuilder.workspaceGraph(navController: NavHostController, container: AppContainer) {
     navigation(startDestination = KoraRoutes.WORKSPACE_CHOOSER, route = KoraRoutes.WORKSPACE_GRAPH) {
         composable(KoraRoutes.WORKSPACE_CHOOSER) {
-            val viewModel = koraViewModel { WorkspaceViewModel(container.workspacesRepository, container.localPreferences) }
+            val viewModel = koraViewModel { WorkspaceViewModel(container.workspacesRepository, container.localPreferences, container.authRepository) }
+            val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
             WorkspaceChooserScreen(
                 viewModel = viewModel,
-                onCustomerSelected = { navigateToCustomerHome(navController, popUpToRoute = KoraRoutes.WORKSPACE_GRAPH) },
+                onCustomerSelected = {
+                    coroutineScope.launch {
+                        navigateToCustomerHomeOrProfileSetup(navController, container, popUpToRoute = KoraRoutes.WORKSPACE_GRAPH)
+                    }
+                },
                 onOrganizationSelected = { organizationId -> navigateToBusiness(navController, organizationId, popUpToRoute = KoraRoutes.WORKSPACE_GRAPH) },
                 onCreateBusiness = { navController.navigate(KoraRoutes.ONBOARDING) },
+                onSignInDifferentEmail = { navigateToSignedOut(navController) },
             )
         }
+    }
+}
+
+private fun NavGraphBuilder.customerProfileSetupGraph(navController: NavHostController, container: AppContainer) {
+    composable(KoraRoutes.CUSTOMER_PROFILE_SETUP) {
+        val viewModel = koraViewModel { CustomerProfileSetupViewModel(container.customerProfileRepository, container.locationProvider) }
+        CustomerProfileSetupScreen(
+            viewModel = viewModel,
+            onSaved = { navigateToCustomerHome(navController, popUpToRoute = KoraRoutes.CUSTOMER_PROFILE_SETUP) },
+        )
     }
 }
 

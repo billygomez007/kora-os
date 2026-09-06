@@ -20,9 +20,23 @@ object KoraRoutes {
     const val AUTH_EMAIL_ENTRY = "auth/email"
     const val AUTH_OTP_VERIFY = "auth/otp"
 
+    // Reached only for a genuinely undecided, membership-less account
+    // (docs task Phase 5) -- a standalone top-level route, not nested in
+    // any graph, matching how ONBOARDING and INVITATION_PREVIEW are
+    // already reached directly from the workspace-resolution decision.
+    const val ACCOUNT_TYPE = "account-type"
+
     // Workspace graph
     const val WORKSPACE_GRAPH = "workspace"
     const val WORKSPACE_CHOOSER = "workspace/chooser"
+
+    // Reached only the first time an account actually enters the
+    // customer workspace, and only while its CustomerProfile still has
+    // no phone number on file (docs task Phase 7) -- a standalone route
+    // outside CUSTOMER_GRAPH itself, exactly like ACCOUNT_TYPE and
+    // ONBOARDING, so back-navigation and the pop-through-on-success
+    // semantics work the same well-understood way.
+    const val CUSTOMER_PROFILE_SETUP = "customer/profile-setup"
 
     // Customer graph
     const val CUSTOMER_GRAPH = "customer"

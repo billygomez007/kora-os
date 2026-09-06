@@ -43,6 +43,12 @@ import com.realtegic.kora.feature.auth.AuthViewModel
 import com.realtegic.kora.feature.auth.OtpVerifyScreen
 import com.realtegic.kora.feature.customer.home.HomeScreen
 import com.realtegic.kora.feature.customer.home.HomeViewModel
+import com.realtegic.kora.core.data.CustomerProfileRepository
+import com.realtegic.kora.core.location.ApproximateLocationProvider
+import com.realtegic.kora.core.model.CustomerProfileDto
+import com.realtegic.kora.core.network.CustomerProfileApi
+import com.realtegic.kora.feature.customer.profile.CustomerProfileSetupScreen
+import com.realtegic.kora.feature.customer.profile.CustomerProfileSetupViewModel
 import com.realtegic.kora.feature.workspace.AccountTypeScreen
 import com.realtegic.kora.feature.workspace.AccountTypeViewModel
 import com.realtegic.kora.feature.workspace.WorkspaceChooserScreen
@@ -83,6 +89,20 @@ private class ScreenshotAppointmentsApi : AppointmentsApi {
 
 private class ScreenshotWorkspacesApi(private val workspaces: MyWorkspacesDto) : WorkspacesApi {
     override suspend fun getMyWorkspaces() = Response.success(ApiSuccessEnvelope(data = workspaces, meta = ApiMeta("req")))
+}
+
+private class ScreenshotCustomerProfileApi : CustomerProfileApi {
+    override suspend fun get() = notImplemented()
+    override suspend fun update(body: com.realtegic.kora.core.model.UpdateCustomerProfileRequest) = Response.success(
+        ApiSuccessEnvelope(
+            data = CustomerProfileDto(
+                id = "profile-1", displayName = "", email = "ama@example.test", phoneE164 = null,
+                city = null, area = null, latitude = null, longitude = null, locationConsentedAt = null,
+            ),
+            meta = ApiMeta("req"),
+        ),
+    )
+    private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this screenshot")
 }
 
 private class ScreenshotAuthApi : AuthApi {
@@ -214,6 +234,20 @@ class ScreenshotTests {
         }
 
         composeRule.onRoot().captureRoboImage("build/outputs/roborazzi/account_type_screen.png")
+    }
+
+    @Test
+    fun `customer profile setup screen`() {
+        val repository = CustomerProfileRepository(ScreenshotCustomerProfileApi(), Moshi.Builder().build())
+        val viewModel = CustomerProfileSetupViewModel(repository, ApproximateLocationProvider(context))
+
+        composeRule.setContent {
+            KoraTheme {
+                CustomerProfileSetupScreen(viewModel = viewModel, onSaved = {})
+            }
+        }
+
+        composeRule.onRoot().captureRoboImage("build/outputs/roborazzi/customer_profile_setup_screen.png")
     }
 
     private fun otpViewModel(api: ScreenshotAuthApi): AuthViewModel {

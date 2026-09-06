@@ -33,6 +33,8 @@ import com.realtegic.kora.core.model.CreateStaffAvailabilityExceptionRequest
 import com.realtegic.kora.core.model.CreateStaffInvitationRequest
 import com.realtegic.kora.core.model.CreateStaffInvitationResponseDto
 import com.realtegic.kora.core.model.CreateWalkInRequest
+import com.realtegic.kora.core.model.CustomerProfileDto
+import com.realtegic.kora.core.model.UpdateCustomerProfileRequest
 import com.realtegic.kora.core.model.DailyRevenueBucketDto
 import com.realtegic.kora.core.model.DisputePaymentRequest
 import com.realtegic.kora.core.model.DiscoveryBranchSummaryDto
@@ -85,6 +87,7 @@ import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.PATCH
 import retrofit2.http.PUT
 import retrofit2.http.POST
 import retrofit2.http.Path
@@ -93,6 +96,14 @@ import retrofit2.http.Query
 interface WorkspacesApi {
     @GET("me/workspaces")
     suspend fun getMyWorkspaces(): Response<ApiSuccessEnvelope<MyWorkspacesDto>>
+}
+
+interface CustomerProfileApi {
+    @GET("me/customer-profile")
+    suspend fun get(): Response<ApiSuccessEnvelope<CustomerProfileDto>>
+
+    @PATCH("me/customer-profile")
+    suspend fun update(@Body body: UpdateCustomerProfileRequest): Response<ApiSuccessEnvelope<CustomerProfileDto>>
 }
 
 interface DiscoveryApi {

@@ -23,6 +23,7 @@ import com.realtegic.kora.core.data.ServiceSessionsRepository
 import com.realtegic.kora.core.data.StaffRepository
 import com.realtegic.kora.core.data.SubscriptionRepository
 import com.realtegic.kora.core.data.TransactionsRepository
+import com.realtegic.kora.core.data.CustomerProfileRepository
 import com.realtegic.kora.core.data.WorkspacesRepository
 import com.realtegic.kora.core.location.ApproximateLocationProvider
 import com.realtegic.kora.core.network.AppointmentsApi
@@ -49,6 +50,7 @@ import com.realtegic.kora.core.network.StaffApi
 import com.realtegic.kora.core.network.SubscriptionApi
 import com.realtegic.kora.core.network.TokenAuthenticator
 import com.realtegic.kora.core.network.TransactionsApi
+import com.realtegic.kora.core.network.CustomerProfileApi
 import com.realtegic.kora.core.network.WorkspacesApi
 import com.realtegic.kora.core.preferences.LocalPreferences
 import com.realtegic.kora.core.session.AuthRepository
@@ -103,6 +105,7 @@ class AppContainer(context: Context) {
     private val mainRetrofit = NetworkModule.buildRetrofit(BuildConfig.API_BASE_URL, mainOkHttpClient, moshi)
 
     val workspacesRepository = WorkspacesRepository(mainRetrofit.create(WorkspacesApi::class.java), moshi)
+    val customerProfileRepository = CustomerProfileRepository(mainRetrofit.create(CustomerProfileApi::class.java), moshi)
     val discoveryRepository = DiscoveryRepository(mainRetrofit.create(DiscoveryApi::class.java), moshi)
     val appointmentsRepository = AppointmentsRepository(mainRetrofit.create(AppointmentsApi::class.java), moshi)
     val favoritesRepository = FavoritesRepository(mainRetrofit.create(FavoritesApi::class.java), moshi)

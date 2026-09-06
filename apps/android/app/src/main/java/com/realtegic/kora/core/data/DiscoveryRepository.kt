@@ -20,6 +20,7 @@ class DiscoveryRepository(
     suspend fun search(
         text: String? = null,
         category: String? = null,
+        verifiedOnly: Boolean = false,
         nearLat: Double? = null,
         nearLng: Double? = null,
         radiusKm: Int? = null,
@@ -29,6 +30,7 @@ class DiscoveryRepository(
         discoveryApi.searchBusinesses(
             text = text?.ifBlank { null },
             category = category,
+            verificationStatus = if (verifiedOnly) "VERIFIED" else null,
             nearLat = nearLat,
             nearLng = nearLng,
             radiusKm = radiusKm,

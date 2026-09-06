@@ -1,5 +1,6 @@
 package com.realtegic.kora.core.navigation
 
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -39,8 +40,11 @@ import com.realtegic.kora.feature.customer.appointments.AppointmentDetailViewMod
 import com.realtegic.kora.feature.customer.appointments.AppointmentsListScreen
 import com.realtegic.kora.feature.customer.appointments.AppointmentsListViewModel
 import com.realtegic.kora.feature.customer.booking.BookingConfirmationScreen
+import com.realtegic.kora.feature.customer.booking.BookingConfirmationViewModel
 import com.realtegic.kora.feature.customer.booking.BookingFlowScreen
 import com.realtegic.kora.feature.customer.booking.BookingViewModel
+import com.realtegic.kora.core.designsystem.CustomerBottomNavBar
+import com.realtegic.kora.core.designsystem.CustomerTab
 import com.realtegic.kora.feature.customer.discovery.BranchServicesScreen
 import com.realtegic.kora.feature.customer.discovery.BranchServicesViewModel
 import com.realtegic.kora.feature.customer.discovery.BusinessDetailScreen
@@ -305,27 +309,63 @@ private fun NavGraphBuilder.customerProfileSetupGraph(navController: NavHostCont
     }
 }
 
+/** A top-level customer tab's own content, inset for the shared bottom
+ * nav bar (docs task Batch 02 Phase 5). Nesting a `Scaffold` inside
+ * another is a proven-safe pattern already established for the business
+ * workspace's own per-tab screens (docs/ARCHITECTURE.md section 24) --
+ * applying the outer [androidx.compose.foundation.layout.PaddingValues]
+ * to every tab uniformly is exactly the fix that section's own
+ * navigation-bar-overlap bug required, so it is applied here from the
+ * start rather than risking the same bug again. */
+@Composable
+private fun CustomerTabScaffold(
+    navController: NavHostController,
+    currentTab: CustomerTab,
+    content: @Composable () -> Unit,
+) {
+    androidx.compose.material3.Scaffold(
+        bottomBar = {
+            CustomerBottomNavBar(currentRoute = currentTab.route) { tab ->
+                if (tab != currentTab) {
+                    navController.navigate(tab.route) {
+                        popUpTo(KoraRoutes.CUSTOMER_HOME) { saveState = true }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        androidx.compose.foundation.layout.Box(modifier = androidx.compose.ui.Modifier.padding(padding)) {
+            content()
+        }
+    }
+}
+
 private fun NavGraphBuilder.customerGraph(navController: NavHostController, container: AppContainer) {
     navigation(startDestination = KoraRoutes.CUSTOMER_HOME, route = KoraRoutes.CUSTOMER_GRAPH) {
         composable(KoraRoutes.CUSTOMER_HOME) {
-            val viewModel = koraViewModel { HomeViewModel(container.discoveryRepository, container.appointmentsRepository) }
-            HomeScreen(
-                viewModel = viewModel,
-                onSearchTapped = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
-                onNearYouTapped = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
-                onCategoryTapped = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
-                onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
-                onProfileTapped = { navController.navigate(KoraRoutes.CUSTOMER_PROFILE) },
-                onUpcomingAppointmentTapped = { id -> navController.navigate(KoraRoutes.appointmentDetail(id)) },
-            )
+            val viewModel = koraViewModel { HomeViewModel(container.discoveryRepository, container.appointmentsRepository, container.customerProfileRepository) }
+            CustomerTabScaffold(navController, CustomerTab.HOME) {
+                HomeScreen(
+                    viewModel = viewModel,
+                    onSearchTapped = { navController.navigate(CustomerTab.SEARCH.route) { popUpTo(KoraRoutes.CUSTOMER_HOME) { saveState = true }; launchSingleTop = true; restoreState = true } },
+                    onNearYouTapped = { navController.navigate(CustomerTab.SEARCH.route) { popUpTo(KoraRoutes.CUSTOMER_HOME) { saveState = true }; launchSingleTop = true; restoreState = true } },
+                    onCategoryTapped = { navController.navigate(CustomerTab.SEARCH.route) { popUpTo(KoraRoutes.CUSTOMER_HOME) { saveState = true }; launchSingleTop = true; restoreState = true } },
+                    onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
+                    onProfileTapped = { navController.navigate(CustomerTab.PROFILE.route) { popUpTo(KoraRoutes.CUSTOMER_HOME) { saveState = true }; launchSingleTop = true; restoreState = true } },
+                    onUpcomingAppointmentTapped = { id -> navController.navigate(KoraRoutes.appointmentDetail(id)) },
+                )
+            }
         }
         composable(KoraRoutes.CUSTOMER_SEARCH) {
             val viewModel = koraViewModel { DiscoveryViewModel(container.discoveryRepository, container.locationProvider) }
-            SearchResultsScreen(
-                viewModel = viewModel,
-                onBack = { navController.popBackStack() },
-                onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
-            )
+            CustomerTabScaffold(navController, CustomerTab.SEARCH) {
+                SearchResultsScreen(
+                    viewModel = viewModel,
+                    onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
+                )
+            }
         }
         composable(
             KoraRoutes.CUSTOMER_BUSINESS_DETAIL,
@@ -352,9 +392,8 @@ private fun NavGraphBuilder.customerGraph(navController: NavHostController, cont
             BranchServicesScreen(
                 viewModel = viewModel,
                 onBack = { navController.popBackStack() },
-                onContinue = { serviceId, staffProfileId ->
+                onContinue = { serviceId ->
                     navController.currentBackStackEntry?.savedStateHandle?.set("serviceId", serviceId)
-                    navController.currentBackStackEntry?.savedStateHandle?.set("staffProfileId", staffProfileId)
                     navController.navigate(KoraRoutes.booking(slug, branchId))
                 },
             )
@@ -370,9 +409,8 @@ private fun NavGraphBuilder.customerGraph(navController: NavHostController, cont
             val branchId = backStackEntry.arguments?.getString("branchId").orEmpty()
             val previousEntry = remember(backStackEntry) { navController.previousBackStackEntry }
             val serviceId = previousEntry?.savedStateHandle?.get<String>("serviceId").orEmpty()
-            val staffProfileId = previousEntry?.savedStateHandle?.get<String>("staffProfileId")
             val viewModel = koraViewModel {
-                BookingViewModel(slug, branchId, serviceId, staffProfileId, container.discoveryRepository, container.appointmentsRepository)
+                BookingViewModel(slug, branchId, serviceId, container.discoveryRepository, container.appointmentsRepository)
             }
             BookingFlowScreen(
                 viewModel = viewModel,
@@ -387,50 +425,70 @@ private fun NavGraphBuilder.customerGraph(navController: NavHostController, cont
         composable(
             KoraRoutes.CUSTOMER_BOOKING_CONFIRMATION,
             arguments = listOf(navArgument("appointmentId") { type = androidx.navigation.NavType.StringType }),
-        ) {
+        ) { backStackEntry ->
+            val appointmentId = backStackEntry.arguments?.getString("appointmentId").orEmpty()
+            val viewModel = koraViewModel { BookingConfirmationViewModel(appointmentId, container.appointmentsRepository) }
             BookingConfirmationScreen(
-                onViewAppointments = {
-                    navController.navigate(KoraRoutes.CUSTOMER_APPOINTMENTS) { popUpTo(KoraRoutes.CUSTOMER_HOME) }
+                viewModel = viewModel,
+                onViewAppointment = { id ->
+                    navController.navigate(KoraRoutes.appointmentDetail(id)) { popUpTo(KoraRoutes.CUSTOMER_HOME) }
                 },
                 onDone = { navController.popBackStack(KoraRoutes.CUSTOMER_HOME, inclusive = false) },
             )
         }
         composable(KoraRoutes.CUSTOMER_APPOINTMENTS) {
             val viewModel = koraViewModel { AppointmentsListViewModel(container.appointmentsRepository) }
-            AppointmentsListScreen(
-                viewModel = viewModel,
-                onAppointmentTapped = { id -> navController.navigate(KoraRoutes.appointmentDetail(id)) },
-                onBookNew = { navController.navigate(KoraRoutes.CUSTOMER_SEARCH) },
-            )
+            CustomerTabScaffold(navController, CustomerTab.APPOINTMENTS) {
+                AppointmentsListScreen(
+                    viewModel = viewModel,
+                    onAppointmentTapped = { id -> navController.navigate(KoraRoutes.appointmentDetail(id)) },
+                    onBookNew = {
+                        navController.navigate(CustomerTab.SEARCH.route) {
+                            popUpTo(KoraRoutes.CUSTOMER_HOME) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                )
+            }
         }
         composable(
             KoraRoutes.CUSTOMER_APPOINTMENT_DETAIL,
             arguments = listOf(navArgument("appointmentId") { type = androidx.navigation.NavType.StringType }),
         ) { backStackEntry ->
             val appointmentId = backStackEntry.arguments?.getString("appointmentId").orEmpty()
-            val viewModel = koraViewModel { AppointmentDetailViewModel(appointmentId, container.appointmentsRepository) }
+            val viewModel = koraViewModel { AppointmentDetailViewModel(appointmentId, container.appointmentsRepository, container.discoveryRepository) }
             AppointmentDetailScreen(viewModel, onBack = { navController.popBackStack() })
         }
         composable(KoraRoutes.CUSTOMER_PROFILE) {
             val viewModel = koraViewModel { ProfileViewModel(container.authRepository) }
-            ProfileScreen(
-                viewModel = viewModel,
-                onFavorites = { navController.navigate(KoraRoutes.CUSTOMER_FAVORITES) },
-                onAccountSettings = { navController.navigate(KoraRoutes.ACCOUNT_SETTINGS) },
-                onSwitchWorkspace = {
-                    navController.navigate(KoraRoutes.WORKSPACE_GRAPH) { popUpTo(KoraRoutes.CUSTOMER_GRAPH) { inclusive = true } }
-                },
-                onCreateBusiness = { navController.navigate(KoraRoutes.ONBOARDING) },
-                onSignedOut = { navigateToSignedOut(navController) },
-            )
+            CustomerTabScaffold(navController, CustomerTab.PROFILE) {
+                ProfileScreen(
+                    viewModel = viewModel,
+                    onFavorites = {
+                        navController.navigate(CustomerTab.FAVORITES.route) {
+                            popUpTo(KoraRoutes.CUSTOMER_HOME) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onAccountSettings = { navController.navigate(KoraRoutes.ACCOUNT_SETTINGS) },
+                    onSwitchWorkspace = {
+                        navController.navigate(KoraRoutes.WORKSPACE_GRAPH) { popUpTo(KoraRoutes.CUSTOMER_GRAPH) { inclusive = true } }
+                    },
+                    onCreateBusiness = { navController.navigate(KoraRoutes.ONBOARDING) },
+                    onSignedOut = { navigateToSignedOut(navController) },
+                )
+            }
         }
         composable(KoraRoutes.CUSTOMER_FAVORITES) {
             val viewModel = koraViewModel { FavoritesViewModel(container.favoritesRepository) }
-            FavoritesScreen(
-                viewModel = viewModel,
-                onBack = { navController.popBackStack() },
-                onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
-            )
+            CustomerTabScaffold(navController, CustomerTab.FAVORITES) {
+                FavoritesScreen(
+                    viewModel = viewModel,
+                    onBusinessTapped = { slug -> navController.navigate(KoraRoutes.businessDetail(slug)) },
+                )
+            }
         }
         composable(KoraRoutes.ACCOUNT_SETTINGS) {
             val viewModel = koraViewModel { AccountSettingsViewModel(container.authRepository) }

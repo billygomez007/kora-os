@@ -1,5 +1,7 @@
 package com.realtegic.kora.feature.customer.discovery
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -25,9 +28,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.realtegic.kora.core.designsystem.ErrorStateView
+import com.realtegic.kora.core.designsystem.KoraSecondaryButton
 import com.realtegic.kora.core.designsystem.LoadingStateView
 import com.realtegic.kora.core.designsystem.ScreenState
 import com.realtegic.kora.core.model.DiscoveryBranchSummaryDto
@@ -73,6 +78,17 @@ fun BusinessDetailScreen(
                             )
                         }
                         Column(modifier = Modifier.padding(16.dp)) {
+                            if (business.data.verificationStatus == "VERIFIED") {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Verified, contentDescription = "Verified business", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.height(16.dp))
+                                    Text(
+                                        "Verified business",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+                                    )
+                                }
+                            }
                             if (business.data.categories.isNotEmpty()) {
                                 Text(
                                     business.data.categories.joinToString(" • "),
@@ -120,21 +136,46 @@ fun BusinessDetailScreen(
 
 @Composable
 private fun BranchRow(branch: DiscoveryBranchSummaryDto, onClick: () -> Unit) {
+    val context = LocalContext.current
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Column(modifier = Modifier.padding(start = 12.dp)) {
-                Text(branch.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-                val locationLine = listOfNotNull(branch.city, branch.region).joinToString(", ")
-                if (locationLine.isNotBlank()) {
-                    Text(locationLine, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Column(modifier = Modifier.padding(start = 12.dp)) {
+                    Text(branch.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                    val locationLine = listOfNotNull(branch.city, branch.region).joinToString(", ")
+                    if (locationLine.isNotBlank()) {
+                        Text(locationLine, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (branch.openingHoursNote != null) {
+                        Text(branch.openingHoursNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                if (branch.openingHoursNote != null) {
-                    Text(branch.openingHoursNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (branch.publicPhone != null || (branch.latitude != null && branch.longitude != null)) {
+                Row(modifier = Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (branch.publicPhone != null) {
+                        KoraSecondaryButton(
+                            text = "Call",
+                            onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${branch.publicPhone}"))) } },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (branch.latitude != null && branch.longitude != null) {
+                        KoraSecondaryButton(
+                            text = "Directions",
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:${branch.latitude},${branch.longitude}?q=${branch.latitude},${branch.longitude}")))
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
         }

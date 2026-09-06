@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.realtegic.kora.core.data.DiscoveryRepository
 import com.realtegic.kora.core.designsystem.ScreenState
-import com.realtegic.kora.core.model.PublicProviderSummaryDto
 import com.realtegic.kora.core.model.PublicServiceSummaryDto
 import com.realtegic.kora.core.network.ApiResult
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,12 +16,15 @@ import kotlinx.coroutines.launch
  * (`serviceIds` is an ordered list), but a single-service flow keeps
  * the date/availability step's UI tractable for this stage; a future
  * stage can extend the selection to multiple services without changing
- * this screen's shape. */
+ * this screen's shape. Provider selection moved to [BookingViewModel] as
+ * its own wizard step (docs task Customer Marketplace Design Batch 02:
+ * "Choose services" and "Choose a professional" are separate steps),
+ * since eligible providers depend on the service *and* need to be
+ * re-resolvable if the customer backs up and changes their date/time
+ * choice later in the same flow. */
 data class BranchServicesUiState(
     val services: ScreenState<List<PublicServiceSummaryDto>> = ScreenState.Loading,
     val selectedServiceId: String? = null,
-    val providers: ScreenState<List<PublicProviderSummaryDto>> = ScreenState.Empty,
-    val selectedProviderId: String? = null,
 )
 
 class BranchServicesViewModel(
@@ -53,18 +55,6 @@ class BranchServicesViewModel(
     }
 
     fun selectService(serviceId: String) {
-        _state.value = _state.value.copy(selectedServiceId = serviceId, selectedProviderId = null, providers = ScreenState.Loading)
-        viewModelScope.launch {
-            when (val result = discoveryRepository.getProviders(slug, branchId, serviceId)) {
-                is ApiResult.Success -> {
-                    _state.value = _state.value.copy(providers = if (result.value.isEmpty()) ScreenState.Empty else ScreenState.Content(result.value))
-                }
-                is ApiResult.Failure -> _state.value = _state.value.copy(providers = ScreenState.Error(result.error))
-            }
-        }
-    }
-
-    fun selectProvider(staffProfileId: String?) {
-        _state.value = _state.value.copy(selectedProviderId = staffProfileId)
+        _state.value = _state.value.copy(selectedServiceId = serviceId)
     }
 }

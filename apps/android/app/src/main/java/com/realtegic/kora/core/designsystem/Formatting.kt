@@ -68,12 +68,22 @@ object MoneyParser {
 object KoraDateTimeFormatter {
     private val timeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.US)
     private val dayFormatter = DateTimeFormatter.ofPattern("EEE, MMM d", Locale.US)
+    private val shortDayFormatter = DateTimeFormatter.ofPattern("EEE", Locale.US)
+    private val dayNumberFormatter = DateTimeFormatter.ofPattern("d", Locale.US)
 
     fun formatTime(utcIso: String, ianaTimeZone: String): String =
         toZoned(utcIso, ianaTimeZone).format(timeFormatter)
 
     fun formatDay(utcIso: String, ianaTimeZone: String): String =
         toZoned(utcIso, ianaTimeZone).format(dayFormatter)
+
+    /** e.g. "Tue" -- the weekday abbreviation for a compact date chip. */
+    fun formatShortDay(utcIso: String, ianaTimeZone: String): String =
+        toZoned(utcIso, ianaTimeZone).format(shortDayFormatter)
+
+    /** e.g. "8" -- the bare day-of-month number for a compact date chip. */
+    fun formatDayNumber(utcIso: String, ianaTimeZone: String): String =
+        toZoned(utcIso, ianaTimeZone).format(dayNumberFormatter)
 
     /** e.g. "Thu, Sep 3 at 2:30 PM (Africa/Accra)" -- the explicit zone
      * suffix removes any ambiguity about which timezone a time is

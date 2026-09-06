@@ -1,6 +1,7 @@
 package com.realtegic.kora.core.location
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
@@ -50,6 +51,10 @@ class ApproximateLocationProvider(private val context: Context) {
     private fun hasCoarseLocationPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
+    // Lint cannot see that the only caller (getApproximateLocation) already
+    // checked hasCoarseLocationPermission() before reaching this method, and
+    // a SecurityException is caught defensively there regardless.
+    @SuppressLint("MissingPermission")
     private suspend fun requestLocation(): LocationLookupResult = suspendCancellableCoroutine { continuation ->
         val cancellationSource = CancellationTokenSource()
         continuation.invokeOnCancellation { cancellationSource.cancel() }

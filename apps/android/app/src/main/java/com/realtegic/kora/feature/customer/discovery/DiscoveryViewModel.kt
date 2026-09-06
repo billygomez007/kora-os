@@ -6,6 +6,7 @@ import com.realtegic.kora.core.data.DiscoveryRepository
 import com.realtegic.kora.core.designsystem.ScreenState
 import com.realtegic.kora.core.location.ApproximateLocationProvider
 import com.realtegic.kora.core.location.LocationLookupResult
+import com.realtegic.kora.core.model.BusinessCategoryDto
 import com.realtegic.kora.core.model.DiscoveryBusinessSummaryDto
 import com.realtegic.kora.core.network.ApiResult
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +26,8 @@ data class NearbyLocation(val latitude: Double, val longitude: Double)
 data class DiscoveryUiState(
     val query: String = "",
     val selectedCategory: String? = null,
+    val verifiedOnly: Boolean = false,
+    val categories: ScreenState<List<BusinessCategoryDto>> = ScreenState.Loading,
     val nearby: NearbyLocation? = null,
     val isLoadingNearby: Boolean = false,
     val nearbyError: String? = null,
@@ -36,9 +39,13 @@ data class DiscoveryUiState(
 /**
  * Debounced, cancellable search (docs task Phase 5): every keystroke
  * updates [queryFlow], and `collectLatest` on the combined
- * query/category/location flow means a change arriving before the
- * previous search's coroutine finishes cancels it outright, rather than
- * letting a stale response race in after a newer one.
+ * query/category/verified/location flow means a change arriving before
+ * the previous search's coroutine finishes cancels it outright, rather
+ * than letting a stale response race in after a newer one. Only filters
+ * the public discovery endpoint genuinely supports (`text`, `category`,
+ * `verificationStatus`, and approximate near-me) are exposed here (docs
+ * task Customer Marketplace Design Batch 02) -- no rating, price, or
+ * "open now" chip, since the API has no such fields to filter by.
  */
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 class DiscoveryViewModel(
@@ -48,6 +55,7 @@ class DiscoveryViewModel(
 
     private val queryFlow = MutableStateFlow("")
     private val categoryFlow = MutableStateFlow<String?>(null)
+    private val verifiedOnlyFlow = MutableStateFlow(false)
     private val nearbyFlow = MutableStateFlow<NearbyLocation?>(null)
 
     private val _state = MutableStateFlow(DiscoveryUiState())
@@ -56,13 +64,27 @@ class DiscoveryViewModel(
     private var nextCursor: String? = null
 
     init {
+        loadCategories()
         viewModelScope.launch {
-            combine(queryFlow, categoryFlow, nearbyFlow) { query, category, nearby -> Triple(query, category, nearby) }
+            combine(queryFlow, categoryFlow, verifiedOnlyFlow, nearbyFlow) { query, category, verifiedOnly, nearby -> Filters(query, category, verifiedOnly, nearby) }
                 .debounce(SEARCH_DEBOUNCE_MS)
                 .distinctUntilChanged()
-                .collectLatest { (query, category, nearby) ->
-                    search(query, category, nearby)
+                .collectLatest { filters ->
+                    search(filters.query, filters.category, filters.verifiedOnly, filters.nearby)
                 }
+        }
+    }
+
+    private data class Filters(val query: String, val category: String?, val verifiedOnly: Boolean, val nearby: NearbyLocation?)
+
+    private fun loadCategories() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                categories = when (val result = discoveryRepository.categories()) {
+                    is ApiResult.Success -> ScreenState.Content(result.value)
+                    is ApiResult.Failure -> ScreenState.Error(result.error)
+                },
+            )
         }
     }
 
@@ -72,8 +94,15 @@ class DiscoveryViewModel(
     }
 
     fun onCategorySelected(category: String?) {
-        _state.value = _state.value.copy(selectedCategory = category)
-        categoryFlow.value = category
+        val newCategory = if (_state.value.selectedCategory == category) null else category
+        _state.value = _state.value.copy(selectedCategory = newCategory)
+        categoryFlow.value = newCategory
+    }
+
+    fun onVerifiedOnlyToggled() {
+        val newValue = !_state.value.verifiedOnly
+        _state.value = _state.value.copy(verifiedOnly = newValue)
+        verifiedOnlyFlow.value = newValue
     }
 
     fun onNearYouRequested() {
@@ -107,7 +136,7 @@ class DiscoveryViewModel(
     }
 
     fun retry() {
-        search(queryFlow.value, categoryFlow.value, nearbyFlow.value)
+        search(queryFlow.value, categoryFlow.value, verifiedOnlyFlow.value, nearbyFlow.value)
     }
 
     fun loadMore() {
@@ -119,6 +148,7 @@ class DiscoveryViewModel(
             val result = discoveryRepository.search(
                 text = queryFlow.value.ifBlank { null },
                 category = categoryFlow.value,
+                verifiedOnly = verifiedOnlyFlow.value,
                 nearLat = nearby?.latitude,
                 nearLng = nearby?.longitude,
                 cursor = cursor,
@@ -141,12 +171,13 @@ class DiscoveryViewModel(
         }
     }
 
-    private fun search(query: String, category: String?, nearby: NearbyLocation?) {
+    private fun search(query: String, category: String?, verifiedOnly: Boolean, nearby: NearbyLocation?) {
         viewModelScope.launch {
             _state.value = _state.value.copy(results = ScreenState.Loading)
             val result = discoveryRepository.search(
                 text = query.ifBlank { null },
                 category = category,
+                verifiedOnly = verifiedOnly,
                 nearLat = nearby?.latitude,
                 nearLng = nearby?.longitude,
                 limit = PAGE_SIZE,

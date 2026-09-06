@@ -114,6 +114,7 @@ interface DiscoveryApi {
     suspend fun searchBusinesses(
         @Query("text") text: String? = null,
         @Query("category") category: String? = null,
+        @Query("verificationStatus") verificationStatus: String? = null,
         @Query("nearLat") nearLat: Double? = null,
         @Query("nearLng") nearLng: Double? = null,
         @Query("radiusKm") radiusKm: Int? = null,

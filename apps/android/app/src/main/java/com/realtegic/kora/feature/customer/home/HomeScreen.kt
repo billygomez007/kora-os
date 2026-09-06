@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Storefront
@@ -35,11 +36,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -51,6 +54,7 @@ import com.realtegic.kora.core.designsystem.LoadingStateView
 import com.realtegic.kora.core.designsystem.ScreenState
 import com.realtegic.kora.core.model.BusinessCategoryDto
 import com.realtegic.kora.core.model.DiscoveryBusinessSummaryDto
+import java.time.LocalTime
 
 @Composable
 fun HomeScreen(
@@ -66,10 +70,17 @@ fun HomeScreen(
 
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         item {
-            HomeHeader(onProfileTapped = onProfileTapped)
+            HomeHeader(
+                displayName = state.customerDisplayName,
+                locationLine = state.customerLocationLine,
+                onProfileTapped = onProfileTapped,
+            )
         }
         item {
-            HeroBanner(onSearchTapped = onSearchTapped, onNearYouTapped = onNearYouTapped)
+            SearchBar(onSearchTapped = onSearchTapped, onNearYouTapped = onNearYouTapped)
+        }
+        item {
+            VoiceSearchTeaser()
         }
         state.upcomingAppointment?.let { appointment ->
             item {
@@ -113,25 +124,36 @@ fun HomeScreen(
     }
 }
 
+private fun timeOfDayGreeting(): String = when (LocalTime.now().hour) {
+    in 0..11 -> "Good morning"
+    in 12..16 -> "Good afternoon"
+    else -> "Good evening"
+}
+
+object HomeScreenTestTags {
+    const val ACCOUNT_BUTTON = "home_account_button"
+    const val VOICE_SEARCH_TEASER = "home_voice_search_teaser"
+}
+
 @Composable
-private fun HomeHeader(onProfileTapped: () -> Unit) {
+private fun HomeHeader(displayName: String?, locationLine: String?, onProfileTapped: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Image(
-                painter = painterResource(R.drawable.kora_logo),
-                contentDescription = "Kora OS",
-                modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)),
-            )
+        Column {
             Text(
-                text = "Kora",
+                text = if (displayName != null) "${timeOfDayGreeting()}, $displayName" else timeOfDayGreeting(),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 8.dp),
             )
+            if (locationLine != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                    Icon(Icons.Default.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                    Text(locationLine, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 2.dp))
+                }
+            }
         }
         IconButton(onClick = onProfileTapped, modifier = Modifier.testTag(HomeScreenTestTags.ACCOUNT_BUTTON)) {
             Icon(Icons.Default.AccountCircle, contentDescription = "Account", tint = MaterialTheme.colorScheme.onSurface)
@@ -139,31 +161,12 @@ private fun HomeHeader(onProfileTapped: () -> Unit) {
     }
 }
 
-object HomeScreenTestTags {
-    const val ACCOUNT_BUTTON = "home_account_button"
-}
-
 @Composable
-private fun HeroBanner(onSearchTapped: () -> Unit, onNearYouTapped: () -> Unit) {
+private fun SearchBar(onSearchTapped: () -> Unit, onNearYouTapped: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        Surface(
-            modifier = Modifier.fillMaxWidth().height(140.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.primaryContainer,
-        ) {
-            Box(modifier = Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.CenterStart) {
-                Text(
-                    text = "Find and book trusted services near you.",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 12.dp)
                 .clip(RoundedCornerShape(28.dp))
                 .background(MaterialTheme.colorScheme.surface)
                 .clickable(onClick = onSearchTapped)
@@ -190,6 +193,49 @@ private fun HeroBanner(onSearchTapped: () -> Unit, onNearYouTapped: () -> Unit) 
             Icon(Icons.Default.NearMe, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
             Text(text = "Near you", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
         }
+    }
+}
+
+/**
+ * Matches the "Tell Kora what you need" card position from
+ * `kora-customer-home-reference.png`, but deliberately not functional
+ * (docs task Batch 02: "Do not expose a functioning voice button or
+ * pretend AI search works... Hide or honestly feature-gate the voice
+ * entry point until a separate secure AI stage is approved"). Tapping it
+ * only explains that this is coming later -- no microphone permission is
+ * ever requested and no capture ever starts.
+ */
+@Composable
+private fun VoiceSearchTeaser() {
+    var showExplanation by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable { showExplanation = true }
+            .padding(16.dp)
+            .testTag(HomeScreenTestTags.VOICE_SEARCH_TEASER),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(modifier = Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Mic, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Column(modifier = Modifier.padding(start = 12.dp)) {
+            Text("Voice search", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+            Text("Coming soon", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    if (showExplanation) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showExplanation = false },
+            title = { Text("Voice search is coming soon") },
+            text = { Text("We're building a secure way to search by voice. It isn't available yet.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { showExplanation = false }) { Text("Got it") }
+            },
+        )
     }
 }
 

@@ -44,11 +44,13 @@ private class FakeDiscoveryApi : DiscoveryApi {
     var resultFor: (cursor: String?) -> List<DiscoveryBusinessSummaryDto> = { business("default") }
     var pageFor: (cursor: String?) -> PageInfo? = { null }
 
-    override suspend fun categories(): Response<ApiSuccessEnvelope<List<BusinessCategoryDto>>> = notImplemented()
+    override suspend fun categories(): Response<ApiSuccessEnvelope<List<BusinessCategoryDto>>> =
+        Response.success(ApiSuccessEnvelope(data = emptyList(), meta = ApiMeta("req")))
 
     override suspend fun searchBusinesses(
         text: String?,
         category: String?,
+        verificationStatus: String?,
         nearLat: Double?,
         nearLng: Double?,
         radiusKm: Int?,

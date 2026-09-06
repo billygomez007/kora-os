@@ -34,8 +34,8 @@ import com.realtegic.kora.core.model.DiscoveryBusinessSummaryDto
 @Composable
 fun FavoritesScreen(
     viewModel: FavoritesViewModel,
-    onBack: () -> Unit,
     onBusinessTapped: (String) -> Unit,
+    onBack: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsState()
 

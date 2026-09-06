@@ -41,10 +41,13 @@ data class NewCustomerRequest(
     val email: String? = null,
 )
 
-/** Exact shape of `AppointmentView` (docs task Phase 7) -- `status` is
- * always one of CONFIRMED/CANCELLED/NO_SHOW; there is deliberately no
- * COMPLETED status here, since only a ServiceSession can prove work
- * happened. */
+/** Exact shape of `AppointmentView` (docs task Phase 7; `businessName`/
+ * `businessSlug`/`providerDisplayName` added for Customer Marketplace
+ * Design Batch 02, since `organizationId`/`branchId`/
+ * `assignedStaffProfileId` alone are opaque ids a client cannot turn
+ * into a human-readable name) -- `status` is always one of
+ * CONFIRMED/CANCELLED/NO_SHOW; there is deliberately no COMPLETED status
+ * here, since only a ServiceSession can prove work happened. */
 @JsonClass(generateAdapter = true)
 data class AppointmentDto(
     val id: String,
@@ -70,6 +73,9 @@ data class AppointmentDto(
     val createdAt: String,
     val updatedAt: String,
     val items: List<AppointmentItemDto>,
+    val businessName: String = "",
+    val businessSlug: String? = null,
+    val providerDisplayName: String? = null,
 )
 
 @JsonClass(generateAdapter = true)

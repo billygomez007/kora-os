@@ -1,15 +1,16 @@
 package com.realtegic.kora.feature.customer.home
 
-import android.content.Context
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.realtegic.kora.MainDispatcherRule
 import com.realtegic.kora.core.data.AppointmentsRepository
+import com.realtegic.kora.core.data.CustomerProfileRepository
 import com.realtegic.kora.core.data.DiscoveryRepository
 import com.realtegic.kora.core.model.ApiMeta
 import com.realtegic.kora.core.model.ApiSuccessEnvelope
@@ -17,8 +18,11 @@ import com.realtegic.kora.core.model.AppointmentDto
 import com.realtegic.kora.core.model.AppointmentItemDto
 import com.realtegic.kora.core.model.AvailabilityResultDto
 import com.realtegic.kora.core.model.BusinessCategoryDto
+import com.realtegic.kora.core.model.CustomerProfileDto
 import com.realtegic.kora.core.model.DiscoveryBusinessSummaryDto
+import com.realtegic.kora.core.model.UpdateCustomerProfileRequest
 import com.realtegic.kora.core.network.AppointmentsApi
+import com.realtegic.kora.core.network.CustomerProfileApi
 import com.realtegic.kora.core.network.DiscoveryApi
 import com.realtegic.kora.ui.theme.KoraTheme
 import com.squareup.moshi.Moshi
@@ -33,7 +37,7 @@ import retrofit2.Response
 
 private class FakeDiscoveryApi(private val categoriesList: List<BusinessCategoryDto>, private val businesses: List<DiscoveryBusinessSummaryDto>) : DiscoveryApi {
     override suspend fun categories() = Response.success(ApiSuccessEnvelope(data = categoriesList, meta = ApiMeta("req")))
-    override suspend fun searchBusinesses(text: String?, category: String?, nearLat: Double?, nearLng: Double?, radiusKm: Int?, cursor: String?, limit: Int?) =
+    override suspend fun searchBusinesses(text: String?, category: String?, verificationStatus: String?, nearLat: Double?, nearLng: Double?, radiusKm: Int?, cursor: String?, limit: Int?) =
         Response.success(ApiSuccessEnvelope(data = businesses, meta = ApiMeta("req")))
     override suspend fun getBusiness(slug: String) = notImplemented()
     override suspend fun getBranches(slug: String) = notImplemented()
@@ -52,6 +56,13 @@ private class FakeAppointmentsApi(private val appointments: List<AppointmentDto>
     private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this test")
 }
 
+private class FakeCustomerProfileApi(private val profile: CustomerProfileDto?) : CustomerProfileApi {
+    override suspend fun get(): Response<ApiSuccessEnvelope<CustomerProfileDto>> =
+        if (profile != null) Response.success(ApiSuccessEnvelope(data = profile, meta = ApiMeta("req"))) else notImplemented()
+    override suspend fun update(body: UpdateCustomerProfileRequest) = notImplemented()
+    private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this test")
+}
+
 private fun business(slug: String) = DiscoveryBusinessSummaryDto(
     organizationId = "org-$slug",
     slug = slug,
@@ -61,6 +72,18 @@ private fun business(slug: String) = DiscoveryBusinessSummaryDto(
     coverImageUrl = null,
     verificationStatus = "VERIFIED",
     categories = emptyList(),
+)
+
+private fun customerProfile(displayName: String = "", city: String? = null, area: String? = null) = CustomerProfileDto(
+    id = "profile-1",
+    displayName = displayName,
+    email = "ama@example.test",
+    phoneE164 = "+233241234567",
+    city = city,
+    area = area,
+    latitude = null,
+    longitude = null,
+    locationConsentedAt = null,
 )
 
 private fun confirmedAppointmentStartingIn(hours: Long) = AppointmentDto(
@@ -87,12 +110,17 @@ private fun confirmedAppointmentStartingIn(hours: Long) = AppointmentDto(
     createdAt = Instant.now().toString(),
     updatedAt = Instant.now().toString(),
     items = listOf(AppointmentItemDto("service-1", "Haircut", 30, 5000, "GHS", 0)),
+    businessName = "Urban Crown Salon",
+    businessSlug = "urban-crown",
+    providerDisplayName = "Abena Osei",
 )
 
 /**
- * The customer homepage: real branded banner, search entry, categories,
- * an upcoming-appointment card only when one genuinely exists, and no
- * hardcoded demo business content (docs task Phase 5 & 9).
+ * The customer homepage: real customer profile greeting (never the
+ * "Ama" sample name), search entry, categories, an upcoming-appointment
+ * card only when one genuinely exists, no hardcoded demo business
+ * content, and a voice-search entry point that is present but inert
+ * (docs task Customer Marketplace Design Batch 02).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], qualifiers = "w360dp-h1600dp")
@@ -103,57 +131,75 @@ class HomeScreenTest {
     @get:Rule
     val composeRule = createComposeRule()
 
-    @Test
-    fun `renders the branded banner, search entry, categories, and featured businesses`() {
-        val viewModel = HomeViewModel(
-            discoveryRepository = DiscoveryRepository(
-                FakeDiscoveryApi(listOf(BusinessCategoryDto("salon", "Salon")), listOf(business("urban-crown"))),
-                Moshi.Builder().build(),
-            ),
-            appointmentsRepository = AppointmentsRepository(FakeAppointmentsApi(emptyList()), Moshi.Builder().build()),
-        )
+    private fun viewModel(
+        categories: List<BusinessCategoryDto> = emptyList(),
+        businesses: List<DiscoveryBusinessSummaryDto> = emptyList(),
+        appointments: List<AppointmentDto> = emptyList(),
+        profile: CustomerProfileDto? = customerProfile(),
+    ) = HomeViewModel(
+        discoveryRepository = DiscoveryRepository(FakeDiscoveryApi(categories, businesses), Moshi.Builder().build()),
+        appointmentsRepository = AppointmentsRepository(FakeAppointmentsApi(appointments), Moshi.Builder().build()),
+        customerProfileRepository = CustomerProfileRepository(FakeCustomerProfileApi(profile), Moshi.Builder().build()),
+    )
 
+    private fun setContent(viewModel: HomeViewModel, onUpcomingAppointmentTapped: (String) -> Unit = {}) {
         composeRule.setContent {
             KoraTheme {
-                HomeScreen(viewModel, onSearchTapped = {}, onNearYouTapped = {}, onCategoryTapped = {}, onBusinessTapped = {}, onProfileTapped = {}, onUpcomingAppointmentTapped = {})
+                HomeScreen(viewModel, onSearchTapped = {}, onNearYouTapped = {}, onCategoryTapped = {}, onBusinessTapped = {}, onProfileTapped = {}, onUpcomingAppointmentTapped = onUpcomingAppointmentTapped)
             }
         }
+    }
+
+    @Test
+    fun `renders the search entry, categories, and featured businesses`() {
+        setContent(viewModel(categories = listOf(BusinessCategoryDto("salon", "Salon")), businesses = listOf(business("urban-crown"))))
 
         composeRule.onNodeWithTag(HomeScreenTestTags.ACCOUNT_BUTTON).assertIsDisplayed()
-        composeRule.onNodeWithText("Find and book trusted services near you.").assertIsDisplayed()
         composeRule.onNodeWithText("Search businesses or services").assertIsDisplayed()
         composeRule.onNodeWithText("Salon").assertIsDisplayed()
         composeRule.onNodeWithText("urban-crown").performScrollTo().assertIsDisplayed()
     }
 
     @Test
-    fun `shows an upcoming appointment card only when a confirmed future appointment exists`() {
-        val viewModel = HomeViewModel(
-            discoveryRepository = DiscoveryRepository(FakeDiscoveryApi(emptyList(), emptyList()), Moshi.Builder().build()),
-            appointmentsRepository = AppointmentsRepository(FakeAppointmentsApi(listOf(confirmedAppointmentStartingIn(4))), Moshi.Builder().build()),
-        )
+    fun `greets the customer using their real saved profile name, never a hardcoded sample name`() {
+        setContent(viewModel(profile = customerProfile(displayName = "Kwame Mensah")))
 
-        composeRule.setContent {
-            KoraTheme {
-                HomeScreen(viewModel, onSearchTapped = {}, onNearYouTapped = {}, onCategoryTapped = {}, onBusinessTapped = {}, onProfileTapped = {}, onUpcomingAppointmentTapped = {})
-            }
-        }
+        composeRule.onNodeWithText("Kwame Mensah", substring = true).assertIsDisplayed()
+        composeRule.onAllNodes(hasText("Ama", substring = true)).assertCountEquals(0)
+    }
+
+    @Test
+    fun `shows the customer's saved area and city, never a live location lookup`() {
+        setContent(viewModel(profile = customerProfile(displayName = "Kwame", city = "Accra", area = "East Legon")))
+
+        composeRule.onNodeWithText("East Legon, Accra").assertIsDisplayed()
+    }
+
+    @Test
+    fun `falls back to a name-less greeting when the profile fetch fails, never blocking the homepage`() {
+        setContent(viewModel(profile = null))
+
+        composeRule.onNodeWithText("Search businesses or services").assertIsDisplayed()
+    }
+
+    @Test
+    fun `the voice search teaser is present but explains it is not available instead of doing anything functional`() {
+        setContent(viewModel())
+
+        composeRule.onNodeWithTag(HomeScreenTestTags.VOICE_SEARCH_TEASER).assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Voice search is coming soon").assertIsDisplayed()
+    }
+
+    @Test
+    fun `shows an upcoming appointment card only when a confirmed future appointment exists`() {
+        setContent(viewModel(appointments = listOf(confirmedAppointmentStartingIn(4))))
 
         composeRule.onNodeWithText("Upcoming: Haircut").assertIsDisplayed()
     }
 
     @Test
     fun `shows no upcoming appointment card when there is none`() {
-        val viewModel = HomeViewModel(
-            discoveryRepository = DiscoveryRepository(FakeDiscoveryApi(emptyList(), emptyList()), Moshi.Builder().build()),
-            appointmentsRepository = AppointmentsRepository(FakeAppointmentsApi(emptyList()), Moshi.Builder().build()),
-        )
-
-        composeRule.setContent {
-            KoraTheme {
-                HomeScreen(viewModel, onSearchTapped = {}, onNearYouTapped = {}, onCategoryTapped = {}, onBusinessTapped = {}, onProfileTapped = {}, onUpcomingAppointmentTapped = {})
-            }
-        }
+        setContent(viewModel())
 
         composeRule.onAllNodes(hasText("Upcoming:", substring = true)).assertCountEquals(0)
     }

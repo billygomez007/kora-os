@@ -223,4 +223,38 @@ describe('validateEnvironment', () => {
       }),
     ).toMatchObject({ SMTP_USER: 'a-user', SMTP_PASSWORD: 'a-password' });
   });
+
+  it('accepts Resend\'s documented production SMTP configuration (docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md) — recommended implicit-TLS port 465', () => {
+    expect(
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'smtp',
+        SMTP_HOST: 'smtp.resend.com',
+        SMTP_PORT: '465',
+        SMTP_SECURE: 'true',
+        SMTP_USER: 'resend',
+        SMTP_PASSWORD: 're_placeholder_not_a_real_key',
+        EMAIL_FROM: 'Kora OS <login@auth.koraafric.com>',
+      }),
+    ).toMatchObject({
+      SMTP_HOST: 'smtp.resend.com',
+      SMTP_PORT: 465,
+      SMTP_SECURE: true,
+      SMTP_USER: 'resend',
+      EMAIL_FROM: 'Kora OS <login@auth.koraafric.com>',
+    });
+  });
+
+  it('accepts Resend\'s alternative STARTTLS port 587 configuration', () => {
+    expect(
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'smtp',
+        SMTP_HOST: 'smtp.resend.com',
+        SMTP_PORT: '587',
+        SMTP_SECURE: 'false',
+        SMTP_USER: 'resend',
+        SMTP_PASSWORD: 're_placeholder_not_a_real_key',
+        EMAIL_FROM: 'Kora OS <login@auth.koraafric.com>',
+      }),
+    ).toMatchObject({ SMTP_PORT: 587, SMTP_SECURE: false });
+  });
 });

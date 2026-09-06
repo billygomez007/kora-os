@@ -53,6 +53,44 @@ function createServiceWithStubs(
   return { service, prismaStub, failingSender, auditService };
 }
 
+describe('EmailOtpService — expiry wording stays tied to configuration', () => {
+  it('passes the exact configured OTP_EXPIRY_MINUTES value to the sender, never a separately derived one', async () => {
+    const prismaStub = {
+      emailOtpChallenge: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue({}),
+        count: vi.fn().mockResolvedValue(0),
+      },
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const config = new ConfigService({
+      OTP_CODE_LENGTH: 6,
+      OTP_EXPIRY_MINUTES: 17,
+      OTP_MAX_ATTEMPTS: 5,
+      OTP_PEPPER: 'p'.repeat(32),
+      OTP_RESEND_COOLDOWN_SECONDS: 60,
+      OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
+      OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
+    });
+    const sender = { send: vi.fn().mockResolvedValue(undefined) };
+    const auditService = { record: vi.fn().mockResolvedValue(undefined) };
+    const service = new EmailOtpService(
+      prismaStub as never,
+      config,
+      sender as never,
+      auditService as never,
+    );
+
+    await service.requestChallenge({ email: 'new@example.test', requestId: 'req-1' });
+
+    expect(sender.send).toHaveBeenCalledWith(
+      expect.objectContaining({ expiryMinutes: 17 }),
+    );
+  });
+});
+
 describe('EmailOtpService — delivery failure', () => {
   it('invalidates the challenge rather than leaving it active when delivery fails', async () => {
     const { service, prismaStub } = createServiceWithStubs();

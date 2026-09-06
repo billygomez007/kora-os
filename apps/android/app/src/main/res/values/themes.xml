@@ -2,4 +2,17 @@
 <resources>
 
     <style name="Theme.Kora" parent="android:Theme.DeviceDefault.NoActionBar" />
+
+    <!-- The Activity's theme only until installSplashScreen() swaps it
+         for postSplashScreenTheme on first draw (docs task: "Respect
+         Android's native splash-screen behaviour"). Background and icon
+         deliberately match the Compose KoraTheme's SlateDark background
+         and the same kora_logo drawable used everywhere else, so the
+         handoff to the Compose branded splash is visually continuous:
+         never a color jump or a second, differently-styled logo. -->
+    <style name="Theme.Kora.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/kora_slate_dark</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/kora_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.Kora</item>
+    </style>
 </resources>

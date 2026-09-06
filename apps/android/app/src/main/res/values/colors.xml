@@ -7,4 +7,11 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- Mirrors ui/theme/Color.kt exactly: the one XML-reachable copy
+         of these tokens, needed only because the platform SplashScreen
+         API is configured from a manifest-referenced theme, not Compose
+         (docs task Stage: "Redesign the splash experience"). -->
+    <color name="kora_slate_dark">#FF040E15</color>
+    <color name="kora_gold_light">#FFFDBA2D</color>
 </resources>

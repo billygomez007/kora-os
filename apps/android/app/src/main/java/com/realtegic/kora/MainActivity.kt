@@ -6,7 +6,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.realtegic.kora.core.navigation.KoraNavHost
+import com.realtegic.kora.core.session.SessionState
 import com.realtegic.kora.ui.theme.KoraTheme
 
 private const val INVITATION_DEEP_LINK_SCHEME = "kora"
@@ -27,9 +29,17 @@ private const val INVITATION_DEEP_LINK_HOST = "invite"
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val container = (application as KoraApplication).container
+        // Keeps the platform splash on screen only until session
+        // restoration has actually resolved (docs task: "Never add an
+        // artificial delay merely to display the splash design") --
+        // reads the same singleton SessionManager StateFlow the Compose
+        // splash screen observes, so both layers agree on when the app
+        // is genuinely still starting up.
+        splashScreen.setKeepOnScreenCondition { container.authRepository.sessionState.value is SessionState.Unknown }
         extractInvitationToken(intent)?.let { container.pendingInvitationToken.value = it }
         setContent {
             KoraTheme {

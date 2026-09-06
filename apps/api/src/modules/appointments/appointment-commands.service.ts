@@ -15,7 +15,7 @@ import type { Prisma } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AvailabilityEngineService } from '../availability/availability-engine.service.js';
 import { BranchScheduleService } from '../scheduling/branch-schedule.service.js';
-import { toAppointmentView, type AppointmentView } from './appointment-view.js';
+import { APPOINTMENT_VIEW_INCLUDE, toAppointmentView, type AppointmentView } from './appointment-view.js';
 
 const EXCLUSION_CONSTRAINT_NAME = 'appointments_no_staff_double_booking';
 
@@ -83,7 +83,7 @@ export class AppointmentCommandsService {
           reason,
         },
       });
-      return tx.appointment.findUniqueOrThrow({ where: { id: appointmentId }, include: { items: true } });
+      return tx.appointment.findUniqueOrThrow({ where: { id: appointmentId }, include: APPOINTMENT_VIEW_INCLUDE });
     });
 
     await this.auditService.record({
@@ -144,7 +144,7 @@ export class AppointmentCommandsService {
           actorMembershipId: actor.actorMembershipId,
         },
       });
-      return tx.appointment.findUniqueOrThrow({ where: { id: appointmentId }, include: { items: true } });
+      return tx.appointment.findUniqueOrThrow({ where: { id: appointmentId }, include: APPOINTMENT_VIEW_INCLUDE });
     });
 
     await this.auditService.record({
@@ -247,7 +247,7 @@ export class AppointmentCommandsService {
         if (result.count === 0) {
           throw new ConflictException('This appointment was already updated by someone else');
         }
-        return tx.appointment.findUniqueOrThrow({ where: { id: appointmentId }, include: { items: true } });
+        return tx.appointment.findUniqueOrThrow({ where: { id: appointmentId }, include: APPOINTMENT_VIEW_INCLUDE });
       });
 
       await this.auditService.record({

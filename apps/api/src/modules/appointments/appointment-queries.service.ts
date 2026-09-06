@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PaginatedPayload } from '../../common/http/api-response.interceptor.js';
 import { PrismaService } from '../../database/prisma.service.js';
-import { toAppointmentView, type AppointmentView } from './appointment-view.js';
+import { APPOINTMENT_VIEW_INCLUDE, toAppointmentView, type AppointmentView } from './appointment-view.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 /** A branch-appointments listing must specify a bounded window — never
@@ -21,7 +21,7 @@ export class AppointmentQueriesService {
 
     const rows = await this.prisma.appointment.findMany({
       where: { customerProfileId, ...(cursorId ? { id: { gt: cursorId } } : {}) },
-      include: { items: true },
+      include: APPOINTMENT_VIEW_INCLUDE,
       orderBy: { id: 'asc' },
       take: limit + 1,
     });
@@ -37,7 +37,7 @@ export class AppointmentQueriesService {
   async getForCustomer(customerProfileId: string, appointmentId: string): Promise<AppointmentView> {
     const appointment = await this.prisma.appointment.findUnique({
       where: { id: appointmentId },
-      include: { items: true },
+      include: APPOINTMENT_VIEW_INCLUDE,
     });
     // A different customer's appointment is a 404, not a 403 — its
     // existence is never confirmed to a caller who does not own it
@@ -74,7 +74,7 @@ export class AppointmentQueriesService {
         startAt: { gte: from, lte: to },
         ...(cursorId ? { id: { gt: cursorId } } : {}),
       },
-      include: { items: true },
+      include: APPOINTMENT_VIEW_INCLUDE,
       orderBy: { id: 'asc' },
       take: limit + 1,
     });
@@ -94,7 +94,7 @@ export class AppointmentQueriesService {
   ): Promise<AppointmentView> {
     const appointment = await this.prisma.appointment.findFirst({
       where: { id: appointmentId, organizationId, branchId },
-      include: { items: true },
+      include: APPOINTMENT_VIEW_INCLUDE,
     });
     if (!appointment) {
       throw new NotFoundException('Appointment not found');

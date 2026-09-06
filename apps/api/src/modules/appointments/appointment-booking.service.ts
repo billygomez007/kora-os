@@ -24,7 +24,7 @@ import { SubscriptionAccessService } from '../subscriptions/subscription-access.
 import { DiscoveryService } from '../discovery/discovery.service.js';
 import { generateAppointmentReference } from './appointment-reference.util.js';
 import type { AppointmentView } from './appointment-view.js';
-import { toAppointmentView } from './appointment-view.js';
+import { APPOINTMENT_VIEW_INCLUDE, toAppointmentView } from './appointment-view.js';
 
 const EXCLUSION_CONSTRAINT_NAME = 'appointments_no_staff_double_booking';
 const REFERENCE_UNIQUE_CONSTRAINT = 'appointments_reference_key';
@@ -310,7 +310,7 @@ export class AppointmentBookingService {
         }
         const existingAppointment = await this.prisma.appointment.findUnique({
           where: { id: existingKey.appointmentId },
-          include: { items: true },
+          include: APPOINTMENT_VIEW_INCLUDE,
         });
         if (existingAppointment) {
           return toAppointmentView(existingAppointment);
@@ -384,7 +384,7 @@ export class AppointmentBookingService {
         }
         const existing = await this.prisma.appointment.findUnique({
           where: { id: attempt.appointmentId },
-          include: { items: true },
+          include: APPOINTMENT_VIEW_INCLUDE,
         });
         if (!existing) {
           throw new ServiceUnavailableException({
@@ -424,7 +424,7 @@ export class AppointmentBookingService {
     createdByUserId: string | undefined;
     createdByMembershipId: string | undefined;
   }): Promise<
-    | { outcome: 'created'; appointment: Prisma.AppointmentGetPayload<{ include: { items: true } }> }
+    | { outcome: 'created'; appointment: Prisma.AppointmentGetPayload<{ include: typeof APPOINTMENT_VIEW_INCLUDE }> }
     | { outcome: 'slot_unavailable' }
     | { outcome: 'idempotent_replay'; appointmentId: string; existingFingerprint: string }
   > {
@@ -473,7 +473,7 @@ export class AppointmentBookingService {
                 },
               },
             },
-            include: { items: true },
+            include: APPOINTMENT_VIEW_INCLUDE,
           });
 
           if (params.idempotencyKey && params.requestFingerprint && params.idempotencyOwnerCustomerProfileId) {

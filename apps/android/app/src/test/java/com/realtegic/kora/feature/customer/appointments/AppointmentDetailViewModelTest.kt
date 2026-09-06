@@ -2,15 +2,23 @@ package com.realtegic.kora.feature.customer.appointments
 
 import com.realtegic.kora.MainDispatcherRule
 import com.realtegic.kora.core.data.AppointmentsRepository
+import com.realtegic.kora.core.data.DiscoveryRepository
 import com.realtegic.kora.core.designsystem.ScreenState
 import com.realtegic.kora.core.model.ApiMeta
 import com.realtegic.kora.core.model.ApiSuccessEnvelope
 import com.realtegic.kora.core.model.AppointmentDto
 import com.realtegic.kora.core.model.AppointmentItemDto
+import com.realtegic.kora.core.model.AvailabilityResultDto
+import com.realtegic.kora.core.model.BusinessCategoryDto
 import com.realtegic.kora.core.model.CancelAppointmentRequest
 import com.realtegic.kora.core.model.CreateAppointmentRequest
+import com.realtegic.kora.core.model.DiscoveryBranchSummaryDto
+import com.realtegic.kora.core.model.DiscoveryBusinessSummaryDto
+import com.realtegic.kora.core.model.PublicProviderSummaryDto
+import com.realtegic.kora.core.model.PublicServiceSummaryDto
 import com.realtegic.kora.core.model.RescheduleAppointmentRequest
 import com.realtegic.kora.core.network.AppointmentsApi
+import com.realtegic.kora.core.network.DiscoveryApi
 import com.realtegic.kora.core.network.DomainError
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.test.runTest
@@ -46,7 +54,26 @@ private class FakeAppointmentsApi : AppointmentsApi {
     private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this test")
 }
 
-private fun appointment(status: String = "CONFIRMED", startAt: String = "2026-09-10T10:00:00Z") = AppointmentDto(
+private class FakeDiscoveryApi : DiscoveryApi {
+    var branchesResult: Response<ApiSuccessEnvelope<List<DiscoveryBranchSummaryDto>>> =
+        Response.success(ApiSuccessEnvelope(data = emptyList(), meta = ApiMeta("req")))
+
+    override suspend fun categories(): Response<ApiSuccessEnvelope<List<BusinessCategoryDto>>> = notImplemented()
+    override suspend fun searchBusinesses(text: String?, category: String?, verificationStatus: String?, nearLat: Double?, nearLng: Double?, radiusKm: Int?, cursor: String?, limit: Int?) = notImplemented()
+    override suspend fun getBusiness(slug: String): Response<ApiSuccessEnvelope<DiscoveryBusinessSummaryDto>> = notImplemented()
+    override suspend fun getBranches(slug: String): Response<ApiSuccessEnvelope<List<DiscoveryBranchSummaryDto>>> = branchesResult
+    override suspend fun getServices(slug: String, branchId: String): Response<ApiSuccessEnvelope<List<PublicServiceSummaryDto>>> = notImplemented()
+    override suspend fun getProviders(slug: String, branchId: String, serviceId: String): Response<ApiSuccessEnvelope<List<PublicProviderSummaryDto>>> = notImplemented()
+    override suspend fun getAvailability(slug: String, branchId: String, serviceIds: String, staffProfileId: String?, date: String?, fromDate: String?, toDate: String?): Response<ApiSuccessEnvelope<AvailabilityResultDto>> = notImplemented()
+
+    private fun notImplemented(): Nothing = throw UnsupportedOperationException("Not needed for this test")
+}
+
+private fun appointment(
+    status: String = "CONFIRMED",
+    startAt: String = "2026-09-10T10:00:00Z",
+    businessSlug: String? = null,
+) = AppointmentDto(
     id = "appt-1",
     reference = "REF-1",
     organizationId = "org-1",
@@ -70,6 +97,9 @@ private fun appointment(status: String = "CONFIRMED", startAt: String = "2026-09
     createdAt = "2026-09-05T00:00:00Z",
     updatedAt = "2026-09-05T00:00:00Z",
     items = listOf(AppointmentItemDto("service-1", "Haircut", 30, 5000, "GHS", 0)),
+    businessName = "Urban Crown Salon",
+    businessSlug = businessSlug,
+    providerDisplayName = "Abena Osei",
 )
 
 private fun success(appointment: AppointmentDto) =
@@ -93,16 +123,19 @@ class AppointmentDetailViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     private lateinit var api: FakeAppointmentsApi
+    private lateinit var discoveryApi: FakeDiscoveryApi
     private lateinit var viewModel: AppointmentDetailViewModel
 
     private fun newViewModel() = AppointmentDetailViewModel(
         appointmentId = "appt-1",
         appointmentsRepository = AppointmentsRepository(api, Moshi.Builder().build()),
+        discoveryRepository = DiscoveryRepository(discoveryApi, Moshi.Builder().build()),
     )
 
     @Before
     fun setUp() {
         api = FakeAppointmentsApi()
+        discoveryApi = FakeDiscoveryApi()
     }
 
     @Test
@@ -199,5 +232,35 @@ class AppointmentDetailViewModelTest {
         viewModel.clearActionError()
 
         assertNull(viewModel.state.value.actionError)
+    }
+
+    @Test
+    fun `loads real branch contact info for Call and Directions only when the business currently resolves publicly`() = runTest {
+        api.getResult = success(appointment(businessSlug = "urban-crown"))
+        discoveryApi.branchesResult = Response.success(
+            ApiSuccessEnvelope(
+                data = listOf(
+                    DiscoveryBranchSummaryDto(
+                        branchId = "branch-1", name = "Main branch", city = "Accra", region = "Greater Accra", countryCode = "GH",
+                        latitude = 5.6, longitude = -0.18, publicPhone = "+233241234567", publicEmail = null, openingHoursNote = null,
+                    ),
+                ),
+                meta = ApiMeta("req"),
+            ),
+        )
+        viewModel = newViewModel()
+
+        assertEquals("Accra, Greater Accra", viewModel.state.value.branchLocationLine)
+        assertEquals("+233241234567", viewModel.state.value.branchPublicPhone)
+        assertEquals(5.6, viewModel.state.value.branchLatitude)
+        assertEquals(-0.18, viewModel.state.value.branchLongitude)
+    }
+
+    @Test
+    fun `never attempts a branch lookup when the appointment carries no businessSlug`() = runTest {
+        api.getResult = success(appointment(businessSlug = null))
+        viewModel = newViewModel() // discoveryApi.getBranches would throw if this were called
+
+        assertNull(viewModel.state.value.branchPublicPhone)
     }
 }

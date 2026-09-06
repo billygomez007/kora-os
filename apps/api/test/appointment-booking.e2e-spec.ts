@@ -91,6 +91,71 @@ describe('Appointment booking (e2e)', () => {
       expect(response.body.data.assignedStaffProfileId).toBe(fixture.providerStaffProfileId);
     });
 
+    it('includes the business name, slug, and assigned provider display name -- fields the customer app cannot derive from organizationId/branchId/assignedStaffProfileId alone', async () => {
+      const providerUser = await testApp.prisma.user.findUniqueOrThrow({ where: { id: fixture.providerUserId } });
+
+      const response = await authed(testApp, customerAccessToken)
+        .post('/v1/me/appointments')
+        .send(bookingPayload())
+        .expect(201);
+
+      expect(response.body.data.businessName).toBe(`Kora Fixture ${fixture.organizationSlug}`);
+      expect(response.body.data.businessSlug).toBe(fixture.organizationSlug);
+      expect(response.body.data.providerDisplayName).toBe(providerUser.displayName);
+
+      const appointmentId = response.body.data.id;
+      const listed = await authed(testApp, customerAccessToken).get('/v1/me/appointments').expect(200);
+      const listedAppointment = listed.body.data.find((item: { id: string }) => item.id === appointmentId);
+      expect(listedAppointment.businessName).toBe(`Kora Fixture ${fixture.organizationSlug}`);
+      expect(listedAppointment.providerDisplayName).toBe(providerUser.displayName);
+
+      const detail = await authed(testApp, customerAccessToken)
+        .get(`/v1/me/appointments/${appointmentId}`)
+        .expect(200);
+      expect(detail.body.data.businessName).toBe(`Kora Fixture ${fixture.organizationSlug}`);
+      expect(detail.body.data.businessSlug).toBe(fixture.organizationSlug);
+      expect(detail.body.data.providerDisplayName).toBe(providerUser.displayName);
+    });
+
+    it('businessSlug is null once the business is no longer publicly discoverable, but businessName always remains', async () => {
+      const unpublishedFixture = await createBookableFixture(testApp, { publish: false });
+      const customer = await signInWithEmailOtp(testApp, `customer-${randomUUID()}@example.test`);
+      // Booking itself requires the business to resolve via discovery, so
+      // publish it just long enough to book, then unpublish -- proving
+      // the *appointment's* businessSlug reflects current state, not a
+      // frozen booking-time snapshot.
+      await testApp.prisma.publicBusinessProfile.create({
+        data: {
+          organizationId: unpublishedFixture.organizationId,
+          slug: unpublishedFixture.organizationSlug,
+          displayName: `Kora Fixture ${unpublishedFixture.organizationSlug}`,
+          visibility: 'PUBLIC',
+          publishedAt: new Date(),
+        },
+      });
+      await testApp.prisma.branch.update({ where: { id: unpublishedFixture.branchId }, data: { isDiscoverable: true } });
+
+      const booked = await authed(testApp, customer.accessToken)
+        .post('/v1/me/appointments')
+        .send({
+          businessSlug: unpublishedFixture.organizationSlug,
+          branchId: unpublishedFixture.branchId,
+          serviceIds: [unpublishedFixture.serviceId],
+          startAt: nearFutureSlotStart().toISOString(),
+          idempotencyKey: randomUUID(),
+        })
+        .expect(201);
+      expect(booked.body.data.businessSlug).toBe(unpublishedFixture.organizationSlug);
+
+      await testApp.prisma.publicBusinessProfile.delete({ where: { organizationId: unpublishedFixture.organizationId } });
+
+      const detail = await authed(testApp, customer.accessToken)
+        .get(`/v1/me/appointments/${booked.body.data.id}`)
+        .expect(200);
+      expect(detail.body.data.businessSlug).toBeNull();
+      expect(detail.body.data.businessName).toBe(`Kora Fixture ${unpublishedFixture.organizationSlug}`);
+    });
+
     it('rejects booking a service that is not customer-bookable', async () => {
       await testApp.prisma.service.update({
         where: { id: fixture.serviceId },

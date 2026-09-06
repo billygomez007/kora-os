@@ -1,6 +1,21 @@
 import type { Prisma } from '../../generated/prisma/client.js';
 
-type AppointmentWithItems = Prisma.AppointmentGetPayload<{ include: { items: true } }>;
+/**
+ * Shared `include` for every query that feeds {@link toAppointmentView}
+ * (docs task "Customer Marketplace Design Batch 02": the appointment
+ * list/detail/confirmation screens need to identify which business and
+ * provider an appointment is for, which the bare `organizationId`/
+ * `branchId`/`assignedStaffProfileId` columns alone cannot do). Every
+ * relation here already exists on `Appointment` -- this adds no new
+ * columns, only reads three already-related rows alongside it.
+ */
+export const APPOINTMENT_VIEW_INCLUDE = {
+  items: true,
+  organization: { include: { publicProfile: true } },
+  assignedStaffProfile: { include: { membership: { include: { user: true } } } },
+} satisfies Prisma.AppointmentInclude;
+
+type AppointmentWithRelations = Prisma.AppointmentGetPayload<{ include: typeof APPOINTMENT_VIEW_INCLUDE }>;
 
 export interface AppointmentItemView {
   serviceId: string;
@@ -35,6 +50,22 @@ export interface AppointmentView {
   createdAt: string;
   updatedAt: string;
   items: AppointmentItemView[];
+  /** The organization's own registered name -- always present,
+   * independent of whether a public discovery profile currently exists
+   * (docs task Batch 02). */
+  businessName: string;
+  /** Only present while the organization currently has a public
+   * discovery profile; `null` once unpublished after the fact. Lets a
+   * client re-fetch richer public business/branch data (images, phone,
+   * coordinates, hours) from the existing discovery endpoints rather
+   * than duplicating it here. */
+  businessSlug: string | null;
+  /** The assigned provider's public display name. Every CONFIRMED
+   * appointment already has a specific `assignedStaffProfileId` (booking
+   * resolves "any available provider" to one atomically) -- this is
+   * never null in practice, but stays nullable rather than throwing if a
+   * future data anomaly leaves it unresolvable. */
+  providerDisplayName: string | null;
 }
 
 /**
@@ -47,7 +78,7 @@ export interface AppointmentView {
  * first place (see AppointmentBookingService/AppointmentCommandsService/
  * AppointmentQueriesService, which never select it).
  */
-export function toAppointmentView(appointment: AppointmentWithItems): AppointmentView {
+export function toAppointmentView(appointment: AppointmentWithRelations): AppointmentView {
   return {
     id: appointment.id,
     reference: appointment.reference,
@@ -81,5 +112,8 @@ export function toAppointmentView(appointment: AppointmentWithItems): Appointmen
         currency: item.currencySnapshot,
         displayOrder: item.displayOrder,
       })),
+    businessName: appointment.organization.name,
+    businessSlug: appointment.organization.publicProfile?.slug ?? null,
+    providerDisplayName: appointment.assignedStaffProfile.membership.user.displayName ?? null,
   };
 }

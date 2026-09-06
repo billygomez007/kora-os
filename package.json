@@ -24,6 +24,7 @@
     "prisma:migrate:deploy": "pnpm --dir apps/api exec prisma migrate deploy",
     "prisma:migrate:status": "pnpm --dir apps/api exec prisma migrate status",
     "prisma:studio": "pnpm --dir apps/api exec prisma studio",
-    "prisma:seed": "pnpm --dir apps/api exec prisma db seed"
+    "prisma:seed": "pnpm --dir apps/api exec prisma db seed",
+    "db:seed:marketplace-demo": "pnpm --dir apps/api exec tsx prisma/seed-marketplace-demo.ts"
   }
 }

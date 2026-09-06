@@ -38,6 +38,42 @@ pnpm prisma:migrate:deploy
 pnpm prisma:seed
 ```
 
+## Development marketplace fixture
+
+`pnpm prisma:seed` above seeds only platform-level reference data — no
+organization exists yet, so there is nothing a customer can search for
+or book. To exercise a full live customer journey (search → business
+profile → service/provider/availability selection → booking → reschedule
+→ cancel) against a real backend and database, run:
+
+```bash
+pnpm db:seed:marketplace-demo
+```
+
+This creates (or safely updates, idempotently — running it twice never
+duplicates anything) one clearly-labelled, fully bookable demonstration
+business: **Kora Demo Salon & Spa** (`kora-demo-salon`), with an owner,
+an active subscription, a published public profile, one discoverable
+branch (Accra coordinates, generous 9am-7pm hours every day), three
+services (Signature Haircut, Classic Manicure, Deep Conditioning
+Treatment), two staff providers (Kora Demo Stylist One/Two, both
+assigned to every service), and a booking policy with a short 30-minute
+lead time so same-day slots stay bookable in a test session. It also
+creates a second, deliberately **unpublished, PRIVATE** decoy business
+(`kora-demo-hidden-studio`) with no services or staff — just enough to
+verify live that a private/unpublished business never appears in public
+search or by-slug lookup.
+
+All accounts use fictional `@kora-demo.example.test` addresses — never
+a real name, phone number, or address. The script refuses to run when
+`NODE_ENV=production`, and is never invoked by `pnpm prisma:seed`,
+application startup, or production deployment — it is a standalone,
+manually-run development script
+(`apps/api/prisma/seed-marketplace-demo.ts`) using the same direct-Prisma
+pattern as `prisma/seed.ts`. See
+`apps/api/test/marketplace-demo-fixture.e2e-spec.ts` for automated
+coverage of the production guard and idempotency.
+
 ## Running
 
 ```bash

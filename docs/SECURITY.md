@@ -1585,3 +1585,34 @@ that was already correct, never what triggers it.
   fields, an approximate location line, and a customer's display name
   never appear in a debug log line, matching a live logcat check across
   this stage's full manual verification session (apps/android/README.md).
+
+## 41. Live acceptance stage: fixture data isolation and a session-cache fix
+
+The development marketplace fixture (docs/ARCHITECTURE.md section 27,
+`apps/api/prisma/seed-marketplace-demo.ts`) introduces no new
+authorization rule — every record it creates (an `Organization`, its
+`OrganizationMembership`s, `Service`s, `StaffProfile`s, and so on) is
+authorized by the exact same tenant-isolation and public-visibility
+rules every other organization's data already is, since the fixture
+writes through the same Prisma models, not a parallel or privileged
+path. Its own safeguards: a `NODE_ENV=production` guard that exits
+before any database connection is opened (verified: the process exits
+non-zero and no row is created); every account uses a `@kora-demo.
+example.test` address, never a real identity; and it is invoked only by
+a developer running `pnpm db:seed:marketplace-demo` directly — never by
+`pnpm prisma:seed`, `pnpm start:dev`/`start:prod`, or any CI/deployment
+step, so it cannot run against a real environment by accident the way a
+seed wired into application startup could.
+
+**The session-state staleness this stage fixed (docs/ARCHITECTURE.md
+section 27) was a display bug, not an authorization gap.**
+`SessionManager.updateDisplayName` only ever writes a value the server
+itself already returned for the currently-authenticated customer's own
+`PATCH /v1/me/customer-profile` call — it cannot be used to inject an
+arbitrary name, does not touch the access or refresh token, and does
+not change what any endpoint authorizes. Before this fix, the
+Profile screen could show a *stale* name after a customer changed it
+(a correctness defect); it could never show *someone else's* name, and
+no other screen was affected, since every other screen already
+re-fetched the customer profile fresh rather than reading the cached
+session value.

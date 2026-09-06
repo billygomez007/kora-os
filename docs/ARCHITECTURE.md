@@ -956,3 +956,111 @@ apps/android/README.md "Building and testing" for what each group
 covers. `kora-customer-ai-voice-search-reference.png` was
 committed as a future design reference only; no functional voice-search
 entry point exists (docs/ROADMAP.md, docs/design/mobile-customer/README.md).
+
+## 27. Live customer marketplace acceptance and the marketplace demo fixture
+
+Section 26's redesign shipped without ever driving a real end-to-end
+customer booking on the emulator — the local database had no published,
+bookable business. This stage closes that gap with a standalone
+development fixture (`apps/api/prisma/seed-marketplace-demo.ts`,
+`pnpm db:seed:marketplace-demo`, see apps/api/README.md "Development
+marketplace fixture") and a full live acceptance pass against it.
+
+**The fixture follows `prisma/seed.ts`'s own established pattern** —
+direct Prisma writes via the same `PrismaPg`/`Pool` construction, no
+NestJS application context — rather than driving the real HTTP API,
+since a standalone script has no server to call. Every write is an
+`upsert` (or `findFirst` + create/update for the handful of models with
+no natural unique constraint — `BranchBusinessHours`,
+`StaffAvailabilityRule` — the same non-unique-lookup pattern
+`seed.ts`'s own `seedSystemRoles` already established for
+organization-scoped system roles) keyed on a stable slug or email, so
+re-running it converges instead of duplicating; verified live by
+running it three times in this stage and diffing row counts and the
+main organization's `Branch` id each time, plus a real appointment
+created against its data was confirmed unaffected by two subsequent
+re-runs. A `NODE_ENV=production` guard exits before ever constructing a
+database connection.
+
+**The live acceptance pass surfaced one real, verified Android bug —
+not in the fixture, not in the backend, but in session-state
+staleness.** `ProfileViewModel` reads `sessionState.displayName`
+directly rather than re-fetching the customer profile, and
+`SessionManager.applyAuthResult` (section 23) only ever wrote that
+cached value at sign-in, refresh, or restoration time. A customer who
+changes their display name via Profile Setup therefore saw the Profile
+screen keep showing their pre-change name indefinitely — confirmed live
+(direct `psql` and a fresh authenticated API call both showed the
+correct, updated name while the Profile screen still showed the old
+one) and reproduced on a second, code-unchanged run to rule out the
+kind of transient recomposition timing artifact section 26 already
+diagnosed once for the Home greeting. Fixed with the same "keep the
+cached session in sync" shape `SessionManager.updateRefreshToken`
+already established for token rotation: `TokenStore.updateDisplayName`
+(a new partial-update method) and `SessionManager.updateDisplayName`
+(updates `TokenStore` and, when a session is currently `SignedIn`,
+`_sessionState` in place) are called from
+`CustomerProfileSetupViewModel.save()` with the server's own
+authoritative `displayName` on every successful update — never a value
+the client invented. A no-op when nobody is signed in. Covered by three
+new unit tests (`TokenStoreTest`, two new `SessionManagerTest` cases,
+one new `CustomerProfileSetupViewModelTest` case), bringing the Android
+unit-test count from 206 to 210.
+
+**What was actually driven live, against the real backend and
+PostgreSQL, using the fixture above:** passwordless sign-in, customer
+workspace selection, profile setup, the real Home greeting and
+"Featured near you" card, search finding the fixture business, the
+business profile (including real Call/Directions), service selection,
+provider selection (a specific named provider, not only "any
+available"), real availability, booking review, atomic booking
+creation (server returned `201`, a real `KRA-`-prefixed reference, and
+correctly rejected an initial attempt with the server's own
+`SLOT_UNAVAILABLE`-adjacent "before the minimum booking lead time"
+error when enough live debugging time had passed to violate the
+fixture's lead-time policy — surfaced honestly, never silently
+retried or hidden), five and three rapid taps on "Confirm booking"
+each producing exactly one `POST .../appointments` call, viewing the
+appointment from the list, rescheduling to a different day (server
+`201`, `version` incremented, one `appointment.rescheduled` audit
+event), cancelling (server `201`, terminal `CANCELLED` status, one more
+audit event, the appointment correctly reclassified from Upcoming into
+Past), a cold app relaunch restoring the session without re-prompting
+sign-in, and system back from Home exiting to the launcher rather than
+exposing any auth or business screen. Every one of these was
+cross-checked directly against PostgreSQL (`appointments`,
+`appointment_items`, `appointment_status_history`,
+`appointment_idempotency_keys`, `audit_events`), not only the UI.
+Separately confirmed live: the decoy `kora-demo-hidden-studio` business
+returns an empty result from public search and a `404` from a direct
+slug lookup.
+
+**Duplicate-prevention behavior not independently re-verified live this
+stage** (idempotent replay of an unchanged retry, rejection of a
+reused key against a changed request, and the PostgreSQL `EXCLUDE`
+constraint actually blocking a concurrent double-booking race) already
+has direct backend e2e coverage from the original booking stage and was
+not re-exercised by hand here, since reproducing a genuine concurrent
+race requires two simultaneous requests rather than sequential manual
+taps — the rapid-tap tests above prove the Android-side guard, not the
+server's own concurrency protection.
+
+A transient resource-contention effect, not a code defect, was
+observed and diagnosed during this stage: running the Android emulator,
+a live backend process, and the full backend test suite concurrently on
+the same host produced severe UI jank (dropped frames, a "frozen
+process" warning) and briefly made the Home screen's customer-profile
+greeting appear permanently stuck rather than merely slow. A targeted
+temporary diagnostic log proved the underlying `HomeViewModel` state
+update was in fact applied correctly the whole time; the appearance of
+staleness resolved once concurrent load was reduced. Separately, a
+stray backend process left running from a prior session (`node
+dist/main`, bound to port 3000 since the previous day) silently
+absorbed this stage's early requests after this session's own `pnpm
+start:dev` failed to bind with `EADDRINUSE` — discovered by reading
+that failed process's own log, not by any incorrect application
+behavior. Neither process's served responses are suspected of being
+incorrect (no backend source changed between the two processes'
+starts), but it was killed and replaced with a freshly started,
+verified-ready instance before continuing, and every finding after that
+point in this section was produced against that clean instance.

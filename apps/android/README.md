@@ -451,6 +451,17 @@ loading gated on a real `businessSlug` being present (and never
 attempted when it is not); and Roborazzi screenshot baselines added for
 the appointments-list (upcoming/past) and appointment-detail screens.
 
+The follow-up Kora Customer Marketplace — Live Acceptance and Hardening
+stage (docs/ARCHITECTURE.md section 27) added four more tests for the
+two real bugs that live pass found, bringing the Android unit-test
+count from 206 to 212: `HomeViewModelTest` (new) proves a late response
+from a superseded `loadFeatured()` call can never overwrite a newer
+call's already-applied result now that each load cancels its own
+previous job first; and one new `TokenStoreTest` case, two new
+`SessionManagerTest` cases, and one new `CustomerProfileSetupViewModelTest`
+case prove `updateDisplayName` keeps the cached session in sync with
+the server's authoritative name after a successful profile update.
+
 **A genuine Android Keystore does not exist inside a plain-JVM
 Robolectric test.** Tests that need to prove `TokenStore`'s own logic
 (field mapping, partial updates, null handling) use a test-only
@@ -501,17 +512,27 @@ repository — set one up in Android Studio's Device Manager first.
   owner reports) has not been run with direct PostgreSQL cross-checks;
   only individual screens have been spot-verified against a live
   backend on an existing emulator.
-- A live emulator click-through of business profile → service selection
-  → provider selection → availability → booking review → confirmation →
-  appointment detail → reschedule/cancel was not performed for Design
-  Batch 02, because the local development database had zero seeded or
-  published businesses at verification time. Sign-in, session
-  restoration, the five-tab customer navigation shell (including
-  back-stack-exits-the-app), the home screen's real greeting and honest
-  empty state, and search/discovery's real filters and empty state were
-  verified live end to end. The unverified flows are covered by
-  automated unit and Compose UI tests using fakes that mirror the real
-  API contracts exactly, not by a live manual pass.
+- Design Batch 02 itself did not drive a live business-profile →
+  service → provider → availability → booking → confirmation →
+  appointment-detail → reschedule/cancel click-through, because the
+  local database had zero seeded businesses at the time — see
+  docs/ARCHITECTURE.md section 27 for the follow-up "Live Acceptance and
+  Hardening" stage that closed this gap using a standalone, idempotent,
+  production-guarded development fixture (`pnpm db:seed:marketplace-demo`,
+  documented in `apps/api/README.md`). That stage drove the entire
+  journey live against the real backend and PostgreSQL — booking,
+  viewing, rescheduling, and cancelling a real appointment, with every
+  step cross-checked directly in the database — and fixed two real bugs
+  found in the process: `HomeViewModel` not cancelling a superseded load
+  before starting a new one, and the Profile screen not reflecting a
+  display-name change until the next full session restoration. Not
+  independently re-verified live in that stage (already covered by
+  existing backend e2e tests, not re-exercised by hand): idempotent
+  replay of an unchanged retry, rejection of a reused idempotency key
+  against a changed request, and the PostgreSQL `EXCLUDE` constraint
+  actually blocking a concurrent double-booking race — reproducing a
+  genuine concurrent race requires two simultaneous requests, not
+  sequential manual taps.
 - iOS (a future stage, sharing the same backend contracts).
 - Push notifications and offline/background synchronization.
 - Voice/AI-assisted discovery (no fake or placeholder UI exists for

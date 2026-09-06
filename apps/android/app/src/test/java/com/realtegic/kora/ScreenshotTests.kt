@@ -43,6 +43,8 @@ import com.realtegic.kora.feature.auth.AuthViewModel
 import com.realtegic.kora.feature.auth.OtpVerifyScreen
 import com.realtegic.kora.feature.customer.home.HomeScreen
 import com.realtegic.kora.feature.customer.home.HomeViewModel
+import com.realtegic.kora.feature.workspace.AccountTypeScreen
+import com.realtegic.kora.feature.workspace.AccountTypeViewModel
 import com.realtegic.kora.feature.workspace.WorkspaceChooserScreen
 import com.realtegic.kora.feature.workspace.WorkspaceViewModel
 import com.realtegic.kora.ui.theme.KoraTheme
@@ -180,15 +182,38 @@ class ScreenshotTests {
                 ),
             ),
         )
-        val viewModel = WorkspaceViewModel(WorkspacesRepository(api, Moshi.Builder().build()), LocalPreferences(context))
+        val tokenStore = TokenStore(context, prefsProvider = { context.getSharedPreferences("screenshot_workspace_chooser_prefs", Context.MODE_PRIVATE) })
+        val authApi = ScreenshotAuthApi()
+        val sessionManager = SessionManager(tokenStore, authApi, Moshi.Builder().build())
+        val authRepository = AuthRepository(authApi, sessionManager, Moshi.Builder().build())
+        val viewModel = WorkspaceViewModel(WorkspacesRepository(api, Moshi.Builder().build()), LocalPreferences(context), authRepository)
 
         composeRule.setContent {
             KoraTheme {
-                WorkspaceChooserScreen(viewModel = viewModel, onCustomerSelected = {}, onOrganizationSelected = {}, onCreateBusiness = {})
+                WorkspaceChooserScreen(
+                    viewModel = viewModel,
+                    onCustomerSelected = {},
+                    onOrganizationSelected = {},
+                    onCreateBusiness = {},
+                    onSignInDifferentEmail = {},
+                )
             }
         }
 
         composeRule.onRoot().captureRoboImage("build/outputs/roborazzi/workspace_chooser_screen.png")
+    }
+
+    @Test
+    fun `account type screen`() {
+        val viewModel = AccountTypeViewModel()
+
+        composeRule.setContent {
+            KoraTheme {
+                AccountTypeScreen(viewModel = viewModel, onCustomerContinue = {}, onBusinessContinue = {})
+            }
+        }
+
+        composeRule.onRoot().captureRoboImage("build/outputs/roborazzi/account_type_screen.png")
     }
 
     private fun otpViewModel(api: ScreenshotAuthApi): AuthViewModel {

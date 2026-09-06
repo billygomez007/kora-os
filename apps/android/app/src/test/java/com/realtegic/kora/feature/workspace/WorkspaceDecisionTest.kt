@@ -22,9 +22,9 @@ class WorkspaceDecisionTest {
     )
 
     @Test
-    fun `no memberships and customer available goes straight to customer home`() {
+    fun `no memberships and customer available shows the account type choice`() {
         val decision = decideInitialWorkspaceRoute(MyWorkspacesDto(customerWorkspaceAvailable = true, organizations = emptyList()))
-        assertEquals(WorkspaceDecision.CustomerHome, decision)
+        assertEquals(WorkspaceDecision.ShowAccountTypeChoice, decision)
     }
 
     @Test

@@ -117,11 +117,16 @@ additionally need either an `X-Kora-Organization-Id` header or an
 to check, it never grants access by itself. See `docs/API_SPEC.md` and
 `docs/SECURITY.md` for the full model. No code is ever written to any
 application log — there is no console/stdout sender, in any
-environment. There is no real production email provider wired in yet;
-locally, `pnpm db:up` also starts a Mailpit container
+environment. Locally, `pnpm db:up` also starts a Mailpit container
 (`infrastructure/compose.yaml`) and codes are delivered to it over real
 SMTP — read them at http://127.0.0.1:8025 (see `EmailOtpModule` and
-`SmtpEmailOtpSender`).
+`SmtpEmailOtpSender`). Production is prepared for
+[Resend](https://resend.com) as the real email provider, through this
+exact same SMTP adapter and no code path specific to Resend — see
+`docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md` for the full setup and
+`docs/ARCHITECTURE.md` section 28 for what changed. It is not live yet:
+no production hosting exists, and the sending domain
+(`auth.koraafric.com`) is not yet verified with a real Resend account.
 
 ## Services, availability, and booking in one paragraph
 

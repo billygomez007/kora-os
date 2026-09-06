@@ -11,6 +11,12 @@ export interface EmailOtpDeliveryParams {
   emailNormalized: string;
   code: string;
   expiresAt: Date;
+  /** The same `OTP_EXPIRY_MINUTES` value used to compute `expiresAt`,
+   * passed through explicitly so an email's "this code expires in ..."
+   * wording is always sourced from the one configuration value that
+   * actually controls validity — never a separately reconstructed or
+   * independently worded duration that could drift from it. */
+  expiryMinutes: number;
 }
 
 export interface EmailOtpSender {

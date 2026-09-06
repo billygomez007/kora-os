@@ -125,7 +125,7 @@ export class EmailOtpService {
     });
 
     try {
-      await this.sender.send({ emailNormalized, code, expiresAt });
+      await this.sender.send({ emailNormalized, code, expiresAt, expiryMinutes });
     } catch {
       // An undelivered challenge must not remain usable: the recipient
       // never received the code, so nobody should be able to verify this

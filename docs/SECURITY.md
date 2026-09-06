@@ -109,16 +109,25 @@ that captures a code only inside the test process. Development and
 production share the same real implementation, an SMTP sender
 (nodemailer, with its `logger`/`debug` transport options — which would
 otherwise print the raw SMTP conversation, code included — explicitly
-off): development points it at a local, credential-free Mailpit
-container (`infrastructure/compose.yaml`, `pnpm db:up`; inspect
-delivered codes at `http://127.0.0.1:8025`, never enabled in
-production) via `EMAIL_DELIVERY_MODE=smtp`; production has no real
-provider connected yet, so it runs with delivery unconfigured and fails
-closed (a `503`) rather than silently pretending a code was sent — see
-docs/ROADMAP.md for where a real provider integration lands. A failed
-delivery also invalidates the challenge it belongs to immediately, the
-same as a resend would, so an undelivered code is never left active and
-guessable for its full TTL.
+off, and explicit bounded connection/greeting/socket timeouts so a slow
+or unreachable mail server can never leave a sign-in request hanging):
+development points it at a local, credential-free Mailpit container
+(`infrastructure/compose.yaml`, `pnpm db:up`; inspect delivered codes at
+`http://127.0.0.1:8025`, never enabled in production) via
+`EMAIL_DELIVERY_MODE=smtp`. Production is prepared to use
+[Resend](https://resend.com) as the real provider through this exact
+same adapter and environment variables — see
+docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md for the full setup — but
+is not yet live: no production hosting exists, `auth.koraafric.com` is
+not yet verified in Resend, and no real API key has been issued or
+stored anywhere. Until every one of those external steps is complete,
+production runs with delivery unconfigured and fails closed (a `503`)
+rather than silently pretending a code was sent. Resend delivers the
+message only; it never becomes part of Kora's identity or authorization
+model — every property in this section holds regardless of which SMTP
+provider is configured. A failed delivery also invalidates the challenge
+it belongs to immediately, the same as a resend would, so an undelivered
+code is never left active and guessable for its full TTL.
 
 Email OTP is Kora's chosen initial authentication method, but it is not
 phishing-resistant — a sufficiently well-crafted lookalike site can
@@ -1616,3 +1625,61 @@ Profile screen could show a *stale* name after a customer changed it
 no other screen was affected, since every other screen already
 re-fetched the customer profile fresh rather than reading the cached
 session value.
+
+## 42. Resend production email preparation
+
+This stage connected the existing `EmailOtpSender`/`SmtpEmailOtpSender`
+pair (section 6) to Resend's documented SMTP configuration through
+configuration only — no new authentication path, no second email
+adapter, and no change to any property in section 6's list. What
+changed and why it stays safe:
+
+- **The Resend API key is a `SMTP_PASSWORD` value like any other SMTP
+  credential** — never hardcoded, never logged (nodemailer's
+  `logger`/`debug` options stay off), never returned in an API response,
+  never exposed to Android (Android calls only
+  `POST /v1/auth/email-otp/{request,verify}`; it has no SMTP client and
+  no path to any credential). It reaches the process only as an
+  environment variable, sourced from the production host's secret
+  manager once one exists (docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md)
+  — never committed, never placed in a Docker image layer.
+- **Authentication failures are sanitized exactly like any other SMTP
+  failure already was**: `SmtpEmailOtpSender` catches every error,
+  logs only the error's `name`, and always throws the same generic
+  `EmailDeliveryUnavailableError` — proven with a dedicated test that
+  simulates a rejected Resend API key and asserts the key never reaches
+  a log line or the exception the caller sees, the same guarantee the
+  existing generic-failure test already established for an SMTP
+  rejection's raw diagnostic text.
+- **Bounded SMTP timeouts are new here** (`connectionTimeout`,
+  `greetingTimeout`, `socketTimeout`, all in the 10-15 second range) —
+  previously implicit in nodemailer's own considerably longer defaults.
+  A user-facing OTP request can now never be left hanging by a slow or
+  unreachable mail server regardless of which SMTP provider is
+  configured.
+- **The email content rewrite carries no new PII or secret exposure.**
+  The HTML alternative added alongside the existing plain text contains
+  the same information as before (recipient email address, one-time
+  code, expiry) and nothing more — no tracking pixel, no external image
+  request, no link of any kind, so no third party learns anything about
+  whether or when the recipient opened it. `docs/operations/
+  EMAIL_OTP_PRODUCTION_SETUP.md` step 11 also documents disabling
+  Resend's own account-level open/click tracking for this domain.
+- **The expiry wording is sourced from `OTP_EXPIRY_MINUTES` itself**,
+  passed through the same `EmailOtpDeliveryParams` the code and
+  recipient already flow through — the email can never claim a
+  different validity window than the one the server actually enforces,
+  closing a real (if minor) trust gap the previous ISO-timestamp wording
+  left open only in principle (a recipient had no way to know the
+  server's actual expiry policy from the timestamp alone).
+- **DNS authentication (SPF, DKIM, and eventually DMARC enforcement) for
+  `auth.koraafric.com` is entirely external to this codebase** — Resend
+  generates domain-specific values that only the user can retrieve and
+  only the user can publish at the DNS provider controlling
+  `koraafric.com`. No DKIM/SPF/verification value is fabricated
+  anywhere in this repository; the setup guide explicitly warns against
+  ever inventing one.
+
+Nothing about who can request or verify a code, how long a code lives,
+how many attempts are allowed, or how sessions are issued and revoked
+changed as part of this work.

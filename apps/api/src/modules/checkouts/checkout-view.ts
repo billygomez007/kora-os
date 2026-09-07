@@ -5,14 +5,25 @@ export const checkoutViewInclude = {
   adjustments: true,
 } satisfies Prisma.CheckoutInclude;
 
-type CheckoutWithRelations = Prisma.CheckoutGetPayload<{ include: typeof checkoutViewInclude }>;
+type CheckoutWithRelations = Prisma.CheckoutGetPayload<{
+  include: typeof checkoutViewInclude;
+}>;
 
 export interface CheckoutLineItemView {
   id: string;
-  serviceId: string;
-  staffProfileId: string;
-  serviceName: string;
-  durationMinutes: number;
+  kind: string;
+  serviceId: string | null;
+  staffProfileId: string | null;
+  serviceName: string | null;
+  durationMinutes: number | null;
+  productId: string | null;
+  productVariantId: string | null;
+  productName: string | null;
+  variantName: string | null;
+  sku: string | null;
+  barcode: string | null;
+  quantity: number;
+  unitPriceMinor: number;
   priceMinor: number;
   currency: string;
   displayOrder: number;
@@ -31,9 +42,9 @@ export interface CheckoutView {
   id: string;
   organizationId: string;
   branchId: string;
-  serviceSessionId: string;
-  customerRecordId: string;
-  assignedStaffProfileId: string;
+  serviceSessionId: string | null;
+  customerRecordId: string | null;
+  assignedStaffProfileId: string | null;
   reference: string;
   status: string;
   currency: string;
@@ -88,10 +99,19 @@ export function toCheckoutView(checkout: CheckoutWithRelations): CheckoutView {
       .sort((a, b) => a.displayOrder - b.displayOrder)
       .map((item) => ({
         id: item.id,
+        kind: item.kind,
         serviceId: item.serviceId,
         staffProfileId: item.staffProfileId,
         serviceName: item.serviceNameSnapshot,
         durationMinutes: item.durationMinutesSnapshot,
+        productId: item.productId,
+        productVariantId: item.productVariantId,
+        productName: item.productNameSnapshot,
+        variantName: item.variantNameSnapshot,
+        sku: item.skuSnapshot,
+        barcode: item.barcodeSnapshot,
+        quantity: item.quantity,
+        unitPriceMinor: item.unitPriceMinorSnapshot,
         priceMinor: item.priceMinorSnapshot,
         currency: item.currencySnapshot,
         displayOrder: item.displayOrder,

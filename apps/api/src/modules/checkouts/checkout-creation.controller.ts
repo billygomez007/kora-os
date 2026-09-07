@@ -1,10 +1,11 @@
-import { Controller, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { CurrentTenant } from '../../common/authorization/decorators/current-tenant.decorator.js';
 import { RequirePermissions } from '../../common/authorization/decorators/require-permissions.decorator.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
 import { TenantAccessGuard } from '../../common/authorization/tenant-access.guard.js';
 import type { RequestWithId } from '../../common/middleware/request-id.middleware.js';
 import { CheckoutsService } from './checkouts.service.js';
+import { CreateServiceCheckoutDto } from './dto/create-service-checkout.dto.js';
 
 /** No `:branchId` route param exists here (matches every other id-scoped
  * service-session route) — CheckoutsService.create loads the session
@@ -20,8 +21,9 @@ export class CheckoutCreationController {
   async create(
     @CurrentTenant() tenant: TenantContext,
     @Param('serviceSessionId') serviceSessionId: string,
+    @Body() dto: CreateServiceCheckoutDto,
     @Req() request: RequestWithId,
   ) {
-    return this.checkoutsService.create(tenant, serviceSessionId, request.requestId);
+    return this.checkoutsService.create(tenant, serviceSessionId, request.requestId, dto.productItems);
   }
 }

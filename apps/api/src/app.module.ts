@@ -20,11 +20,13 @@ import { CheckoutsModule } from './modules/checkouts/checkouts.module.js';
 import { CommissionsModule } from './modules/commissions/commissions.module.js';
 import { CorrectionsModule } from './modules/corrections/corrections.module.js';
 import { CustomerProfileModule } from './modules/customer-profile/customer-profile.module.js';
+import { CustomersModule } from './modules/customers/customers.module.js';
 import { DiscoveryModule } from './modules/discovery/discovery.module.js';
 import { FavoritesModule } from './modules/favorites/favorites.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { ProductsModule } from './modules/products/products.module.js';
 import { QueueModule } from './modules/queue/queue.module.js';
 import { ReceiptsModule } from './modules/receipts/receipts.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
@@ -70,9 +72,11 @@ const repositoryRootEnvPath = path.resolve(
     StaffModule,
     DiscoveryModule,
     ServicesModule,
+    ProductsModule,
     SchedulingModule,
     AvailabilityModule,
     CustomerProfileModule,
+    CustomersModule,
     FavoritesModule,
     WorkspacesModule,
     AppointmentsModule,

@@ -9,6 +9,23 @@ export function configureApplication(app: INestApplication): void {
   const apiPrefix = config.getOrThrow<string>('API_PREFIX');
 
   app.use(helmet());
+
+  app.enableCors({
+    origin: [
+      'http://localhost:3001',
+      'https://koraafric.com',
+      'https://www.koraafric.com',
+    ],
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Request-Id',
+      'Idempotency-Key',
+    ],
+  });
+
   app.use(requestIdMiddleware);
   app.setGlobalPrefix(apiPrefix);
   app.useGlobalPipes(

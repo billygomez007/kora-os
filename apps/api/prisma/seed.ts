@@ -50,6 +50,10 @@ const PERMISSIONS: ReadonlyArray<{ code: string; description: string }> = [
   { code: 'roles.manage', description: 'Create and update roles and permission assignments.' },
   { code: 'services.read', description: 'View the service catalog.' },
   { code: 'services.manage', description: 'Manage the service catalog.' },
+  { code: 'products.read', description: 'View the product catalog.' },
+  { code: 'products.manage', description: 'Manage the product catalog.' },
+  { code: 'inventory.read', description: 'View branch inventory and stock history.' },
+  { code: 'inventory.manage', description: 'Receive, adjust, and manage branch inventory.' },
   { code: 'availability.read', description: 'View branch business hours, booking policy, and staff availability.' },
   { code: 'availability.manage', description: 'Manage branch business hours, booking policy, and staff availability.' },
   { code: 'customers.read', description: 'View customer profiles and history.' },
@@ -136,6 +140,10 @@ const SYSTEM_ROLES: ReadonlyArray<{
       'roles.read',
       'services.read',
       'services.manage',
+      'inventory.manage',
+      'inventory.read',
+      'products.manage',
+      'products.read',
       'availability.read',
       'availability.manage',
       'customers.read',
@@ -194,6 +202,8 @@ const SYSTEM_ROLES: ReadonlyArray<{
     description: 'Checkout, payment recording, receipts, and reconciliation.',
     permissionCodes: [
       'services.read',
+      'inventory.read',
+      'products.read',
       'customers.read',
       'appointments.read',
       'queue.read',
@@ -209,6 +219,15 @@ const SYSTEM_ROLES: ReadonlyArray<{
       'transactions.create',
       'payments.read',
       'payments.record',
+      // Deliberately no payments.resolve here: that single permission
+      // also gates payment void and dispute resolution (see
+      // PaymentsController/PaymentDisputesController), not just the
+      // confirm-as-override path, so granting it would hand a cashier
+      // void/dispute-resolve authority the MVP task never asked for.
+      // A product-only checkout's cash confirmation instead goes
+      // through the existing owner/manager override, or the checkout's
+      // assigned operator (payments.verify_own) when that is a
+      // different person than whoever recorded the cash.
       'payments.void',
       'refunds.read',
       'refunds.request',
@@ -225,6 +244,8 @@ const SYSTEM_ROLES: ReadonlyArray<{
     permissionCodes: [
       'branches.read',
       'services.read',
+      'inventory.read',
+      'products.read',
       'availability.read',
       'customers.read',
       'customers.manage',
@@ -238,6 +259,13 @@ const SYSTEM_ROLES: ReadonlyArray<{
       'checkouts.create',
       'cash_registers.read',
       'cash_sessions.read',
+      // MVP cash-first checkout: a receptionist rings up a product-only
+      // or mixed sale and must be able to record the cash payment
+      // (confirmation itself goes through owner/manager override or the
+      // checkout's assigned operator — see the cashier role's comment
+      // on why payments.resolve is deliberately not granted here).
+      'payments.read',
+      'payments.record',
       'refunds.read',
       'refunds.request',
       'receipts.read',
@@ -268,6 +296,12 @@ const SYSTEM_ROLES: ReadonlyArray<{
       'transactions.read',
       'payments.read',
       'payments.refund',
+      // Receipts back the transactions an accountant reconciles and
+      // reports on (task: "payments, transactions, receipts, reports,
+      // commissions, reconciliation"); deliberately no payments.resolve
+      // here, matching the cashier role's own comment — that permission
+      // also gates void and dispute resolution, not just confirmation.
+      'receipts.read',
       'commissions.read_all',
       'reconciliation.perform',
       'reconciliation.approve',

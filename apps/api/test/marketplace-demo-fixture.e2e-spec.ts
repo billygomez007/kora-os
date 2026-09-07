@@ -68,7 +68,7 @@ describe('marketplace demo fixture', () => {
       const countsAfterFirstRun = await countFixtureRows(prisma);
       expect(countsAfterFirstRun.organizations).toBe(2);
       expect(countsAfterFirstRun.services).toBe(3);
-      expect(countsAfterFirstRun.staffProfiles).toBe(2);
+      expect(countsAfterFirstRun.staffProfiles).toBe(3);
       expect(countsAfterFirstRun.staffServiceAssignments).toBe(6);
       expect(countsAfterFirstRun.branchBusinessHours).toBe(7);
       expect(countsAfterFirstRun.staffAvailabilityRules).toBe(14);

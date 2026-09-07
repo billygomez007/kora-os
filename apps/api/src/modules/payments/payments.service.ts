@@ -146,6 +146,19 @@ export class PaymentsService {
             });
           }
 
+          // Every checkout this flow can settle already has an operator
+          // (Checkout.assignedStaffProfileId is nullable only pre-
+          // settlement) — this is the last gate before that value
+          // becomes PaymentRecord.confirmationRequiredByStaffProfileId,
+          // which stays a required column on purpose, matching
+          // TransactionPostingService's own guard for the same reason.
+          if (!lockedCheckout.assignedStaffProfileId) {
+            throw new ConflictException({
+              code: 'CHECKOUT_MISSING_OPERATOR',
+              message: 'This checkout has no assigned staff member and cannot accept a payment requiring confirmation.',
+            });
+          }
+
           const record = await tx.paymentRecord.create({
             data: {
               organizationId: tenant.organizationId,

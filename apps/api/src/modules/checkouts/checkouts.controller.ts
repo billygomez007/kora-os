@@ -6,6 +6,7 @@ import { TenantAccessGuard } from '../../common/authorization/tenant-access.guar
 import type { RequestWithId } from '../../common/middleware/request-id.middleware.js';
 import { CheckoutsService } from './checkouts.service.js';
 import { CreateCheckoutAdjustmentDto } from './dto/create-checkout-adjustment.dto.js';
+import { CreateProductCheckoutDto } from './dto/create-product-checkout.dto.js';
 import { ListCheckoutsQueryDto } from './dto/list-checkouts-query.dto.js';
 import { VoidCheckoutDto } from './dto/void-checkout.dto.js';
 
@@ -13,6 +14,21 @@ import { VoidCheckoutDto } from './dto/void-checkout.dto.js';
 @Controller('organizations/:organizationId/checkouts')
 export class CheckoutsController {
   constructor(private readonly checkoutsService: CheckoutsService) {}
+
+  /** Product-only checkout — a retail sale with no ServiceSession
+   * (docs task: product/mixed checkout). The service-session-scoped
+   * `POST .../service-sessions/:id/checkout` (CheckoutCreationController)
+   * is unaffected and remains the only way to create a service or mixed
+   * checkout. */
+  @RequirePermissions('checkouts.create')
+  @Post()
+  async createProductCheckout(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() dto: CreateProductCheckoutDto,
+    @Req() request: RequestWithId,
+  ) {
+    return this.checkoutsService.createForProductSale(tenant, dto, request.requestId);
+  }
 
   @RequirePermissions('checkouts.read')
   @Get()

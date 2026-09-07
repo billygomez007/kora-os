@@ -5,14 +5,25 @@ export const transactionViewInclude = {
   allocations: true,
 } satisfies Prisma.TransactionInclude;
 
-export type TransactionWithRelations = Prisma.TransactionGetPayload<{ include: typeof transactionViewInclude }>;
+export type TransactionWithRelations = Prisma.TransactionGetPayload<{
+  include: typeof transactionViewInclude;
+}>;
 
 export interface TransactionLineItemView {
   id: string;
-  serviceId: string;
-  staffProfileId: string;
-  serviceName: string;
-  durationMinutes: number;
+  kind: string;
+  serviceId: string | null;
+  staffProfileId: string | null;
+  serviceName: string | null;
+  durationMinutes: number | null;
+  productId: string | null;
+  productVariantId: string | null;
+  productName: string | null;
+  variantName: string | null;
+  sku: string | null;
+  barcode: string | null;
+  quantity: number;
+  unitPriceMinor: number;
   priceMinor: number;
   currency: string;
   displayOrder: number;
@@ -31,7 +42,7 @@ export interface TransactionView {
   branchId: string;
   checkoutId: string | null;
   serviceSessionId: string | null;
-  customerRecordId: string;
+  customerRecordId: string | null;
   assignedStaffProfileId: string;
   reference: string;
   status: string;
@@ -59,7 +70,9 @@ export interface TransactionView {
  * negative contribution to net revenue is derived at the reporting
  * layer from `kind`, never stored as a negative value here.
  */
-export function toTransactionView(transaction: TransactionWithRelations): TransactionView {
+export function toTransactionView(
+  transaction: TransactionWithRelations,
+): TransactionView {
   return {
     id: transaction.id,
     organizationId: transaction.organizationId,
@@ -83,10 +96,19 @@ export function toTransactionView(transaction: TransactionWithRelations): Transa
       .sort((a, b) => a.displayOrder - b.displayOrder)
       .map((item) => ({
         id: item.id,
+        kind: item.kind,
         serviceId: item.serviceId,
         staffProfileId: item.staffProfileId,
         serviceName: item.serviceNameSnapshot,
         durationMinutes: item.durationMinutesSnapshot,
+        productId: item.productId,
+        productVariantId: item.productVariantId,
+        productName: item.productNameSnapshot,
+        variantName: item.variantNameSnapshot,
+        sku: item.skuSnapshot,
+        barcode: item.barcodeSnapshot,
+        quantity: item.quantity,
+        unitPriceMinor: item.unitPriceMinorSnapshot,
         priceMinor: item.priceMinorSnapshot,
         currency: item.currencySnapshot,
         displayOrder: item.displayOrder,

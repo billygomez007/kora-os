@@ -7,14 +7,26 @@ export const receiptViewInclude = {
   // Transaction are immutable once created, so joining to them at read
   // time (rather than a further denormalized snapshot column) is safe
   // and always yields unchanging historical data.
-  originalReceipt: { select: { receiptNumber: true, transaction: { select: { reference: true } } } },
+  originalReceipt: {
+    select: {
+      receiptNumber: true,
+      transaction: { select: { reference: true } },
+    },
+  },
 } satisfies Prisma.ReceiptInclude;
 
-type ReceiptWithRelations = Prisma.ReceiptGetPayload<{ include: typeof receiptViewInclude }>;
+type ReceiptWithRelations = Prisma.ReceiptGetPayload<{
+  include: typeof receiptViewInclude;
+}>;
 
 export interface ReceiptLineItemView {
   id: string;
-  serviceName: string;
+  kind: string;
+  serviceName: string | null;
+  productName: string | null;
+  variantName: string | null;
+  sku: string | null;
+  barcode: string | null;
   quantity: number;
   unitPriceMinor: number;
   lineTotalMinor: number;
@@ -35,7 +47,7 @@ export interface ReceiptView {
   organizationId: string;
   branchId: string;
   transactionId: string;
-  customerRecordId: string;
+  customerRecordId: string | null;
   receiptNumber: string;
   sequenceNumber: number;
   /** SALE_RECEIPT, REFUND_RECEIPT, or REVERSAL_RECORD (docs task Phase
@@ -79,7 +91,8 @@ export function toReceiptView(receipt: ReceiptWithRelations): ReceiptView {
     kind: receipt.kind,
     originalReceiptId: receipt.originalReceiptId,
     originalReceiptNumber: receipt.originalReceipt?.receiptNumber ?? null,
-    originalTransactionReference: receipt.originalReceipt?.transaction.reference ?? null,
+    originalTransactionReference:
+      receipt.originalReceipt?.transaction.reference ?? null,
     correctionReason: receipt.correctionReason,
     remainingRefundableMinor: receipt.remainingRefundableMinorSnapshot,
     businessName: receipt.businessNameSnapshot,
@@ -98,7 +111,12 @@ export function toReceiptView(receipt: ReceiptWithRelations): ReceiptView {
       .sort((a, b) => a.displayOrder - b.displayOrder)
       .map((item) => ({
         id: item.id,
+        kind: item.kind,
         serviceName: item.serviceNameSnapshot,
+        productName: item.productNameSnapshot,
+        variantName: item.variantNameSnapshot,
+        sku: item.skuSnapshot,
+        barcode: item.barcodeSnapshot,
         quantity: item.quantity,
         unitPriceMinor: item.unitPriceMinorSnapshot,
         lineTotalMinor: item.lineTotalMinorSnapshot,

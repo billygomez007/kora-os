@@ -2,14 +2,25 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { isUniqueConstraintViolation } from '../../common/database/postgres-constraint-error.util.js';
 import { utcToLocalDate } from '../../common/scheduling/local-time.util.js';
 import { ReceiptKind } from '../../generated/prisma/client.js';
-import type { PaymentMethod, PaymentRecord, Prisma, Transaction as TransactionModel, TransactionLineItem } from '../../generated/prisma/client.js';
+import type {
+  PaymentMethod,
+  PaymentRecord,
+  Prisma,
+  Transaction as TransactionModel,
+  TransactionLineItem,
+} from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { formatReceiptNumber } from './receipt-number.util.js';
-import { receiptViewInclude, toReceiptView, type ReceiptView } from './receipt-view.js';
+import {
+  receiptViewInclude,
+  toReceiptView,
+  type ReceiptView,
+} from './receipt-view.js';
 
 type TransactionClient = Prisma.TransactionClient;
 
 const MAX_SEQUENCE_ATTEMPTS = 5;
+const WALK_IN_CUSTOMER_NAME = 'Walk-in customer';
 
 export interface ReceiptActor {
   organizationId: string;
@@ -51,9 +62,15 @@ export class ReceiptService {
     }
 
     const [organization, branch, customerRecord] = await Promise.all([
-      tx.organization.findUniqueOrThrow({ where: { id: transaction.organizationId } }),
+      tx.organization.findUniqueOrThrow({
+        where: { id: transaction.organizationId },
+      }),
       tx.branch.findUniqueOrThrow({ where: { id: transaction.branchId } }),
-      tx.customerRecord.findUniqueOrThrow({ where: { id: transaction.customerRecordId } }),
+      transaction.customerRecordId
+        ? tx.customerRecord.findUniqueOrThrow({
+            where: { id: transaction.customerRecordId },
+          })
+        : null,
     ]);
 
     // The branch's own local calendar year at posting time, matching
@@ -61,17 +78,35 @@ export class ReceiptService {
     // (queue ticket numbering, business-hours resolution) — a receipt
     // issued at 23:58 branch-local on 31 December belongs to that year,
     // not whatever UTC's clock says.
-    const branchLocalDate = utcToLocalDate(transaction.postedAt, branch.timeZone);
+    const branchLocalDate = utcToLocalDate(
+      transaction.postedAt,
+      branch.timeZone,
+    );
     const year = Number(branchLocalDate.slice(0, 4));
     const branchAddress = formatBranchAddress(branch);
 
     for (let attempt = 0; attempt < MAX_SEQUENCE_ATTEMPTS; attempt += 1) {
       const sequenceRow = await tx.branchReceiptSequence.upsert({
-        where: { organizationId_branchId_year: { organizationId: transaction.organizationId, branchId: transaction.branchId, year } },
+        where: {
+          organizationId_branchId_year: {
+            organizationId: transaction.organizationId,
+            branchId: transaction.branchId,
+            year,
+          },
+        },
         update: { lastSequence: { increment: 1 } },
-        create: { organizationId: transaction.organizationId, branchId: transaction.branchId, year, lastSequence: 1 },
+        create: {
+          organizationId: transaction.organizationId,
+          branchId: transaction.branchId,
+          year,
+          lastSequence: 1,
+        },
       });
-      const receiptNumber = formatReceiptNumber(branch.code, year, sequenceRow.lastSequence);
+      const receiptNumber = formatReceiptNumber(
+        branch.code,
+        year,
+        sequenceRow.lastSequence,
+      );
 
       try {
         const created = await tx.receipt.create({
@@ -87,7 +122,7 @@ export class ReceiptService {
             branchNameSnapshot: branch.name,
             branchPhoneSnapshot: branch.phone,
             branchAddressSnapshot: branchAddress,
-            customerNameSnapshot: customerRecord.name,
+            customerNameSnapshot: customerRecord?.name ?? WALK_IN_CUSTOMER_NAME,
             currency: transaction.currency,
             subtotalMinorSnapshot: transaction.subtotalMinor,
             adjustmentTotalMinorSnapshot: transaction.adjustmentTotalMinor,
@@ -97,9 +132,14 @@ export class ReceiptService {
               create: lineItems.map((item) => ({
                 organizationId: transaction.organizationId,
                 transactionLineItemId: item.id,
+                kind: item.kind,
                 serviceNameSnapshot: item.serviceNameSnapshot,
-                quantity: 1,
-                unitPriceMinorSnapshot: item.priceMinorSnapshot,
+                productNameSnapshot: item.productNameSnapshot,
+                variantNameSnapshot: item.variantNameSnapshot,
+                skuSnapshot: item.skuSnapshot,
+                barcodeSnapshot: item.barcodeSnapshot,
+                quantity: item.quantity,
+                unitPriceMinorSnapshot: item.unitPriceMinorSnapshot,
                 lineTotalMinorSnapshot: item.priceMinorSnapshot,
                 currencySnapshot: item.currencySnapshot,
                 displayOrder: item.displayOrder,
@@ -129,7 +169,11 @@ export class ReceiptService {
             entityId: created.id,
             requestId: actor.requestId,
             source: 'receipts',
-            newState: { transactionId: transaction.id, receiptNumber, totalMinor: created.totalMinorSnapshot },
+            newState: {
+              transactionId: transaction.id,
+              receiptNumber,
+              totalMinor: created.totalMinorSnapshot,
+            },
           },
           tx,
         );
@@ -137,12 +181,20 @@ export class ReceiptService {
         return toReceiptView(created);
       } catch (error) {
         if (isUniqueConstraintViolation(error, 'receipts_transaction_id_key')) {
-          const raced = await tx.receipt.findUnique({ where: { transactionId: transaction.id }, include: receiptViewInclude });
+          const raced = await tx.receipt.findUnique({
+            where: { transactionId: transaction.id },
+            include: receiptViewInclude,
+          });
           if (raced) {
             return toReceiptView(raced);
           }
         }
-        if (isUniqueConstraintViolation(error, 'receipts_organization_id_receipt_number_key')) {
+        if (
+          isUniqueConstraintViolation(
+            error,
+            'receipts_organization_id_receipt_number_key',
+          )
+        ) {
           // Only reachable if the atomic sequence counter itself was
           // somehow reused (it should never be) — retry with a freshly
           // incremented sequence rather than surfacing a raw conflict.
@@ -151,7 +203,9 @@ export class ReceiptService {
         throw error;
       }
     }
-    throw new ConflictException('Could not allocate a unique receipt number. Please try again.');
+    throw new ConflictException(
+      'Could not allocate a unique receipt number. Please try again.',
+    );
   }
 
   /**
@@ -185,23 +239,52 @@ export class ReceiptService {
     }
 
     const [organization, branch, customerRecord] = await Promise.all([
-      tx.organization.findUniqueOrThrow({ where: { id: correctiveTransaction.organizationId } }),
-      tx.branch.findUniqueOrThrow({ where: { id: correctiveTransaction.branchId } }),
-      tx.customerRecord.findUniqueOrThrow({ where: { id: correctiveTransaction.customerRecordId } }),
+      tx.organization.findUniqueOrThrow({
+        where: { id: correctiveTransaction.organizationId },
+      }),
+      tx.branch.findUniqueOrThrow({
+        where: { id: correctiveTransaction.branchId },
+      }),
+      correctiveTransaction.customerRecordId
+        ? tx.customerRecord.findUniqueOrThrow({
+            where: { id: correctiveTransaction.customerRecordId },
+          })
+        : null,
     ]);
 
-    const branchLocalDate = utcToLocalDate(correctiveTransaction.postedAt, branch.timeZone);
+    const branchLocalDate = utcToLocalDate(
+      correctiveTransaction.postedAt,
+      branch.timeZone,
+    );
     const year = Number(branchLocalDate.slice(0, 4));
     const branchAddress = formatBranchAddress(branch);
-    const kind = correctiveTransaction.kind === 'REVERSAL' ? ReceiptKind.REVERSAL_RECORD : ReceiptKind.REFUND_RECEIPT;
+    const kind =
+      correctiveTransaction.kind === 'REVERSAL'
+        ? ReceiptKind.REVERSAL_RECORD
+        : ReceiptKind.REFUND_RECEIPT;
 
     for (let attempt = 0; attempt < MAX_SEQUENCE_ATTEMPTS; attempt += 1) {
       const sequenceRow = await tx.branchReceiptSequence.upsert({
-        where: { organizationId_branchId_year: { organizationId: correctiveTransaction.organizationId, branchId: correctiveTransaction.branchId, year } },
+        where: {
+          organizationId_branchId_year: {
+            organizationId: correctiveTransaction.organizationId,
+            branchId: correctiveTransaction.branchId,
+            year,
+          },
+        },
         update: { lastSequence: { increment: 1 } },
-        create: { organizationId: correctiveTransaction.organizationId, branchId: correctiveTransaction.branchId, year, lastSequence: 1 },
+        create: {
+          organizationId: correctiveTransaction.organizationId,
+          branchId: correctiveTransaction.branchId,
+          year,
+          lastSequence: 1,
+        },
       });
-      const receiptNumber = formatReceiptNumber(branch.code, year, sequenceRow.lastSequence);
+      const receiptNumber = formatReceiptNumber(
+        branch.code,
+        year,
+        sequenceRow.lastSequence,
+      );
 
       try {
         const created = await tx.receipt.create({
@@ -216,24 +299,33 @@ export class ReceiptService {
             kind,
             originalReceiptId: params.originalReceiptId,
             correctionReason: params.correctionReason,
-            remainingRefundableMinorSnapshot: kind === ReceiptKind.REFUND_RECEIPT ? params.remainingRefundableMinor : null,
+            remainingRefundableMinorSnapshot:
+              kind === ReceiptKind.REFUND_RECEIPT
+                ? params.remainingRefundableMinor
+                : null,
             businessNameSnapshot: organization.name,
             branchNameSnapshot: branch.name,
             branchPhoneSnapshot: branch.phone,
             branchAddressSnapshot: branchAddress,
-            customerNameSnapshot: customerRecord.name,
+            customerNameSnapshot: customerRecord?.name ?? WALK_IN_CUSTOMER_NAME,
             currency: correctiveTransaction.currency,
             subtotalMinorSnapshot: correctiveTransaction.subtotalMinor,
-            adjustmentTotalMinorSnapshot: correctiveTransaction.adjustmentTotalMinor,
+            adjustmentTotalMinorSnapshot:
+              correctiveTransaction.adjustmentTotalMinor,
             totalMinorSnapshot: correctiveTransaction.totalMinor,
             issuedByMembershipId: actor.membershipId,
             lineItems: {
               create: correctiveLineItems.map((item) => ({
                 organizationId: correctiveTransaction.organizationId,
                 transactionLineItemId: item.id,
+                kind: item.kind,
                 serviceNameSnapshot: item.serviceNameSnapshot,
-                quantity: 1,
-                unitPriceMinorSnapshot: item.priceMinorSnapshot,
+                productNameSnapshot: item.productNameSnapshot,
+                variantNameSnapshot: item.variantNameSnapshot,
+                skuSnapshot: item.skuSnapshot,
+                barcodeSnapshot: item.barcodeSnapshot,
+                quantity: item.quantity,
+                unitPriceMinorSnapshot: item.unitPriceMinorSnapshot,
                 lineTotalMinorSnapshot: item.priceMinorSnapshot,
                 currencySnapshot: item.currencySnapshot,
                 displayOrder: item.displayOrder,
@@ -264,7 +356,12 @@ export class ReceiptService {
             entityId: created.id,
             requestId: actor.requestId,
             source: 'receipts',
-            newState: { transactionId: correctiveTransaction.id, receiptNumber, kind, totalMinor: created.totalMinorSnapshot },
+            newState: {
+              transactionId: correctiveTransaction.id,
+              receiptNumber,
+              kind,
+              totalMinor: created.totalMinorSnapshot,
+            },
           },
           tx,
         );
@@ -272,18 +369,28 @@ export class ReceiptService {
         return toReceiptView(created);
       } catch (error) {
         if (isUniqueConstraintViolation(error, 'receipts_transaction_id_key')) {
-          const raced = await tx.receipt.findUnique({ where: { transactionId: correctiveTransaction.id }, include: receiptViewInclude });
+          const raced = await tx.receipt.findUnique({
+            where: { transactionId: correctiveTransaction.id },
+            include: receiptViewInclude,
+          });
           if (raced) {
             return toReceiptView(raced);
           }
         }
-        if (isUniqueConstraintViolation(error, 'receipts_organization_id_receipt_number_key')) {
+        if (
+          isUniqueConstraintViolation(
+            error,
+            'receipts_organization_id_receipt_number_key',
+          )
+        ) {
           continue;
         }
         throw error;
       }
     }
-    throw new ConflictException('Could not allocate a unique receipt number. Please try again.');
+    throw new ConflictException(
+      'Could not allocate a unique receipt number. Please try again.',
+    );
   }
 }
 
@@ -292,7 +399,13 @@ export class ReceiptService {
  * details, only what is genuinely useful on a receipt (docs task Phase
  * 3: "safe contact/location details"). Returns null when the branch has
  * none of these set. */
-function formatBranchAddress(branch: { addressLine: string | null; city: string | null; region: string | null }): string | null {
-  const parts = [branch.addressLine, branch.city, branch.region].filter((part): part is string => Boolean(part?.trim()));
+function formatBranchAddress(branch: {
+  addressLine: string | null;
+  city: string | null;
+  region: string | null;
+}): string | null {
+  const parts = [branch.addressLine, branch.city, branch.region].filter(
+    (part): part is string => Boolean(part?.trim()),
+  );
   return parts.length > 0 ? parts.join(', ') : null;
 }

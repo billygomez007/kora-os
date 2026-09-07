@@ -1,7 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
-import { App } from 'supertest/types';
 import { AppModule } from '../../src/app.module.js';
 import { configureApplication } from '../../src/bootstrap/configure-application.js';
 import { normalizeEmail } from '../../src/common/identity/normalize-email.js';
@@ -10,7 +9,7 @@ import { EMAIL_OTP_SENDER } from '../../src/modules/auth/email-otp/email-otp-sen
 import { FakeEmailOtpSender } from '../../src/modules/auth/email-otp/fake-email-otp-sender.js';
 
 export interface TestApp {
-  app: INestApplication<App>;
+  app: INestApplication;
   fakeEmailOtpSender: FakeEmailOtpSender;
   prisma: PrismaService;
 }
@@ -47,9 +46,7 @@ export function claimTestPort(): number {
  * branch-scoped route) alongside AppModule, same as
  * `Test.createTestingModule` accepts.
  */
-export async function createTestApp(
-  imports: unknown[] = [],
-): Promise<TestApp> {
+export async function createTestApp(imports: unknown[] = []): Promise<TestApp> {
   const fakeEmailOtpSender = new FakeEmailOtpSender();
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule, ...(imports as never[])],

@@ -811,13 +811,11 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
       expect(inviteeEntry.branches).toEqual(
         expect.arrayContaining([expect.objectContaining({ branchId: org.primaryBranch.id })]),
       );
-      // A membership that joined through a staff invitation has a real
-      // StaffProfile id (needed by the mobile client to assign this
-      // staff member to a branch service); the owner, created directly
-      // by onboarding rather than an invitation, has none.
+      // Both invited staff and the organization owner have real
+      // StaffProfile ids so they can participate in operational flows.
       expect(typeof inviteeEntry.staffProfileId).toBe('string');
       const ownerEntry = list.body.data.find((entry: { userId: string }) => entry.userId === owner.userId);
-      expect(ownerEntry.staffProfileId).toBeNull();
+      expect(typeof ownerEntry.staffProfileId).toBe('string');
 
       await authed(testApp, outsider.accessToken)
         .get(`/v1/organizations/${org.organization.id}/staff`)

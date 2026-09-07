@@ -1,14 +1,28 @@
-import { ConflictException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { isUniqueConstraintViolation } from '../../common/database/postgres-constraint-error.util.js';
 import { generateReference } from '../../common/identity/generate-reference.util.js';
 import { sumMinorAmounts } from '../../common/money/assert-safe-money-amount.util.js';
 import { PrismaService } from '../../database/prisma.service.js';
-import { CheckoutStatus, PaymentRecordStatus, TransactionKind } from '../../generated/prisma/client.js';
+import {
+  CheckoutStatus,
+  CommerceLineItemKind,
+  PaymentRecordStatus,
+  TransactionKind,
+} from '../../generated/prisma/client.js';
 import type { Checkout, Prisma } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CommissionAccrualService } from '../commissions/commission-accrual.service.js';
+import { BranchInventoryService } from '../products/branch-inventory.service.js';
 import { ReceiptService } from '../receipts/receipt.service.js';
-import { transactionViewInclude, toTransactionView, type TransactionView } from './transaction-view.js';
+import {
+  transactionViewInclude,
+  toTransactionView,
+  type TransactionView,
+} from './transaction-view.js';
 
 type TransactionClient = Prisma.TransactionClient;
 
@@ -41,6 +55,7 @@ export class TransactionPostingService {
     private readonly auditService: AuditService,
     private readonly commissionAccrualService: CommissionAccrualService,
     private readonly receiptService: ReceiptService,
+    private readonly branchInventoryService: BranchInventoryService,
   ) {}
 
   async postForCheckout(
@@ -72,7 +87,25 @@ export class TransactionPostingService {
       throw new InternalServerErrorException('Checkout is not ready to settle');
     }
 
-    const lineItems = await tx.checkoutLineItem.findMany({ where: { checkoutId: checkout.id } });
+    const lineItems = await tx.checkoutLineItem.findMany({
+      where: { checkoutId: checkout.id },
+    });
+
+    // Every checkout-creation path (service-session-derived or the
+    // product/mixed commerce paths) sets an operator on `Checkout.
+    // assignedStaffProfileId` — nullable only pre-settlement, since a
+    // draft checkout may briefly exist before one is assigned. This is
+    // the last gate before that value is copied into Transaction.
+    // assignedStaffProfileId, which stays a required column on purpose
+    // (docs task: "do not weaken this invariant unless genuinely
+    // required" — unlike customerRecordId, a walk-in sale still has an
+    // operator, so no Transaction should ever lack one).
+    if (!checkout.assignedStaffProfileId) {
+      throw new InternalServerErrorException(
+        'Checkout has no assigned staff profile; cannot post a SALE transaction',
+      );
+    }
+    const assignedStaffProfileId = checkout.assignedStaffProfileId;
 
     for (let attempt = 0; attempt < MAX_REFERENCE_ATTEMPTS; attempt += 1) {
       const reference = generateReference(REFERENCE_PREFIX);
@@ -84,7 +117,7 @@ export class TransactionPostingService {
             checkoutId: checkout.id,
             serviceSessionId: checkout.serviceSessionId,
             customerRecordId: checkout.customerRecordId,
-            assignedStaffProfileId: checkout.assignedStaffProfileId,
+            assignedStaffProfileId,
             reference,
             kind: TransactionKind.SALE,
             currency: checkout.currency,
@@ -92,17 +125,28 @@ export class TransactionPostingService {
             adjustmentTotalMinor: checkout.adjustmentTotalMinor,
             totalMinor: checkout.totalMinor,
             items: {
-              create: lineItems.map((item) => ({
-                organizationId: checkout.organizationId,
-                serviceSessionItemId: item.serviceSessionItemId,
-                serviceId: item.serviceId,
-                staffProfileId: item.staffProfileId,
-                serviceNameSnapshot: item.serviceNameSnapshot,
-                durationMinutesSnapshot: item.durationMinutesSnapshot,
-                priceMinorSnapshot: item.priceMinorSnapshot,
-                currencySnapshot: item.currencySnapshot,
-                displayOrder: item.displayOrder,
-              })),
+              createMany: {
+                data: lineItems.map((item) => ({
+                  organizationId: checkout.organizationId,
+                  kind: item.kind,
+                  serviceSessionItemId: item.serviceSessionItemId,
+                  serviceId: item.serviceId,
+                  staffProfileId: item.staffProfileId,
+                  serviceNameSnapshot: item.serviceNameSnapshot,
+                  durationMinutesSnapshot: item.durationMinutesSnapshot,
+                  productId: item.productId,
+                  productVariantId: item.productVariantId,
+                  productNameSnapshot: item.productNameSnapshot,
+                  variantNameSnapshot: item.variantNameSnapshot,
+                  skuSnapshot: item.skuSnapshot,
+                  barcodeSnapshot: item.barcodeSnapshot,
+                  quantity: item.quantity,
+                  unitPriceMinorSnapshot: item.unitPriceMinorSnapshot,
+                  priceMinorSnapshot: item.priceMinorSnapshot,
+                  currencySnapshot: item.currencySnapshot,
+                  displayOrder: item.displayOrder,
+                })),
+              },
             },
             allocations: {
               create: confirmedPayments.map((payment) => ({
@@ -115,6 +159,40 @@ export class TransactionPostingService {
           include: transactionViewInclude,
         });
 
+        // Product stock deducts here, inside this same database
+        // transaction, immediately after the Transaction and its line
+        // items post — never earlier (adding a product to a checkout or
+        // merely recording a cash payment must never move stock) and
+        // never outside this commit-or-rollback boundary (an oversold
+        // line throws BadRequestException, which rolls back the
+        // Transaction, commission, and receipt right along with it, so a
+        // checkout can never settle having oversold). This only runs
+        // once per checkout: `postForCheckout` short-circuits at the top
+        // and returns the already-posted Transaction for a checkout
+        // that is already SETTLED, and CheckoutSettlementService's own
+        // row lock on the Checkout serializes every concurrent caller
+        // down to one at a time — so a retried settlement/confirmation
+        // can never deduct stock twice for the same checkout.
+        for (const item of created.items) {
+          if (
+            item.kind !== CommerceLineItemKind.PRODUCT ||
+            !item.productId ||
+            !item.productVariantId
+          ) {
+            continue;
+          }
+          await this.branchInventoryService.applySaleMovement(tx, {
+            organizationId: checkout.organizationId,
+            branchId: checkout.branchId,
+            productId: item.productId,
+            productVariantId: item.productVariantId,
+            type: 'SALE',
+            quantityDelta: -item.quantity,
+            reference: created.reference,
+            actorMembershipId: actor.membershipId,
+          });
+        }
+
         // Commission accrual and receipt issuance run inside this same
         // database transaction, immediately after the Transaction itself
         // is created — if either throws, the whole `tx` (Transaction,
@@ -124,15 +202,32 @@ export class TransactionPostingService {
         // must roll back"). Both are internally idempotent against a
         // retry of this same call (see their own header comments), which
         // is what lets `ensureDerivedRecords` reuse them verbatim.
-        await this.commissionAccrualService.accrueForTransaction(tx, created, created.items, actor);
-        await this.receiptService.issueForTransaction(tx, created, created.items, confirmedPayments, actor);
+        await this.commissionAccrualService.accrueForTransaction(
+          tx,
+          created,
+          created.items,
+          actor,
+        );
+        await this.receiptService.issueForTransaction(
+          tx,
+          created,
+          created.items,
+          confirmedPayments,
+          actor,
+        );
 
         const settleResult = await tx.checkout.updateMany({
           where: { id: checkout.id, version: checkout.version },
-          data: { status: CheckoutStatus.SETTLED, settledAt: new Date(), version: { increment: 1 } },
+          data: {
+            status: CheckoutStatus.SETTLED,
+            settledAt: new Date(),
+            version: { increment: 1 },
+          },
         });
         if (settleResult.count === 0) {
-          throw new ConflictException('This checkout was already updated by someone else');
+          throw new ConflictException(
+            'This checkout was already updated by someone else',
+          );
         }
 
         await this.auditService.record(
@@ -146,14 +241,20 @@ export class TransactionPostingService {
             entityId: created.id,
             requestId: actor.requestId,
             source: 'transactions',
-            newState: { checkoutId: checkout.id, totalMinor: created.totalMinor, reference: created.reference },
+            newState: {
+              checkoutId: checkout.id,
+              totalMinor: created.totalMinor,
+              reference: created.reference,
+            },
           },
           tx,
         );
 
         return toTransactionView(created);
       } catch (error) {
-        if (isUniqueConstraintViolation(error, 'transactions_checkout_id_key')) {
+        if (
+          isUniqueConstraintViolation(error, 'transactions_checkout_id_key')
+        ) {
           const existing = await tx.transaction.findUnique({
             where: { checkoutId: checkout.id },
             include: transactionViewInclude,
@@ -168,7 +269,9 @@ export class TransactionPostingService {
         throw error;
       }
     }
-    throw new ConflictException('Could not allocate a unique transaction reference. Please try again.');
+    throw new ConflictException(
+      'Could not allocate a unique transaction reference. Please try again.',
+    );
   }
 
   /**
@@ -187,21 +290,43 @@ export class TransactionPostingService {
    * adjustments, corrective receipt) are the correction-execution flow's
    * own concern (TransactionCorrectionsService), not this method's.
    */
-  async ensureDerivedRecords(transactionId: string, actor: PostTransactionActor): Promise<void> {
+  async ensureDerivedRecords(
+    transactionId: string,
+    actor: PostTransactionActor,
+  ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const transaction = await tx.transaction.findUniqueOrThrow({
         where: { id: transactionId },
         include: transactionViewInclude,
       });
-      if (transaction.kind !== TransactionKind.SALE || !transaction.checkoutId) {
-        throw new InternalServerErrorException('ensureDerivedRecords only supports a SALE transaction');
+      if (
+        transaction.kind !== TransactionKind.SALE ||
+        !transaction.checkoutId
+      ) {
+        throw new InternalServerErrorException(
+          'ensureDerivedRecords only supports a SALE transaction',
+        );
       }
       const confirmedPayments = await tx.paymentRecord.findMany({
-        where: { checkoutId: transaction.checkoutId, status: PaymentRecordStatus.CONFIRMED },
+        where: {
+          checkoutId: transaction.checkoutId,
+          status: PaymentRecordStatus.CONFIRMED,
+        },
       });
 
-      await this.commissionAccrualService.accrueForTransaction(tx, transaction, transaction.items, actor);
-      await this.receiptService.issueForTransaction(tx, transaction, transaction.items, confirmedPayments, actor);
+      await this.commissionAccrualService.accrueForTransaction(
+        tx,
+        transaction,
+        transaction.items,
+        actor,
+      );
+      await this.receiptService.issueForTransaction(
+        tx,
+        transaction,
+        transaction.items,
+        confirmedPayments,
+        actor,
+      );
     });
   }
 }

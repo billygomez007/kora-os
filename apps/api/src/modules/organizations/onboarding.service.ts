@@ -177,6 +177,18 @@ export class OnboardingService {
           },
         });
 
+        // Owners are operational members too. Giving the owner a StaffProfile
+        // allows a newly onboarded solo business to assign services, receive
+        // appointments, join the queue and record service activity without
+        // having to invite themselves as a separate staff member.
+        await tx.staffProfile.create({
+          data: {
+            organizationId: organization.id,
+            membershipId: ownerMembership.id,
+            jobTitle: ownerRole.name,
+          },
+        });
+
         const trialStartedAt = new Date();
         const trialEndsAt = new Date(
           trialStartedAt.getTime() +

@@ -401,8 +401,16 @@ model Organization {
   customerRecords     CustomerRecord[]
   customerFavorites   CustomerFavorite[]
 
-  serviceCategories           ServiceCategory[]
-  services                    Service[]
+  suppliers          Supplier[]
+  productCategories  ProductCategory[]
+  products           Product[]
+  productVariants    ProductVariant[]
+  branchInventory    BranchInventory[]
+  inventoryMovements InventoryMovement[]
+
+  serviceCategories ServiceCategory[]
+  services          Service[]
+
   branchServices              BranchService[]
   staffServiceAssignments     StaffServiceAssignment[]
   branchBusinessHours         BranchBusinessHours[]
@@ -491,6 +499,9 @@ model Branch {
   organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branchAssignments BranchAssignment[]
   staffInvitations  StaffInvitation[]
+
+  branchInventory    BranchInventory[]
+  inventoryMovements InventoryMovement[]
 
   branchServices              BranchService[]
   staffServiceAssignments     StaffServiceAssignment[]
@@ -1195,6 +1206,173 @@ enum AppointmentStatus {
 /// which is the platform-seeded taxonomy public discovery search filters
 /// by — a tenant's internal catalogue structure and the public taxonomy
 /// it is discovered under are different concerns.
+
+enum InventoryMovementType {
+  OPENING_BALANCE
+  STOCK_RECEIVED
+  MANUAL_ADJUSTMENT
+  SALE
+  SALE_REVERSAL
+  RETURN
+  DAMAGED
+  LOST
+  EXPIRED
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+model Supplier {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  contactName    String?   @map("contact_name")
+  phone          String?
+  email          String?
+  address        String?
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  products     Product[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt])
+  @@index([organizationId, name])
+  @@map("suppliers")
+}
+
+model ProductCategory {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  description    String?
+  sortOrder      Int       @default(0) @map("sort_order")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  products     Product[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt])
+  @@map("product_categories")
+}
+
+model Product {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  supplierId        String?   @map("supplier_id") @db.Uuid
+  productCategoryId String?   @map("product_category_id") @db.Uuid
+  name              String
+  description       String?
+  currency          String    @db.Char(3)
+  trackInventory    Boolean   @default(true) @map("track_inventory")
+  sortOrder         Int       @default(0) @map("sort_order")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt        DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplier             Supplier?             @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict)
+  productCategory      ProductCategory?      @relation(fields: [organizationId, productCategoryId], references: [organizationId, id], onDelete: Restrict)
+  variants             ProductVariant[]
+  branchInventory      BranchInventory[]
+  inventoryMovements   InventoryMovement[]
+  checkoutLineItems    CheckoutLineItem[]
+  transactionLineItems TransactionLineItem[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt])
+  @@index([organizationId, productCategoryId])
+  @@index([organizationId, supplierId])
+  @@map("products")
+}
+
+model ProductVariant {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  productId         String    @map("product_id") @db.Uuid
+  name              String
+  sku               String?
+  barcode           String?
+  costPriceMinor    Int?      @map("cost_price_minor")
+  sellingPriceMinor Int       @map("selling_price_minor")
+  sortOrder         Int       @default(0) @map("sort_order")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt        DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product              Product               @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Cascade)
+  branchInventory      BranchInventory[]
+  inventoryMovements   InventoryMovement[]
+  checkoutLineItems    CheckoutLineItem[]
+  transactionLineItems TransactionLineItem[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, productId, id])
+  @@unique([organizationId, sku])
+  @@unique([organizationId, barcode])
+  @@index([organizationId, productId, archivedAt])
+  @@map("product_variants")
+}
+
+model BranchInventory {
+  id               String   @id @default(uuid()) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  branchId         String   @map("branch_id") @db.Uuid
+  productId        String   @map("product_id") @db.Uuid
+  productVariantId String   @map("product_variant_id") @db.Uuid
+  quantityOnHand   Int      @default(0) @map("quantity_on_hand")
+  reorderLevel     Int      @default(0) @map("reorder_level")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch         Branch         @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  product        Product        @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  productVariant ProductVariant @relation(fields: [organizationId, productId, productVariantId], references: [organizationId, productId, id], onDelete: Restrict)
+
+  @@unique([branchId, productVariantId])
+  @@index([organizationId, branchId])
+  @@index([organizationId, productId])
+  @@index([organizationId, productVariantId])
+  @@index([branchId, quantityOnHand])
+  @@map("branch_inventory")
+}
+
+model InventoryMovement {
+  id                String                @id @default(uuid()) @db.Uuid
+  organizationId    String                @map("organization_id") @db.Uuid
+  branchId          String                @map("branch_id") @db.Uuid
+  productId         String                @map("product_id") @db.Uuid
+  productVariantId  String                @map("product_variant_id") @db.Uuid
+  type              InventoryMovementType
+  quantityDelta     Int                   @map("quantity_delta")
+  quantityBefore    Int                   @map("quantity_before")
+  quantityAfter     Int                   @map("quantity_after")
+  unitCostMinor     Int?                  @map("unit_cost_minor")
+  reference         String?
+  note              String?
+  actorMembershipId String?               @map("actor_membership_id") @db.Uuid
+  occurredAt        DateTime              @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch         Branch         @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  product        Product        @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  productVariant ProductVariant @relation(fields: [organizationId, productId, productVariantId], references: [organizationId, productId, id], onDelete: Restrict)
+
+  @@index([organizationId, branchId, occurredAt])
+  @@index([organizationId, productId, occurredAt])
+  @@index([organizationId, productVariantId, occurredAt])
+  @@index([branchId, productVariantId, occurredAt])
+  @@map("inventory_movements")
+}
+
 model ServiceCategory {
   id             String    @id @default(uuid()) @db.Uuid
   organizationId String    @map("organization_id") @db.Uuid
@@ -2105,9 +2283,9 @@ model Checkout {
   id                     String         @id @default(uuid()) @db.Uuid
   organizationId         String         @map("organization_id") @db.Uuid
   branchId               String         @map("branch_id") @db.Uuid
-  serviceSessionId       String         @unique @map("service_session_id") @db.Uuid
-  customerRecordId       String         @map("customer_record_id") @db.Uuid
-  assignedStaffProfileId String         @map("assigned_staff_profile_id") @db.Uuid
+  serviceSessionId       String?        @unique @map("service_session_id") @db.Uuid
+  customerRecordId       String?        @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId String?        @map("assigned_staff_profile_id") @db.Uuid
   reference              String         @unique
   status                 CheckoutStatus @default(OPEN)
   currency               String         @db.Char(3)
@@ -2125,9 +2303,9 @@ model Checkout {
 
   organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch               Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
-  serviceSession       ServiceSession          @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
-  customerRecord       CustomerRecord          @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
-  assignedStaffProfile StaffProfile            @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  serviceSession       ServiceSession?         @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord?         @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile?           @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
   createdByMembership  OrganizationMembership  @relation("CheckoutCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
   voidedByMembership   OrganizationMembership? @relation("CheckoutVoidedBy", fields: [organizationId, voidedByMembershipId], references: [organizationId, id], onDelete: Restrict)
 
@@ -2150,27 +2328,51 @@ model Checkout {
 /// to navigate back to the session's own record; every financial value
 /// used by this checkout comes from the snapshot columns here, never a
 /// live join.
+enum CommerceLineItemKind {
+  SERVICE
+  PRODUCT
+
+  @@map("commerce_line_item_kind")
+}
+
 model CheckoutLineItem {
-  id                      String   @id @default(uuid()) @db.Uuid
-  organizationId          String   @map("organization_id") @db.Uuid
-  checkoutId              String   @map("checkout_id") @db.Uuid
-  serviceSessionItemId    String   @map("service_session_item_id") @db.Uuid
-  serviceId               String   @map("service_id") @db.Uuid
-  staffProfileId          String   @map("staff_profile_id") @db.Uuid
-  serviceNameSnapshot     String   @map("service_name_snapshot")
-  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
-  priceMinorSnapshot      Int      @map("price_minor_snapshot")
-  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
-  displayOrder            Int      @map("display_order")
-  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String               @id @default(uuid()) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  checkoutId     String               @map("checkout_id") @db.Uuid
+  kind           CommerceLineItemKind @default(SERVICE)
 
-  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  checkout           Checkout           @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
-  serviceSessionItem ServiceSessionItem @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
-  service            Service            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
-  staffProfile       StaffProfile       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  serviceSessionItemId    String? @map("service_session_item_id") @db.Uuid
+  serviceId               String? @map("service_id") @db.Uuid
+  staffProfileId          String? @map("staff_profile_id") @db.Uuid
+  serviceNameSnapshot     String? @map("service_name_snapshot")
+  durationMinutesSnapshot Int?    @map("duration_minutes_snapshot")
 
+  productId           String? @map("product_id") @db.Uuid
+  productVariantId    String? @map("product_variant_id") @db.Uuid
+  productNameSnapshot String? @map("product_name_snapshot")
+  variantNameSnapshot String? @map("variant_name_snapshot")
+  skuSnapshot         String? @map("sku_snapshot")
+  barcodeSnapshot     String? @map("barcode_snapshot")
+
+  quantity               Int      @default(1)
+  unitPriceMinorSnapshot Int      @map("unit_price_minor_snapshot")
+  priceMinorSnapshot     Int      @map("price_minor_snapshot")
+  currencySnapshot       String   @map("currency_snapshot") @db.Char(3)
+  displayOrder           Int      @map("display_order")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  checkout           Checkout            @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+  serviceSessionItem ServiceSessionItem? @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
+  service            Service?            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile       StaffProfile?       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  product            Product?            @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  productVariant     ProductVariant?     @relation(fields: [organizationId, productId, productVariantId], references: [organizationId, productId, id], onDelete: Restrict)
+
+  @@unique([serviceSessionItemId])
   @@index([checkoutId, displayOrder])
+  @@index([organizationId, productId])
+  @@index([organizationId, productVariantId])
   @@map("checkout_line_items")
 }
 
@@ -2341,7 +2543,7 @@ model Transaction {
   branchId               String            @map("branch_id") @db.Uuid
   checkoutId             String?           @unique @map("checkout_id") @db.Uuid
   serviceSessionId       String?           @unique @map("service_session_id") @db.Uuid
-  customerRecordId       String            @map("customer_record_id") @db.Uuid
+  customerRecordId       String?           @map("customer_record_id") @db.Uuid
   assignedStaffProfileId String            @map("assigned_staff_profile_id") @db.Uuid
   reference              String            @unique
   status                 TransactionStatus @default(POSTED)
@@ -2358,7 +2560,7 @@ model Transaction {
   branch               Branch          @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
   checkout             Checkout?       @relation(fields: [organizationId, checkoutId], references: [organizationId, id], onDelete: Restrict)
   serviceSession       ServiceSession? @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
-  customerRecord       CustomerRecord  @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord? @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
   assignedStaffProfile StaffProfile    @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
   correctedTransaction Transaction?    @relation("TransactionCorrectionOf", fields: [organizationId, correctedTransactionId], references: [organizationId, id], onDelete: Restrict)
   corrections          Transaction[]   @relation("TransactionCorrectionOf")
@@ -2386,35 +2588,47 @@ model Transaction {
 /// (docs task Phase 4: "Never recompute a historical Transaction from
 /// mutable catalogue data").
 model TransactionLineItem {
-  id                      String   @id @default(uuid()) @db.Uuid
-  organizationId          String   @map("organization_id") @db.Uuid
-  transactionId           String   @map("transaction_id") @db.Uuid
-  serviceSessionItemId    String   @map("service_session_item_id") @db.Uuid
-  serviceId               String   @map("service_id") @db.Uuid
-  staffProfileId          String   @map("staff_profile_id") @db.Uuid
-  serviceNameSnapshot     String   @map("service_name_snapshot")
-  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
-  priceMinorSnapshot      Int      @map("price_minor_snapshot")
-  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
-  displayOrder            Int      @map("display_order")
-  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String               @id @default(uuid()) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  transactionId  String               @map("transaction_id") @db.Uuid
+  kind           CommerceLineItemKind @default(SERVICE)
 
-  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  transaction        Transaction        @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  serviceSessionItem ServiceSessionItem @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
-  service            Service            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
-  staffProfile       StaffProfile       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  serviceSessionItemId    String? @map("service_session_item_id") @db.Uuid
+  serviceId               String? @map("service_id") @db.Uuid
+  staffProfileId          String? @map("staff_profile_id") @db.Uuid
+  serviceNameSnapshot     String? @map("service_name_snapshot")
+  durationMinutesSnapshot Int?    @map("duration_minutes_snapshot")
+
+  productId           String? @map("product_id") @db.Uuid
+  productVariantId    String? @map("product_variant_id") @db.Uuid
+  productNameSnapshot String? @map("product_name_snapshot")
+  variantNameSnapshot String? @map("variant_name_snapshot")
+  skuSnapshot         String? @map("sku_snapshot")
+  barcodeSnapshot     String? @map("barcode_snapshot")
+
+  quantity               Int      @default(1)
+  unitPriceMinorSnapshot Int      @map("unit_price_minor_snapshot")
+  priceMinorSnapshot     Int      @map("price_minor_snapshot")
+  currencySnapshot       String   @map("currency_snapshot") @db.Char(3)
+  displayOrder           Int      @map("display_order")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction        Transaction         @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  serviceSessionItem ServiceSessionItem? @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
+  service            Service?            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile       StaffProfile?       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  product            Product?            @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  productVariant     ProductVariant?     @relation(fields: [organizationId, productId, productVariantId], references: [organizationId, productId, id], onDelete: Restrict)
 
   commissionAccrual CommissionAccrual?
   receiptLineItem   ReceiptLineItem?
   correctionItems   TransactionCorrectionItem[]
 
-  // Needed so CommissionAccrual/ReceiptLineItem can hold a composite
-  // tenant-safe FK to a specific line item by id, the same pattern every
-  // other financial-domain "child references a specific row" relation in
-  // this schema already uses.
   @@unique([organizationId, id])
   @@index([transactionId, displayOrder])
+  @@index([organizationId, productId])
+  @@index([organizationId, productVariantId])
   @@map("transaction_line_items")
 }
 
@@ -2657,7 +2871,7 @@ model Receipt {
   branchId                         String      @map("branch_id") @db.Uuid
   branchReceiptSequenceId          String      @map("branch_receipt_sequence_id") @db.Uuid
   transactionId                    String      @unique @map("transaction_id") @db.Uuid
-  customerRecordId                 String      @map("customer_record_id") @db.Uuid
+  customerRecordId                 String?     @map("customer_record_id") @db.Uuid
   receiptNumber                    String      @map("receipt_number")
   sequenceNumber                   Int         @map("sequence_number")
   kind                             ReceiptKind @default(SALE_RECEIPT)
@@ -2681,7 +2895,7 @@ model Receipt {
   branch                Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
   branchReceiptSequence BranchReceiptSequence  @relation(fields: [branchReceiptSequenceId], references: [id], onDelete: Restrict)
   transaction           Transaction            @relation(fields: [organizationId, transactionId], references: [organizationId, id], onDelete: Restrict)
-  customerRecord        CustomerRecord         @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord        CustomerRecord?        @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
   issuedByMembership    OrganizationMembership @relation("ReceiptIssuedBy", fields: [organizationId, issuedByMembershipId], references: [organizationId, id], onDelete: Restrict)
   originalReceipt       Receipt?               @relation("ReceiptCorrectionOf", fields: [organizationId, originalReceiptId], references: [organizationId, id], onDelete: Restrict)
   correctiveReceipts    Receipt[]              @relation("ReceiptCorrectionOf")
@@ -2710,17 +2924,22 @@ model Receipt {
 /// concept of a repeated-quantity line item — kept as an explicit column
 /// only so a future phase never needs a migration to add it.
 model ReceiptLineItem {
-  id                     String   @id @default(uuid()) @db.Uuid
-  organizationId         String   @map("organization_id") @db.Uuid
-  receiptId              String   @map("receipt_id") @db.Uuid
-  transactionLineItemId  String   @map("transaction_line_item_id") @db.Uuid
-  serviceNameSnapshot    String   @map("service_name_snapshot")
-  quantity               Int      @default(1)
-  unitPriceMinorSnapshot Int      @map("unit_price_minor_snapshot")
-  lineTotalMinorSnapshot Int      @map("line_total_minor_snapshot")
-  currencySnapshot       String   @map("currency_snapshot") @db.Char(3)
-  displayOrder           Int      @map("display_order")
-  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                     String               @id @default(uuid()) @db.Uuid
+  organizationId         String               @map("organization_id") @db.Uuid
+  receiptId              String               @map("receipt_id") @db.Uuid
+  transactionLineItemId  String               @map("transaction_line_item_id") @db.Uuid
+  kind                   CommerceLineItemKind @default(SERVICE)
+  serviceNameSnapshot    String?              @map("service_name_snapshot")
+  productNameSnapshot    String?              @map("product_name_snapshot")
+  variantNameSnapshot    String?              @map("variant_name_snapshot")
+  skuSnapshot            String?              @map("sku_snapshot")
+  barcodeSnapshot        String?              @map("barcode_snapshot")
+  quantity               Int                  @default(1)
+  unitPriceMinorSnapshot Int                  @map("unit_price_minor_snapshot")
+  lineTotalMinorSnapshot Int                  @map("line_total_minor_snapshot")
+  currencySnapshot       String               @map("currency_snapshot") @db.Char(3)
+  displayOrder           Int                  @map("display_order")
+  createdAt              DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
 
   organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   receipt             Receipt             @relation(fields: [receiptId], references: [id], onDelete: Cascade)

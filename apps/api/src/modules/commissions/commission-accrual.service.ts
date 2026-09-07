@@ -1,9 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { CommissionAccrualSource, CommissionCalculationBasis, CommissionRuleType } from '../../generated/prisma/client.js';
-import type { Prisma, Transaction as TransactionModel, TransactionLineItem } from '../../generated/prisma/client.js';
+import {
+  CommissionAccrualSource,
+  CommissionCalculationBasis,
+  CommissionRuleType,
+} from '../../generated/prisma/client.js';
+import type {
+  Prisma,
+  Transaction as TransactionModel,
+  TransactionLineItem,
+} from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { allocateAdjustmentsAcrossLines } from './commission-adjustment-allocation.util.js';
-import { toCommissionAccrualView, type CommissionAccrualView } from './commission-accrual-view.js';
+import {
+  toCommissionAccrualView,
+  type CommissionAccrualView,
+} from './commission-accrual-view.js';
 import { calculateCommissionAmount } from './commission-calculation.util.js';
 import { selectMostSpecificRule } from './commission-rule-precedence.util.js';
 
@@ -42,13 +53,31 @@ export class CommissionAccrualService {
     lineItems: readonly TransactionLineItem[],
     actor: AccrualActor,
   ): Promise<CommissionAccrualView[]> {
-    if (lineItems.length === 0) {
+    const serviceLineItems = lineItems.filter(
+      (
+        item,
+      ): item is TransactionLineItem & {
+        staffProfileId: string;
+        serviceId: string;
+      } =>
+        item.kind === 'SERVICE' &&
+        item.staffProfileId !== null &&
+        item.serviceId !== null,
+    );
+
+    if (serviceLineItems.length === 0) {
       return [];
     }
 
-    const existingAccruals = await tx.commissionAccrual.findMany({ where: { transactionId: transaction.id } });
-    const alreadyAccruedLineItemIds = new Set(existingAccruals.map((accrual) => accrual.transactionLineItemId));
-    const pendingLineItems = lineItems.filter((item) => !alreadyAccruedLineItemIds.has(item.id));
+    const existingAccruals = await tx.commissionAccrual.findMany({
+      where: { transactionId: transaction.id },
+    });
+    const alreadyAccruedLineItemIds = new Set(
+      existingAccruals.map((accrual) => accrual.transactionLineItemId),
+    );
+    const pendingLineItems = serviceLineItems.filter(
+      (item) => !alreadyAccruedLineItemIds.has(item.id),
+    );
     if (pendingLineItems.length === 0) {
       return existingAccruals.map(toCommissionAccrualView);
     }
@@ -59,7 +88,11 @@ export class CommissionAccrualService {
     // allocation is a property of the whole transaction, not of any one
     // repair attempt.
     const netAllocation = allocateAdjustmentsAcrossLines(
-      lineItems.map((item) => ({ lineId: item.id, grossAmountMinor: item.priceMinorSnapshot, displayOrder: item.displayOrder })),
+      serviceLineItems.map((item) => ({
+        lineId: item.id,
+        grossAmountMinor: item.priceMinorSnapshot,
+        displayOrder: item.displayOrder,
+      })),
       transaction.adjustmentTotalMinor,
     );
 
@@ -67,7 +100,10 @@ export class CommissionAccrualService {
       where: {
         organizationId: transaction.organizationId,
         effectiveFrom: { lte: transaction.postedAt },
-        OR: [{ effectiveUntil: null }, { effectiveUntil: { gt: transaction.postedAt } }],
+        OR: [
+          { effectiveUntil: null },
+          { effectiveUntil: { gt: transaction.postedAt } },
+        ],
       },
     });
 
@@ -75,14 +111,23 @@ export class CommissionAccrualService {
     for (const item of pendingLineItems) {
       const matchedRule = selectMostSpecificRule(
         candidateRules,
-        { branchId: transaction.branchId, staffProfileId: item.staffProfileId, serviceId: item.serviceId },
+        {
+          branchId: transaction.branchId,
+          staffProfileId: item.staffProfileId,
+          serviceId: item.serviceId,
+        },
         transaction.currency,
       );
 
       const basis = matchedRule?.basis ?? CommissionCalculationBasis.GROSS_LINE;
       const basisAmountMinor =
-        basis === CommissionCalculationBasis.GROSS_LINE ? item.priceMinorSnapshot : netAllocation.get(item.id)!;
-      const calculatedAmountMinor = calculateCommissionAmount(matchedRule, basisAmountMinor);
+        basis === CommissionCalculationBasis.GROSS_LINE
+          ? item.priceMinorSnapshot
+          : netAllocation.get(item.id)!;
+      const calculatedAmountMinor = calculateCommissionAmount(
+        matchedRule,
+        basisAmountMinor,
+      );
 
       const row = await tx.commissionAccrual.create({
         data: {
@@ -91,10 +136,18 @@ export class CommissionAccrualService {
           transactionLineItemId: item.id,
           staffProfileId: item.staffProfileId,
           commissionRuleId: matchedRule?.id ?? null,
-          source: matchedRule ? CommissionAccrualSource.POLICY : CommissionAccrualSource.NO_POLICY,
+          source: matchedRule
+            ? CommissionAccrualSource.POLICY
+            : CommissionAccrualSource.NO_POLICY,
           ruleTypeSnapshot: matchedRule?.type ?? null,
-          rateBasisPointsSnapshot: matchedRule?.type === CommissionRuleType.PERCENTAGE ? matchedRule.rateBasisPoints : null,
-          fixedAmountMinorSnapshot: matchedRule?.type === CommissionRuleType.FIXED ? matchedRule.fixedAmountMinor : null,
+          rateBasisPointsSnapshot:
+            matchedRule?.type === CommissionRuleType.PERCENTAGE
+              ? matchedRule.rateBasisPoints
+              : null,
+          fixedAmountMinorSnapshot:
+            matchedRule?.type === CommissionRuleType.FIXED
+              ? matchedRule.fixedAmountMinor
+              : null,
           basisSnapshot: basis,
           basisAmountMinor,
           calculatedAmountMinor,
@@ -105,7 +158,10 @@ export class CommissionAccrualService {
       created.push(toCommissionAccrualView(row));
     }
 
-    const totalCalculatedMinor = created.reduce((sum, accrual) => sum + accrual.calculatedAmountMinor, 0);
+    const totalCalculatedMinor = created.reduce(
+      (sum, accrual) => sum + accrual.calculatedAmountMinor,
+      0,
+    );
     await this.auditService.record(
       {
         organizationId: actor.organizationId,
@@ -117,7 +173,11 @@ export class CommissionAccrualService {
         entityId: transaction.id,
         requestId: actor.requestId,
         source: 'commissions',
-        newState: { accrualCount: created.length, totalCalculatedMinor, currency: transaction.currency },
+        newState: {
+          accrualCount: created.length,
+          totalCalculatedMinor,
+          currency: transaction.currency,
+        },
       },
       tx,
     );

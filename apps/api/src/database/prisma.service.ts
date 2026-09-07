@@ -51,7 +51,7 @@ export class PrismaService
    */
   async isDatabaseReachable(): Promise<boolean> {
     try {
-      await this.$queryRaw`SELECT 1`;
+      await this.pool.query('SELECT 1');
       return true;
     } catch (error) {
       this.logger.warn(

@@ -1,0 +1,43 @@
+-- DropIndex
+DROP INDEX IF EXISTS "public_business_profiles_display_name_trgm_idx";
+
+-- DropIndex
+DROP INDEX IF EXISTS "public_business_profiles_search_keywords_trgm_idx";
+
+-- AlterTable
+ALTER TABLE "products" ADD COLUMN     "supplier_id" UUID;
+
+-- CreateTable
+CREATE TABLE "suppliers" (
+    "id" UUID NOT NULL,
+    "organization_id" UUID NOT NULL,
+    "name" TEXT NOT NULL,
+    "contact_name" TEXT,
+    "phone" TEXT,
+    "email" TEXT,
+    "address" TEXT,
+    "notes" TEXT,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL,
+    "archived_at" TIMESTAMPTZ(6),
+
+    CONSTRAINT "suppliers_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "suppliers_organization_id_archived_at_idx" ON "suppliers"("organization_id", "archived_at");
+
+-- CreateIndex
+CREATE INDEX "suppliers_organization_id_name_idx" ON "suppliers"("organization_id", "name");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "suppliers_organization_id_id_key" ON "suppliers"("organization_id", "id");
+
+-- CreateIndex
+CREATE INDEX "products_organization_id_supplier_id_idx" ON "products"("organization_id", "supplier_id");
+
+-- AddForeignKey
+ALTER TABLE "suppliers" ADD CONSTRAINT "suppliers_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "products" ADD CONSTRAINT "products_organization_id_supplier_id_fkey" FOREIGN KEY ("organization_id", "supplier_id") REFERENCES "suppliers"("organization_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;

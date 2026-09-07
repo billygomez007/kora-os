@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { assertMembershipHasBranchAccess } from '../../common/authorization/assert-branch-access.util.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
 import { isUniqueConstraintViolation } from '../../common/database/postgres-constraint-error.util.js';
@@ -7,6 +12,7 @@ import { generateReference } from '../../common/identity/generate-reference.util
 import { sumMinorAmounts } from '../../common/money/assert-safe-money-amount.util.js';
 import { PrismaService } from '../../database/prisma.service.js';
 import {
+  CommerceLineItemKind,
   CommissionAccrualKind,
   FinancialIdempotencyOperation,
   PaymentMethod,
@@ -14,10 +20,14 @@ import {
   TransactionCorrectionType,
   TransactionKind,
 } from '../../generated/prisma/client.js';
-import type { Prisma, TransactionCorrection } from '../../generated/prisma/client.js';
+import type {
+  Prisma,
+  TransactionCorrection,
+} from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CashSessionsService } from '../cash/cash-sessions.service.js';
 import { CommissionAdjustmentService } from '../commissions/commission-adjustment.service.js';
+import { BranchInventoryService } from '../products/branch-inventory.service.js';
 import { ReceiptService } from '../receipts/receipt.service.js';
 import { transactionViewInclude } from '../transactions/transaction-view.js';
 import type { CorrectionActor } from './transaction-corrections.service.js';
@@ -35,7 +45,8 @@ const REFERENCE_PREFIX_BY_TYPE: Record<TransactionCorrectionType, string> = {
   [TransactionCorrectionType.REVERSAL]: 'REV',
 };
 const MAX_REFERENCE_ATTEMPTS = 5;
-const IDEMPOTENCY_UNIQUE_CONSTRAINT = 'financial_idempotency_keys_membership_id_operation_idempote_key';
+const IDEMPOTENCY_UNIQUE_CONSTRAINT =
+  'financial_idempotency_keys_membership_id_operation_idempote_key';
 const REFERENCE_UNIQUE_CONSTRAINT = 'transactions_reference_key';
 
 /**
@@ -66,6 +77,7 @@ export class TransactionCorrectionExecutionService {
     private readonly commissionAdjustmentService: CommissionAdjustmentService,
     private readonly receiptService: ReceiptService,
     private readonly cashSessionsService: CashSessionsService,
+    private readonly branchInventoryService: BranchInventoryService,
   ) {}
 
   async execute(
@@ -76,7 +88,9 @@ export class TransactionCorrectionExecutionService {
     actor: CorrectionActor,
   ): Promise<TransactionCorrectionView> {
     if (!idempotencyKey) {
-      throw new BadRequestException('An Idempotency-Key header is required to execute a correction');
+      throw new BadRequestException(
+        'An Idempotency-Key header is required to execute a correction',
+      );
     }
 
     const correction = await this.loadOwnedCorrection(tenant, correctionId);
@@ -87,33 +101,53 @@ export class TransactionCorrectionExecutionService {
     // result instead of a spurious 409 — the same "idempotency first"
     // ordering PaymentsService.record already establishes.
     const requestFingerprint = computeExecuteFingerprint(correctionId, dto);
-    const replay = await this.checkIdempotentReplay(tenant.membershipId, idempotencyKey, requestFingerprint);
+    const replay = await this.checkIdempotentReplay(
+      tenant.membershipId,
+      idempotencyKey,
+      requestFingerprint,
+    );
     if (replay) {
       return replay;
     }
 
     if (correction.status !== TransactionCorrectionStatus.APPROVED) {
-      throw new ConflictException({ code: 'CORRECTION_STATE_INVALID', message: 'Only an approved correction can be executed.' });
+      throw new ConflictException({
+        code: 'CORRECTION_STATE_INVALID',
+        message: 'Only an approved correction can be executed.',
+      });
     }
 
     if (correction.returnMethod === PaymentMethod.CASH) {
-      const cashPolicyMode = await this.cashSessionsService.resolveCashPolicyMode(tenant.organizationId, correction.branchId);
+      const cashPolicyMode =
+        await this.cashSessionsService.resolveCashPolicyMode(
+          tenant.organizationId,
+          correction.branchId,
+        );
       if (cashPolicyMode === 'REQUIRED' && !dto.cashSessionId) {
         throw new BadRequestException(
           "This branch's cash policy is REQUIRED — a cashSessionId is required to execute a CASH refund.",
         );
       }
     } else if (dto.cashSessionId) {
-      throw new BadRequestException('cashSessionId is only meaningful for a CASH return method');
+      throw new BadRequestException(
+        'cashSessionId is only meaningful for a CASH return method',
+      );
     }
 
     for (let attempt = 0; attempt < MAX_REFERENCE_ATTEMPTS; attempt += 1) {
-      const reference = generateReference(REFERENCE_PREFIX_BY_TYPE[correction.correctionType]);
+      const reference = generateReference(
+        REFERENCE_PREFIX_BY_TYPE[correction.correctionType],
+      );
       try {
         const result = await this.prisma.$transaction(async (tx) => {
           const lockedCorrection = await this.lockCorrection(tx, correctionId);
-          if (lockedCorrection.status !== TransactionCorrectionStatus.APPROVED) {
-            throw new ConflictException({ code: 'CORRECTION_STATE_INVALID', message: 'Only an approved correction can be executed.' });
+          if (
+            lockedCorrection.status !== TransactionCorrectionStatus.APPROVED
+          ) {
+            throw new ConflictException({
+              code: 'CORRECTION_STATE_INVALID',
+              message: 'Only an approved correction can be executed.',
+            });
           }
 
           // Lock the ORIGINAL sale transaction first — the aggregate
@@ -121,9 +155,15 @@ export class TransactionCorrectionExecutionService {
           // serialize on, before any remaining-refundable amount is
           // computed.
           await tx.$queryRaw`SELECT id FROM transactions WHERE id = ${lockedCorrection.originalTransactionId}::uuid FOR UPDATE`;
-          const originalTransaction = await tx.transaction.findUniqueOrThrow({ where: { id: lockedCorrection.originalTransactionId } });
-          const originalLineItems = await tx.transactionLineItem.findMany({ where: { transactionId: originalTransaction.id } });
-          const originalLineItemsById = new Map(originalLineItems.map((item) => [item.id, item]));
+          const originalTransaction = await tx.transaction.findUniqueOrThrow({
+            where: { id: lockedCorrection.originalTransactionId },
+          });
+          const originalLineItems = await tx.transactionLineItem.findMany({
+            where: { transactionId: originalTransaction.id },
+          });
+          const originalLineItemsById = new Map(
+            originalLineItems.map((item) => [item.id, item]),
+          );
 
           const correctionItems = await tx.transactionCorrectionItem.findMany({
             where: { correctionId },
@@ -140,10 +180,15 @@ export class TransactionCorrectionExecutionService {
             include: { items: true },
           });
 
-          if (lockedCorrection.correctionType === TransactionCorrectionType.REVERSAL && otherExecuted.length > 0) {
+          if (
+            lockedCorrection.correctionType ===
+              TransactionCorrectionType.REVERSAL &&
+            otherExecuted.length > 0
+          ) {
             throw new ConflictException({
               code: 'CORRECTION_ALREADY_EXECUTED',
-              message: 'A refund or reversal has already been executed against this transaction.',
+              message:
+                'A refund or reversal has already been executed against this transaction.',
             });
           }
 
@@ -152,34 +197,77 @@ export class TransactionCorrectionExecutionService {
             for (const item of executedCorrection.items) {
               executedByLine.set(
                 item.originalTransactionLineItemId,
-                (executedByLine.get(item.originalTransactionLineItemId) ?? 0) + item.requestedAmountMinor,
+                (executedByLine.get(item.originalTransactionLineItemId) ?? 0) +
+                  item.requestedAmountMinor,
               );
             }
           }
 
           for (const item of correctionItems) {
-            const originalLine = originalLineItemsById.get(item.originalTransactionLineItemId);
+            const originalLine = originalLineItemsById.get(
+              item.originalTransactionLineItemId,
+            );
             if (!originalLine) {
-              throw new ConflictException('An original line item referenced by this correction no longer exists');
+              throw new ConflictException(
+                'An original line item referenced by this correction no longer exists',
+              );
             }
-            const alreadyExecuted = executedByLine.get(item.originalTransactionLineItemId) ?? 0;
-            if (alreadyExecuted + item.requestedAmountMinor > originalLine.priceMinorSnapshot) {
+            const alreadyExecuted =
+              executedByLine.get(item.originalTransactionLineItemId) ?? 0;
+            if (
+              alreadyExecuted + item.requestedAmountMinor >
+              originalLine.priceMinorSnapshot
+            ) {
               throw new ConflictException({
                 code: 'CORRECTION_EXCEEDS_REMAINING_REFUNDABLE',
-                message: 'This correction would exceed the remaining refundable amount for one or more lines.',
+                message:
+                  'This correction would exceed the remaining refundable amount for one or more lines.',
+              });
+            }
+            // A correction only ever carries a monetary amount per line
+            // (TransactionCorrectionItem has no quantity of its own), so
+            // a PRODUCT line's returned quantity can only be inferred
+            // safely when the *entire* line is being refunded — a
+            // REVERSAL always requests every line in full (see
+            // requestReversal), so this only ever blocks a genuinely
+            // partial REFUND. Restoring a fractional unit count for a
+            // partial-amount refund would be a guess, and "a refund that
+            // reverses money but leaves inventory permanently wrong" is
+            // exactly what must never happen — so this is rejected
+            // outright rather than risking that.
+            if (
+              originalLine.kind === CommerceLineItemKind.PRODUCT &&
+              originalLine.productVariantId &&
+              item.requestedAmountMinor !== originalLine.priceMinorSnapshot
+            ) {
+              throw new ConflictException({
+                code: 'PARTIAL_PRODUCT_REFUND_NOT_SUPPORTED',
+                message:
+                  'A partial refund of a product line is not supported because it cannot restore inventory correctly. Refund the full line amount, or contact support for a manual adjustment.',
               });
             }
           }
 
           const correctiveLineItemsData = correctionItems.map((item, index) => {
-            const originalLine = originalLineItemsById.get(item.originalTransactionLineItemId)!;
+            const originalLine = originalLineItemsById.get(
+              item.originalTransactionLineItemId,
+            )!;
             return {
               organizationId: tenant.organizationId,
+              kind: originalLine.kind,
               serviceSessionItemId: originalLine.serviceSessionItemId,
               serviceId: originalLine.serviceId,
               staffProfileId: originalLine.staffProfileId,
               serviceNameSnapshot: originalLine.serviceNameSnapshot,
               durationMinutesSnapshot: originalLine.durationMinutesSnapshot,
+              productId: originalLine.productId,
+              productVariantId: originalLine.productVariantId,
+              productNameSnapshot: originalLine.productNameSnapshot,
+              variantNameSnapshot: originalLine.variantNameSnapshot,
+              skuSnapshot: originalLine.skuSnapshot,
+              barcodeSnapshot: originalLine.barcodeSnapshot,
+              quantity: originalLine.quantity,
+              unitPriceMinorSnapshot: originalLine.unitPriceMinorSnapshot,
               priceMinorSnapshot: item.requestedAmountMinor,
               currencySnapshot: originalLine.currencySnapshot,
               displayOrder: index,
@@ -189,14 +277,19 @@ export class TransactionCorrectionExecutionService {
             correctiveLineItemsData.map((item) => item.priceMinorSnapshot),
             'corrective transaction subtotal',
           );
-          const kind = lockedCorrection.correctionType === TransactionCorrectionType.REVERSAL ? TransactionKind.REVERSAL : TransactionKind.REFUND;
+          const kind =
+            lockedCorrection.correctionType ===
+            TransactionCorrectionType.REVERSAL
+              ? TransactionKind.REVERSAL
+              : TransactionKind.REFUND;
 
           const correctiveTransaction = await tx.transaction.create({
             data: {
               organizationId: tenant.organizationId,
               branchId: originalTransaction.branchId,
               customerRecordId: originalTransaction.customerRecordId,
-              assignedStaffProfileId: originalTransaction.assignedStaffProfileId,
+              assignedStaffProfileId:
+                originalTransaction.assignedStaffProfileId,
               reference,
               kind,
               correctedTransactionId: originalTransaction.id,
@@ -204,33 +297,94 @@ export class TransactionCorrectionExecutionService {
               subtotalMinor,
               adjustmentTotalMinor: 0,
               totalMinor: subtotalMinor,
-              items: { create: correctiveLineItemsData },
+              items: {
+                createMany: { data: correctiveLineItemsData },
+              },
             },
             include: transactionViewInclude,
           });
 
-          const sortedCorrectiveItems = correctiveTransaction.items.slice().sort((a, b) => a.displayOrder - b.displayOrder);
-          const pairings = sortedCorrectiveItems.map((correctiveLineItem, index) => ({
-            correctiveLineItem,
-            originalTransactionLineItemId: correctionItems[index].originalTransactionLineItemId,
-            originalLineAmountMinor: originalLineItemsById.get(correctionItems[index].originalTransactionLineItemId)!.priceMinorSnapshot,
-          }));
-          const accrualKind = kind === TransactionKind.REVERSAL ? CommissionAccrualKind.REVERSED : CommissionAccrualKind.REFUNDED;
-          await this.commissionAdjustmentService.adjustForCorrection(tx, correctiveTransaction, pairings, accrualKind, actor);
+          // Restore inventory exactly once per corrected PRODUCT line,
+          // atomically alongside the corrective Transaction — the
+          // validation loop above already guarantees every PRODUCT
+          // correction item here is a full-line refund (or a REVERSAL,
+          // which is always full-line), so the original line's own
+          // `quantity` is the exact count sold and the exact count to
+          // put back. RETURN is the return-to-stock movement type for a
+          // REFUND; SALE_REVERSAL is the counterpart for a REVERSAL.
+          const restoreMovementType =
+            kind === TransactionKind.REVERSAL ? 'SALE_REVERSAL' : 'RETURN';
+          for (const item of correctionItems) {
+            const originalLine = originalLineItemsById.get(
+              item.originalTransactionLineItemId,
+            )!;
+            if (
+              originalLine.kind !== CommerceLineItemKind.PRODUCT ||
+              !originalLine.productId ||
+              !originalLine.productVariantId
+            ) {
+              continue;
+            }
+            await this.branchInventoryService.applySaleMovement(tx, {
+              organizationId: tenant.organizationId,
+              branchId: originalTransaction.branchId,
+              productId: originalLine.productId,
+              productVariantId: originalLine.productVariantId,
+              type: restoreMovementType,
+              quantityDelta: originalLine.quantity,
+              reference: correctiveTransaction.reference,
+              actorMembershipId: tenant.membershipId,
+            });
+          }
+
+          const sortedCorrectiveItems = correctiveTransaction.items
+            .slice()
+            .sort((a, b) => a.displayOrder - b.displayOrder);
+          const pairings = sortedCorrectiveItems.map(
+            (correctiveLineItem, index) => ({
+              correctiveLineItem,
+              originalTransactionLineItemId:
+                correctionItems[index].originalTransactionLineItemId,
+              originalLineAmountMinor: originalLineItemsById.get(
+                correctionItems[index].originalTransactionLineItemId,
+              )!.priceMinorSnapshot,
+            }),
+          );
+          const accrualKind =
+            kind === TransactionKind.REVERSAL
+              ? CommissionAccrualKind.REVERSED
+              : CommissionAccrualKind.REFUNDED;
+          await this.commissionAdjustmentService.adjustForCorrection(
+            tx,
+            correctiveTransaction,
+            pairings,
+            accrualKind,
+            actor,
+          );
 
           let remainingRefundableMinor: number | null = null;
           if (kind === TransactionKind.REFUND) {
             let totalRemaining = 0;
             for (const originalLine of originalLineItems) {
               const thisCorrectionAmount =
-                correctionItems.find((item) => item.originalTransactionLineItemId === originalLine.id)?.requestedAmountMinor ?? 0;
+                correctionItems.find(
+                  (item) =>
+                    item.originalTransactionLineItemId === originalLine.id,
+                )?.requestedAmountMinor ?? 0;
               const alreadyExecuted = executedByLine.get(originalLine.id) ?? 0;
-              totalRemaining += Math.max(originalLine.priceMinorSnapshot - alreadyExecuted - thisCorrectionAmount, 0);
+              totalRemaining += Math.max(
+                originalLine.priceMinorSnapshot -
+                  alreadyExecuted -
+                  thisCorrectionAmount,
+                0,
+              );
             }
             remainingRefundableMinor = totalRemaining;
           }
 
-          const originalReceipt = await tx.receipt.findUniqueOrThrow({ where: { transactionId: originalTransaction.id } });
+          const originalReceipt = await tx.receipt.findUniqueOrThrow({
+            where: { transactionId: originalTransaction.id },
+          });
           await this.receiptService.issueCorrectiveReceipt(
             tx,
             correctiveTransaction,
@@ -244,13 +398,21 @@ export class TransactionCorrectionExecutionService {
             actor,
           );
 
-          if (lockedCorrection.returnMethod === PaymentMethod.CASH && dto.cashSessionId) {
-            await this.cashSessionsService.recordRefundPaidEntry(tx, tenant, dto.cashSessionId, {
-              branchId: originalTransaction.branchId,
-              currency: originalTransaction.currency,
-              correctiveTransactionId: correctiveTransaction.id,
-              amountMinor: correctiveTransaction.totalMinor,
-            });
+          if (
+            lockedCorrection.returnMethod === PaymentMethod.CASH &&
+            dto.cashSessionId
+          ) {
+            await this.cashSessionsService.recordRefundPaidEntry(
+              tx,
+              tenant,
+              dto.cashSessionId,
+              {
+                branchId: originalTransaction.branchId,
+                currency: originalTransaction.currency,
+                correctiveTransactionId: correctiveTransaction.id,
+                amountMinor: correctiveTransaction.totalMinor,
+              },
+            );
           }
 
           await tx.transactionCorrectionPayment.create({
@@ -263,7 +425,11 @@ export class TransactionCorrectionExecutionService {
           });
 
           const settled = await tx.transactionCorrection.updateMany({
-            where: { id: correctionId, status: TransactionCorrectionStatus.APPROVED, version: lockedCorrection.version },
+            where: {
+              id: correctionId,
+              status: TransactionCorrectionStatus.APPROVED,
+              version: lockedCorrection.version,
+            },
             data: {
               status: TransactionCorrectionStatus.EXECUTED,
               executedByMembershipId: tenant.membershipId,
@@ -273,7 +439,9 @@ export class TransactionCorrectionExecutionService {
             },
           });
           if (settled.count === 0) {
-            throw new ConflictException('This correction was already updated by someone else');
+            throw new ConflictException(
+              'This correction was already updated by someone else',
+            );
           }
 
           await tx.transactionCorrectionStatusHistory.create({
@@ -310,12 +478,19 @@ export class TransactionCorrectionExecutionService {
               entityId: correctionId,
               requestId: actor.requestId,
               source: 'corrections',
-              newState: { correctiveTransactionId: correctiveTransaction.id, totalMinor: correctiveTransaction.totalMinor, kind },
+              newState: {
+                correctiveTransactionId: correctiveTransaction.id,
+                totalMinor: correctiveTransaction.totalMinor,
+                kind,
+              },
             },
             tx,
           );
 
-          return tx.transactionCorrection.findUniqueOrThrow({ where: { id: correctionId }, include: transactionCorrectionViewInclude });
+          return tx.transactionCorrection.findUniqueOrThrow({
+            where: { id: correctionId },
+            include: transactionCorrectionViewInclude,
+          });
         });
 
         return toTransactionCorrectionView(result);
@@ -324,7 +499,11 @@ export class TransactionCorrectionExecutionService {
           continue;
         }
         if (isUniqueConstraintViolation(error, IDEMPOTENCY_UNIQUE_CONSTRAINT)) {
-          const raced = await this.checkIdempotentReplay(tenant.membershipId, idempotencyKey, requestFingerprint);
+          const raced = await this.checkIdempotentReplay(
+            tenant.membershipId,
+            idempotencyKey,
+            requestFingerprint,
+          );
           if (raced) {
             return raced;
           }
@@ -334,22 +513,36 @@ export class TransactionCorrectionExecutionService {
         // one more replay check before surfacing what would otherwise
         // look like a transient failure to a caller who did nothing
         // wrong.
-        const raced = await this.checkIdempotentReplay(tenant.membershipId, idempotencyKey, requestFingerprint);
+        const raced = await this.checkIdempotentReplay(
+          tenant.membershipId,
+          idempotencyKey,
+          requestFingerprint,
+        );
         if (raced) {
           return raced;
         }
         throw error;
       }
     }
-    throw new ConflictException('Could not allocate a unique transaction reference. Please try again.');
+    throw new ConflictException(
+      'Could not allocate a unique transaction reference. Please try again.',
+    );
   }
 
-  private async lockCorrection(tx: TransactionClient, correctionId: string): Promise<TransactionCorrection> {
+  private async lockCorrection(
+    tx: TransactionClient,
+    correctionId: string,
+  ): Promise<TransactionCorrection> {
     await tx.$queryRaw`SELECT id FROM transaction_corrections WHERE id = ${correctionId}::uuid FOR UPDATE`;
-    return tx.transactionCorrection.findUniqueOrThrow({ where: { id: correctionId } });
+    return tx.transactionCorrection.findUniqueOrThrow({
+      where: { id: correctionId },
+    });
   }
 
-  private async loadOwnedCorrection(tenant: TenantContext, correctionId: string) {
+  private async loadOwnedCorrection(
+    tenant: TenantContext,
+    correctionId: string,
+  ) {
     const correction = await this.prisma.transactionCorrection.findFirst({
       where: { id: correctionId, organizationId: tenant.organizationId },
     });
@@ -380,7 +573,8 @@ export class TransactionCorrectionExecutionService {
     if (existingKey.requestFingerprint !== requestFingerprint) {
       throw new ConflictException({
         code: 'IDEMPOTENCY_CONFLICT',
-        message: 'This idempotency key was already used for a different request.',
+        message:
+          'This idempotency key was already used for a different request.',
       });
     }
     const existing = await this.prisma.transactionCorrection.findUnique({
@@ -391,7 +585,13 @@ export class TransactionCorrectionExecutionService {
   }
 }
 
-function computeExecuteFingerprint(correctionId: string, dto: ExecuteCorrectionDto): string {
-  const canonical = JSON.stringify({ correctionId, cashSessionId: dto.cashSessionId ?? null });
+function computeExecuteFingerprint(
+  correctionId: string,
+  dto: ExecuteCorrectionDto,
+): string {
+  const canonical = JSON.stringify({
+    correctionId,
+    cashSessionId: dto.cashSessionId ?? null,
+  });
   return createHash('sha256').update(canonical).digest('hex');
 }

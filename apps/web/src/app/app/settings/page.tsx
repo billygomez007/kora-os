@@ -6,14 +6,16 @@ import {
   type ActiveWorkspace,
   resolveActiveWorkspace,
 } from "@/lib/api/dashboard";
-import { koraData } from "@/lib/api/kora-api";
+import { koraApi, koraData } from "@/lib/api/kora-api";
+import { clearKoraSession } from "@/lib/auth/session";
 
 type Tab =
   | "profile"
   | "hours"
   | "booking"
   | "marketplace"
-  | "subscription";
+  | "subscription"
+  | "account";
 
 interface BusinessProfile {
   id?: string;
@@ -109,6 +111,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -162,6 +165,32 @@ export default function SettingsPage() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  async function handleLogout() {
+    if (loggingOut) return;
+
+    const confirmed = window.confirm(
+      "Log out of Kora OS on this device? You will need to sign in again to access your workspace.",
+    );
+
+    if (!confirmed) return;
+
+    setLoggingOut(true);
+    setError("");
+    setNotice("");
+
+    try {
+      await koraApi<void>("/auth/logout", {
+        method: "POST",
+      });
+    } catch {
+      // Always clear the local session. If the server session has already
+      // expired or the network is unavailable, the browser must still log out.
+    } finally {
+      clearKoraSession();
+      window.location.replace("/login");
+    }
+  }
 
   const hoursByDay = useMemo(() => {
     const map = new Map<number, BusinessHour>();
@@ -460,6 +489,17 @@ export default function SettingsPage() {
             <div>
               <strong>Subscription</strong>
               <small>Plan & access</small>
+            </div>
+          </button>
+
+          <button
+            className={tab === "account" ? "active" : ""}
+            onClick={() => setTab("account")}
+          >
+            <span>06</span>
+            <div>
+              <strong>Account & security</strong>
+              <small>Session & account access</small>
             </div>
           </button>
         </nav>
@@ -932,6 +972,53 @@ export default function SettingsPage() {
                       ? "Unpublish profile"
                       : "Publish profile"}
                 </button>
+              </div>
+            </section>
+          )}
+
+          {tab === "account" && (
+            <section className="settingsPanel">
+              <div className="settingsPanelHead">
+                <div>
+                  <span>ACCOUNT SECURITY</span>
+                  <h2>Account & security</h2>
+                  <p>
+                    Manage access to your Kora workspace and securely end your
+                    current session.
+                  </p>
+                </div>
+              </div>
+
+              <div className="accountSecurityCard">
+                <div className="accountSecurityIcon" aria-hidden="true">
+                  ↗
+                </div>
+                <div className="accountSecurityCopy">
+                  <strong>Log out of Kora OS</strong>
+                  <p>
+                    End your current session on this device. You will need to
+                    verify your email again when you next sign in.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="settingsDanger accountLogoutButton"
+                  onClick={() => void handleLogout()}
+                  disabled={loggingOut}
+                >
+                  {loggingOut ? "Logging out…" : "Log out"}
+                </button>
+              </div>
+
+              <div className="settingsTrust">
+                <span>◆</span>
+                <div>
+                  <strong>Your workspace stays protected</strong>
+                  <p>
+                    Logging out revokes this Kora session and removes its
+                    authentication details from this browser.
+                  </p>
+                </div>
               </div>
             </section>
           )}
@@ -1479,6 +1566,78 @@ export default function SettingsPage() {
           margin-top: 6px;
           font-size: 11px;
           overflow-wrap: anywhere;
+        }
+
+        .accountSecurityCard {
+          display: grid;
+          grid-template-columns: 52px minmax(0, 1fr) auto;
+          gap: 18px;
+          align-items: center;
+          margin-top: 26px;
+          padding: 22px;
+          border: 1px solid rgba(239, 68, 68, 0.2);
+          border-radius: 16px;
+          background:
+            linear-gradient(135deg, rgba(239, 68, 68, 0.07), rgba(239, 68, 68, 0.02)),
+            rgba(255, 255, 255, 0.02);
+        }
+
+        .accountSecurityIcon {
+          display: grid;
+          place-items: center;
+          width: 52px;
+          height: 52px;
+          border: 1px solid rgba(239, 68, 68, 0.24);
+          border-radius: 14px;
+          background: rgba(239, 68, 68, 0.08);
+          color: #f87171;
+          font-size: 23px;
+          font-weight: 800;
+        }
+
+        .accountSecurityCopy {
+          min-width: 0;
+        }
+
+        .accountSecurityCopy strong {
+          display: block;
+          color: #f4f7fb;
+          font-size: 15px;
+          line-height: 22px;
+        }
+
+        .accountSecurityCopy p {
+          margin: 5px 0 0;
+          max-width: 560px;
+          color: #8f9bad;
+          font-size: 13px;
+          line-height: 21px;
+        }
+
+        .accountLogoutButton {
+          min-width: 112px;
+          white-space: nowrap;
+        }
+
+        .accountLogoutButton:disabled {
+          cursor: wait;
+          opacity: 0.6;
+        }
+
+        @media (max-width: 720px) {
+          .accountSecurityCard {
+            grid-template-columns: 48px minmax(0, 1fr);
+          }
+
+          .accountSecurityIcon {
+            width: 48px;
+            height: 48px;
+          }
+
+          .accountLogoutButton {
+            grid-column: 1 / -1;
+            width: 100%;
+          }
         }
 
         .settingsTrust {

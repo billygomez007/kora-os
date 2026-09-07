@@ -96,48 +96,172 @@ function formatExpiry(expiryMinutes: number): string {
 function buildOtpEmailText(params: EmailOtpDeliveryParams): string {
   const expiry = formatExpiry(params.expiryMinutes);
   return [
-    'Your Kora OS sign-in code',
+    'KORA OS',
     '',
-    'Use this code to securely sign in to Kora OS:',
+    'Your sign-in code',
+    '',
+    'Use the verification code below to securely sign in to Kora OS and access your workspace.',
     '',
     params.code,
     '',
-    `This code expires in ${expiry}. Never share this code with anyone. Kora OS will never ask you to provide it by phone, chat, or social media.`,
+    `This code expires in ${expiry}.`,
+    '',
+    'For your security, never share this code with anyone. Kora OS will never ask you to provide your verification code by phone, chat, or social media.',
     '',
     'If you did not request this code, you can safely ignore this email.',
     '',
     'Kora OS',
+    'Run your service business beautifully.',
+    'koraafric.com',
+    '',
+    'A Realtegic product',
   ].join('\n');
 }
 
 /**
- * Deliberately minimal, inline-styled, table-free HTML: every email
- * client renders it without any external image or stylesheet request
- * (docs task "No external images required to understand the email"), and
- * there is no open/click tracking pixel or link of any kind — see
- * docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md for disabling Resend's
- * own account-level tracking too. No marketing content, no support link,
- * no password language.
+ * Transactional Kora email template.
+ *
+ * Email-client-safe HTML with inline styles and no JavaScript, remote
+ * stylesheet, tracking pixel, or external asset required to understand
+ * the message. The verification code remains the visual focus.
  */
 function buildOtpEmailHtml(params: EmailOtpDeliveryParams): string {
-  const expiry = formatExpiry(params.expiryMinutes);
+  const expiry = escapeHtml(formatExpiry(params.expiryMinutes));
+  const code = escapeHtml(params.code);
+
   return `<!doctype html>
 <html lang="en">
-  <body style="margin:0;padding:24px;background-color:#0b1220;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#e6e9ef;">
-    <div style="max-width:480px;margin:0 auto;">
-      <p style="margin:0 0 16px;font-size:20px;font-weight:700;color:#f2b705;">Kora OS</p>
-      <p style="margin:0 0 8px;font-size:16px;">Use this code to securely sign in to Kora OS:</p>
-      <p style="margin:16px 0;font-size:32px;font-weight:700;letter-spacing:4px;color:#ffffff;">${escapeHtml(params.code)}</p>
-      <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#c3c9d4;">
-        This code expires in ${escapeHtml(expiry)}. Never share this code with anyone.
-        Kora OS will never ask you to provide it by phone, chat, or social media.
-      </p>
-      <p style="margin:0 0 24px;font-size:14px;line-height:1.5;color:#c3c9d4;">
-        If you did not request this code, you can safely ignore this email.
-      </p>
-      <p style="margin:0;font-size:12px;color:#7b8393;">Kora OS</p>
-    </div>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="supported-color-schemes" content="light">
+  <title>Your Kora OS sign-in code</title>
+</head>
+<body style="margin:0;padding:0;background-color:#08111f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-text-size-adjust:100%;">
+
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+    Your secure Kora OS verification code expires in ${expiry}.
+  </div>
+
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background-color:#08111f;">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;">
+
+          <tr>
+            <td style="padding:0 8px 24px 8px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <td>
+                    <div style="font-size:25px;line-height:30px;font-weight:800;letter-spacing:-0.6px;color:#f5b82e;">
+                      Kora<span style="color:#ffffff;"> OS</span>
+                    </div>
+                    <div style="margin-top:5px;font-size:11px;line-height:16px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#8793a6;">
+                      Business Operating System
+                    </div>
+                  </td>
+                  <td align="right" valign="middle" style="font-size:12px;line-height:18px;color:#8793a6;">
+                    SECURE SIGN-IN
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background-color:#ffffff;border-radius:18px;overflow:hidden;">
+
+              <div style="height:5px;background-color:#f5b82e;font-size:0;line-height:0;">&nbsp;</div>
+
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <td style="padding:44px 42px 16px 42px;">
+
+                    <div style="font-size:13px;line-height:20px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:#b27a08;">
+                      Verification
+                    </div>
+
+                    <h1 style="margin:8px 0 14px 0;font-size:30px;line-height:38px;font-weight:800;letter-spacing:-0.8px;color:#0b1423;">
+                      Your sign-in code
+                    </h1>
+
+                    <p style="margin:0;font-size:16px;line-height:26px;color:#536071;">
+                      Use the verification code below to securely sign in to Kora OS and access your workspace.
+                    </p>
+
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:18px 42px 22px 42px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#0b1423;border-radius:14px;border:1px solid #202d40;">
+                      <tr>
+                        <td align="center" style="padding:27px 18px 25px 18px;">
+                          <div style="margin-bottom:8px;font-size:10px;line-height:15px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#9ba6b6;">
+                            Your verification code
+                          </div>
+                          <div style="font-family:'Courier New',Courier,monospace;font-size:38px;line-height:48px;font-weight:700;letter-spacing:8px;color:#f5b82e;">
+                            ${code}
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:0 42px 38px 42px;">
+
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#fff8e8;border-radius:12px;border:1px solid #f5dfaa;">
+                      <tr>
+                        <td style="padding:17px 18px;">
+                          <div style="font-size:13px;line-height:20px;font-weight:800;color:#8a5a00;">
+                            Expires in ${expiry}
+                          </div>
+                          <div style="margin-top:4px;font-size:13px;line-height:20px;color:#725f3d;">
+                            Never share this code with anyone. Kora OS will never ask you for your verification code by phone, chat, or social media.
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <p style="margin:24px 0 0 0;font-size:13px;line-height:21px;color:#7b8797;">
+                      If you did not request this code, no action is required. You can safely ignore this email.
+                    </p>
+
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <tr>
+            <td align="center" style="padding:27px 20px 8px 20px;">
+              <div style="font-size:13px;line-height:20px;font-weight:700;color:#d7dde6;">
+                Kora OS
+              </div>
+              <div style="margin-top:3px;font-size:12px;line-height:19px;color:#8793a6;">
+                Run your service business beautifully.
+              </div>
+              <div style="margin-top:9px;font-size:12px;line-height:19px;color:#f5b82e;">
+                koraafric.com
+              </div>
+              <div style="margin-top:17px;font-size:10px;line-height:16px;letter-spacing:1px;text-transform:uppercase;color:#657186;">
+                A Realtegic product
+              </div>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
 </html>`;
 }
 

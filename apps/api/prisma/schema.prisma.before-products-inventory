@@ -1,0 +1,3153 @@
+// Kora OS — Prisma schema
+//
+// Scope (Phase 2 — Initial production data model): identity, tenancy,
+// workforce-foundation, subscription, and audit boundaries only, per
+// docs/DATA_MODEL.md. Operational modules (services, customers,
+// appointments, transactions, payments, commissions, ...) and the
+// authentication-session layer (auth identities, sessions, devices) are
+// deliberately out of scope for this phase and are introduced later in
+// docs/ROADMAP.md.
+//
+// Modeling rules (docs/DATA_MODEL.md section 1):
+// - PostgreSQL is the authoritative source of truth.
+// - Primary keys are globally unique UUIDs.
+// - All timestamps are UTC `timestamptz`.
+// - Money is integer minor units plus a three-character ISO currency code.
+// - Tenant-owned tables carry a non-null `organization_id`.
+// - Tenant relationships use composite constraints where practical to
+//   prevent cross-organization references (see BranchAssignment,
+//   StaffProfile, MembershipRole, StaffInvitation, SubscriptionEvent).
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "js"
+}
+
+// Prisma 7 removed `url` from this block: the connection URL used by the
+// CLI (validate, migrate, studio, ...) now lives in prisma.config.ts, and
+// the running application supplies its own connection through the
+// @prisma/adapter-pg driver adapter (see src/database/prisma.service.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DELETED
+
+  @@map("user_status")
+}
+
+enum OrganizationStatus {
+  ONBOARDING
+  ACTIVE
+  SUSPENDED
+  CLOSED
+
+  @@map("organization_status")
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("branch_status")
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
+
+  @@map("membership_status")
+}
+
+enum StaffEmploymentStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+
+  @@map("staff_employment_status")
+}
+
+enum StaffInvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+  EXPIRED
+
+  @@map("staff_invitation_status")
+}
+
+/// Shared lifecycle status for plans and plan prices.
+enum PlanLifecycleStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+
+  @@map("plan_lifecycle_status")
+}
+
+enum EntitlementValueType {
+  BOOLEAN
+  INTEGER
+  STRING
+
+  @@map("entitlement_value_type")
+}
+
+enum BillingInterval {
+  MONTH
+  YEAR
+
+  @@map("billing_interval")
+}
+
+/// Subscription lifecycle state. Superset of docs/DATA_MODEL.md section 4
+/// (trialing, active, past_due, grace_period, read_only, canceled, expired)
+/// and the Phase 2 prompt list (..., suspended, ...): SUSPENDED is kept as a
+/// distinct administrative state from READ_ONLY and GRACE_PERIOD so both
+/// documented vocabularies are satisfied without contradiction.
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  GRACE_PERIOD
+  READ_ONLY
+  SUSPENDED
+  CANCELED
+  EXPIRED
+
+  @@map("subscription_status")
+}
+
+/// Effective access mode derived from subscription status
+/// (docs/ARCHITECTURE.md section 9). LIMITED is included alongside the
+/// FULL / READ_ONLY / BLOCKED modes named in the Phase 2 prompt because
+/// ARCHITECTURE.md documents it explicitly as the past-due state.
+enum SubscriptionAccessMode {
+  FULL
+  LIMITED
+  READ_ONLY
+  BLOCKED
+
+  @@map("subscription_access_mode")
+}
+
+/// EMAIL_OTP is the only provider implemented. Kora is passwordless by
+/// product decision (docs/SECURITY.md section 6) — there is no PASSWORD
+/// value here, and none should ever be added. The remaining values are
+/// reserved so the AuthIdentity shape does not need to change when they
+/// are added; none of them store a persisted secret either (an OAuth
+/// provider is re-verified against that provider on every sign-in, not
+/// against a stored Kora credential), which is exactly why AuthIdentity
+/// carries no credential field at all.
+enum AuthProvider {
+  EMAIL_OTP
+  GOOGLE
+  APPLE
+  PHONE_OTP
+  EMAIL_MAGIC_LINK
+
+  @@map("auth_provider")
+}
+
+enum OtpPurpose {
+  AUTHENTICATE
+
+  @@map("otp_purpose")
+}
+
+/// EXPIRED is deliberately not a stored value: expiry is always computed
+/// from `expiresAt` at the moment a challenge is checked (same pattern as
+/// StaffInvitation.status), so there is no background sweep to keep
+/// correct and no window where a stale ACTIVE row is wrongly treated as
+/// still usable.
+enum OtpChallengeStatus {
+  ACTIVE
+  CONSUMED
+  INVALIDATED
+  LOCKED
+
+  @@map("otp_challenge_status")
+}
+
+enum SessionRevokedReason {
+  LOGOUT
+  LOGOUT_ALL
+  REUSE_DETECTED
+  EXPIRED
+  ADMIN
+
+  @@map("session_revoked_reason")
+}
+
+enum BusinessProfileVisibility {
+  PUBLIC
+  LINK_ONLY
+  PRIVATE
+
+  @@map("business_profile_visibility")
+}
+
+enum BusinessVerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+
+  @@map("business_verification_status")
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// Global Kora identity — the single account behind both the customer
+/// workspace (discovery, bookings, receipts) and the business workspace
+/// (organization membership). Not an organization-specific record — see
+/// OrganizationMembership and StaffProfile for the tenant-scoped layers,
+/// and CustomerProfile for the customer-workspace layer.
+///
+/// Kora is passwordless by product decision (docs/SECURITY.md section
+/// 6) — this table has never carried a password and never should. An
+/// earlier revision briefly added `password_hash` and then removed it
+/// (see the `remove_password_authentication` migration) before any
+/// production use; sign-in is email OTP only (`EmailOtpChallenge`,
+/// `AuthIdentity`), leaving a clean boundary for future phone OTP, email
+/// magic-link, Apple, and Google identities without touching this table.
+model User {
+  id              String     @id @default(uuid()) @db.Uuid
+  emailNormalized String?    @unique @map("email_normalized")
+  phoneE164       String?    @unique @map("phone_e164")
+  displayName     String     @map("display_name")
+  status          UserStatus @default(PENDING)
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(6)
+  phoneVerifiedAt DateTime?  @map("phone_verified_at") @db.Timestamptz(6)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organizationsCreated Organization[]           @relation("OrganizationCreatedBy")
+  memberships          OrganizationMembership[]
+  auditEventsAsActor   AuditEvent[]             @relation("AuditEventActorUser")
+  authIdentities       AuthIdentity[]
+  sessions             Session[]
+  customerProfile      CustomerProfile?
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Authentication: provider-scoped identities, sessions, refresh tokens
+// ---------------------------------------------------------------------------
+
+/// Maps a User to one authentication provider (docs/DATA_MODEL.md section
+/// 2). For EMAIL_OTP, `providerSubject` is the normalized email; for a
+/// future external provider it is that provider's external user ID. No
+/// provider stores a persisted secret here — an OTP challenge is
+/// short-lived and lives in `EmailOtpChallenge`, not here, and an OAuth
+/// provider is re-verified against that provider on every sign-in rather
+/// than against anything Kora stores. Keeping this mapping separate from
+/// `users` means adding a new provider never touches the User table.
+model AuthIdentity {
+  id              String       @id @default(uuid()) @db.Uuid
+  userId          String       @map("user_id") @db.Uuid
+  provider        AuthProvider
+  providerSubject String       @map("provider_subject")
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastUsedAt      DateTime?    @map("last_used_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerSubject])
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+/// One issued (or re-sent) email OTP challenge. Kora is passwordless — this
+/// is the only credential-adjacent secret Kora ever stores, and even this
+/// is short-lived and single-use rather than a persisted account
+/// credential. `code_digest` is HMAC-SHA256(OTP_PEPPER, challenge id +
+/// normalized email + code) — keyed so a database-only leak cannot be
+/// brute-forced offline into codes without the server-side pepper, and
+/// salted per-challenge (via the id and email) so two challenges never
+/// produce the same digest even for the same code. The plaintext code
+/// itself is never persisted anywhere, including here.
+model EmailOtpChallenge {
+  id                  String             @id @default(uuid()) @db.Uuid
+  emailNormalized     String             @map("email_normalized")
+  purpose             OtpPurpose         @default(AUTHENTICATE)
+  codeDigest          String             @map("code_digest")
+  status              OtpChallengeStatus @default(ACTIVE)
+  attemptCount        Int                @default(0) @map("attempt_count")
+  // Snapshot of the configured limit at creation time, so a later config
+  // change never retroactively changes the rules for an in-flight
+  // challenge.
+  maxAttempts         Int                @map("max_attempts")
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt           DateTime           @map("expires_at") @db.Timestamptz(6)
+  consumedAt          DateTime?          @map("consumed_at") @db.Timestamptz(6)
+  invalidatedAt       DateTime?          @map("invalidated_at") @db.Timestamptz(6)
+  // Abuse-prevention metadata only — a salted hash of the caller's
+  // address, never the address itself (same pattern as
+  // Session.ipHash), and no other personal data.
+  requestIpHash       String?            @map("request_ip_hash")
+  requestUserAgent    String?            @map("request_user_agent")
+  // Resend/replacement lineage: requesting a new code while an ACTIVE one
+  // exists for the same (email, purpose) invalidates the old row and
+  // links the new one to it, purely for traceability — the actual
+  // invalidation is `status`/`invalidated_at` on the old row, not this
+  // link, so lineage can be missing (e.g. a future cleanup job) without
+  // weakening the invalidation guarantee itself.
+  replacesChallengeId String?            @map("replaces_challenge_id") @db.Uuid
+
+  @@index([emailNormalized, purpose, status])
+  @@index([requestIpHash, createdAt])
+  @@index([expiresAt])
+  @@map("email_otp_challenges")
+}
+
+/// A revocable device session (docs/DATA_MODEL.md section 2). Device/agent
+/// metadata is recorded for support and anomaly review only — it is never
+/// treated as proof of identity, and authorization never depends on it.
+model Session {
+  id            String                @id @default(uuid()) @db.Uuid
+  userId        String                @map("user_id") @db.Uuid
+  deviceLabel   String?               @map("device_label")
+  userAgent     String?               @map("user_agent")
+  ipHash        String?               @map("ip_hash")
+  createdAt     DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastUsedAt    DateTime              @default(now()) @map("last_used_at") @db.Timestamptz(6)
+  expiresAt     DateTime              @map("expires_at") @db.Timestamptz(6)
+  revokedAt     DateTime?             @map("revoked_at") @db.Timestamptz(6)
+  revokedReason SessionRevokedReason? @map("revoked_reason")
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId, revokedAt])
+  @@map("sessions")
+}
+
+/// One issued refresh token per row. Rotation replaces a row's use rather
+/// than mutating it: `usedAt` is set the moment a token is redeemed and a
+/// new row is created for the same session, so the whole chain for a
+/// session is that session's "token family". Presenting a token that is
+/// already used or revoked is refresh-token reuse — the caller revokes the
+/// entire owning Session (and therefore every token in its family) in
+/// response. `tokenHash` is a fast SHA-256 hash: the raw token is already
+/// a high-entropy random value, not a human-guessable secret, so a slow
+/// memory-hard hashing function (the kind a password would need — Kora
+/// has none; see the AuthProvider comment above) would add latency
+/// without adding security.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  sessionId String    @map("session_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  issuedAt  DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Organizations and branches
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id              String             @id @default(uuid()) @db.Uuid
+  name            String
+  slug            String             @unique
+  businessType    String             @map("business_type")
+  defaultCurrency String             @map("default_currency") @db.Char(3)
+  timeZone        String             @map("time_zone")
+  countryCode     String             @map("country_code") @db.Char(2)
+  status          OrganizationStatus @default(ONBOARDING)
+  createdByUserId String             @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt      DateTime?          @map("archived_at") @db.Timestamptz(6)
+
+  createdBy           User                             @relation("OrganizationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  branches            Branch[]
+  memberships         OrganizationMembership[]
+  branchAssignments   BranchAssignment[]
+  roles               Role[]
+  membershipRoles     MembershipRole[]
+  staffProfiles       StaffProfile[]
+  staffInvitations    StaffInvitation[]
+  subscription        OrganizationSubscription?
+  subscriptionEvents  SubscriptionEvent[]
+  auditEvents         AuditEvent[]
+  publicProfile       PublicBusinessProfile?
+  categoryAssignments OrganizationCategoryAssignment[]
+  customerRecords     CustomerRecord[]
+  customerFavorites   CustomerFavorite[]
+
+  serviceCategories           ServiceCategory[]
+  services                    Service[]
+  branchServices              BranchService[]
+  staffServiceAssignments     StaffServiceAssignment[]
+  branchBusinessHours         BranchBusinessHours[]
+  branchScheduleExceptions    BranchScheduleException[]
+  branchBookingPolicies       BranchBookingPolicy[]
+  staffAvailabilityRules      StaffAvailabilityRule[]
+  staffAvailabilityExceptions StaffAvailabilityException[]
+  appointments                Appointment[]
+  appointmentItems            AppointmentItem[]
+  appointmentStatusHistory    AppointmentStatusHistory[]
+  appointmentIdempotencyKeys  AppointmentIdempotencyKey[]
+
+  branchQueueDays             BranchQueueDay[]
+  queueEntries                QueueEntry[]
+  queueEntryServices          QueueEntryService[]
+  queueEntryStatusHistory     QueueEntryStatusHistory[]
+  queueIntakeIdempotencyKeys  QueueIntakeIdempotencyKey[]
+  serviceSessions             ServiceSession[]
+  serviceSessionItems         ServiceSessionItem[]
+  serviceSessionStatusHistory ServiceSessionStatusHistory[]
+
+  checkouts                     Checkout[]
+  checkoutLineItems             CheckoutLineItem[]
+  checkoutAdjustments           CheckoutAdjustment[]
+  paymentRecords                PaymentRecord[]
+  paymentVerificationEvents     PaymentVerificationEvent[]
+  paymentDisputes               PaymentDispute[]
+  transactions                  Transaction[]
+  transactionLineItems          TransactionLineItem[]
+  transactionPaymentAllocations TransactionPaymentAllocation[]
+  financialIdempotencyKeys      FinancialIdempotencyKey[]
+
+  commissionRules         CommissionRule[]
+  commissionAccruals      CommissionAccrual[]
+  branchReceiptSequences  BranchReceiptSequence[]
+  receipts                Receipt[]
+  receiptLineItems        ReceiptLineItem[]
+  receiptPaymentSummaries ReceiptPaymentSummary[]
+
+  branchCashPolicies BranchCashPolicy[]
+  cashRegisters      CashRegister[]
+  cashSessions       CashSession[]
+  cashLedgerEntries  CashLedgerEntry[]
+  cashSessionReviews CashSessionReview[]
+
+  transactionCorrections             TransactionCorrection[]
+  transactionCorrectionItems         TransactionCorrectionItem[]
+  transactionCorrectionPayments      TransactionCorrectionPayment[]
+  transactionCorrectionStatusHistory TransactionCorrectionStatusHistory[]
+
+  organizationIdempotencyKeys OrganizationIdempotencyKey[]
+
+  @@map("organizations")
+}
+
+model Branch {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  name           String
+  code           String
+  phone          String?
+  email          String?
+  addressLine    String?      @map("address_line")
+  city           String?
+  region         String?
+  countryCode    String       @map("country_code") @db.Char(2)
+  timeZone       String       @map("time_zone")
+  currency       String       @db.Char(3)
+  status         BranchStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime?    @map("archived_at") @db.Timestamptz(6)
+
+  // Public discovery (docs task Phase 9). Deliberately separate from the
+  // operational `phone`/`email`/`address*` fields above: a business
+  // chooses what it publishes, which may differ from its internal contact
+  // details. Populated and shown only when `isDiscoverable` is true and
+  // the owning PublicBusinessProfile is published and not PRIVATE.
+  latitude         Decimal? @db.Decimal(9, 6)
+  longitude        Decimal? @db.Decimal(9, 6)
+  publicPhone      String?  @map("public_phone")
+  publicEmail      String?  @map("public_email")
+  openingHoursNote String?  @map("opening_hours_note")
+  isDiscoverable   Boolean  @default(false) @map("is_discoverable")
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branchAssignments BranchAssignment[]
+  staffInvitations  StaffInvitation[]
+
+  branchServices              BranchService[]
+  staffServiceAssignments     StaffServiceAssignment[]
+  businessHours               BranchBusinessHours[]
+  scheduleExceptions          BranchScheduleException[]
+  bookingPolicy               BranchBookingPolicy?
+  staffAvailabilityRules      StaffAvailabilityRule[]
+  staffAvailabilityExceptions StaffAvailabilityException[]
+  appointments                Appointment[]
+
+  branchQueueDays BranchQueueDay[]
+  queueEntries    QueueEntry[]
+  serviceSessions ServiceSession[]
+
+  checkouts      Checkout[]
+  paymentRecords PaymentRecord[]
+  transactions   Transaction[]
+
+  commissionRulesScoped  CommissionRule[]
+  branchReceiptSequences BranchReceiptSequence[]
+  receipts               Receipt[]
+
+  cashPolicy        BranchCashPolicy?
+  cashRegisters     CashRegister[]
+  cashSessions      CashSession[]
+  cashLedgerEntries CashLedgerEntry[]
+
+  transactionCorrections TransactionCorrection[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, id])
+  @@index([organizationId])
+  @@index([organizationId, isDiscoverable])
+  @@map("branches")
+}
+
+/// Guarantees a client-generated Idempotency-Key header is honored for
+/// organization onboarding (docs task "Business onboarding contract"),
+/// mirroring AppointmentIdempotencyKey's shape. Scoped per owner user,
+/// not per-organization -- there is no organization yet when the very
+/// first request in a retry sequence is being checked, so the lookup
+/// key must be something that exists before onboarding runs. The
+/// organization row and this key are created together, in the same
+/// transaction, so a row only ever exists once fully resolved.
+model OrganizationIdempotencyKey {
+  id                 String   @id @default(uuid()) @db.Uuid
+  ownerUserId        String   @map("owner_user_id") @db.Uuid
+  idempotencyKey     String   @map("idempotency_key")
+  requestFingerprint String   @map("request_fingerprint")
+  organizationId     String   @map("organization_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerUserId, idempotencyKey])
+  @@map("organization_idempotency_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Membership, roles, and permissions
+// ---------------------------------------------------------------------------
+
+/// Connects a global User to an Organization. One user may hold independent
+/// memberships in multiple organizations.
+model OrganizationMembership {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  status         MembershipStatus @default(INVITED)
+  joinedAt       DateTime?        @map("joined_at") @db.Timestamptz(6)
+  suspendedAt    DateTime?        @map("suspended_at") @db.Timestamptz(6)
+  removedAt      DateTime?        @map("removed_at") @db.Timestamptz(6)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user               User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  staffProfile       StaffProfile?
+  branchAssignments  BranchAssignment[]
+  membershipRoles    MembershipRole[]
+  invitationsSent    StaffInvitation[]  @relation("StaffInvitationInvitedBy")
+  auditEventsAsActor AuditEvent[]       @relation("AuditEventActorMembership")
+
+  queueEntriesCreated      QueueEntry[]
+  serviceSessionsCreated   ServiceSession[] @relation("ServiceSessionCreatedBy")
+  serviceSessionsCompleted ServiceSession[] @relation("ServiceSessionCompletedBy")
+
+  checkoutsCreated        Checkout[]       @relation("CheckoutCreatedBy")
+  checkoutsVoided         Checkout[]       @relation("CheckoutVoidedBy")
+  paymentRecordsRecorded  PaymentRecord[]  @relation("PaymentRecordedBy")
+  paymentRecordsConfirmed PaymentRecord[]  @relation("PaymentConfirmedBy")
+  paymentRecordsVoided    PaymentRecord[]  @relation("PaymentVoidedBy")
+  paymentDisputesOpened   PaymentDispute[] @relation("PaymentDisputeOpenedBy")
+  paymentDisputesResolved PaymentDispute[] @relation("PaymentDisputeResolvedBy")
+
+  commissionRulesCreated     CommissionRule[] @relation("CommissionRuleCreatedBy")
+  commissionRulesDeactivated CommissionRule[] @relation("CommissionRuleDeactivatedBy")
+  receiptsIssued             Receipt[]        @relation("ReceiptIssuedBy")
+
+  cashPolicyUpdates           BranchCashPolicy[]  @relation("BranchCashPolicyUpdatedBy")
+  cashRegistersCreated        CashRegister[]      @relation("CashRegisterCreatedBy")
+  cashRegistersArchived       CashRegister[]      @relation("CashRegisterArchivedBy")
+  cashSessionsOpened          CashSession[]       @relation("CashSessionOpenedBy")
+  cashSessionsClosed          CashSession[]       @relation("CashSessionClosedBy")
+  cashLedgerEntriesActed      CashLedgerEntry[]   @relation("CashLedgerEntryActor")
+  cashSessionReviewsPerformed CashSessionReview[] @relation("CashSessionReviewedBy")
+
+  transactionCorrectionsRequested         TransactionCorrection[]              @relation("TransactionCorrectionRequestedBy")
+  transactionCorrectionsApproved          TransactionCorrection[]              @relation("TransactionCorrectionApprovedBy")
+  transactionCorrectionsRejected          TransactionCorrection[]              @relation("TransactionCorrectionRejectedBy")
+  transactionCorrectionsCancelled         TransactionCorrection[]              @relation("TransactionCorrectionCancelledBy")
+  transactionCorrectionsExecuted          TransactionCorrection[]              @relation("TransactionCorrectionExecutedBy")
+  transactionCorrectionStatusHistoryActed TransactionCorrectionStatusHistory[] @relation("TransactionCorrectionStatusHistoryActor")
+
+  @@unique([organizationId, userId])
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+  @@map("organization_memberships")
+}
+
+/// Explicit branch scoping for a membership. Composite foreign keys tie both
+/// the membership and the branch to the same organization, so a
+/// cross-organization assignment is rejected by the database.
+model BranchAssignment {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  membershipId   String   @map("membership_id") @db.Uuid
+  branchId       String   @map("branch_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  membership   OrganizationMembership @relation(fields: [organizationId, membershipId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([membershipId, branchId])
+  @@index([organizationId, membershipId])
+  @@map("membership_branch_assignments")
+}
+
+/// Role catalog entry. `organizationId` is null for system role templates
+/// shared across every organization, and set for an organization-specific
+/// custom role. Code uniqueness (globally for system roles, per organization
+/// for custom roles) is enforced by partial unique indexes added in the
+/// initial migration, because a plain composite unique constraint would
+/// treat every NULL `organization_id` as distinct and would not stop
+/// duplicate system role codes.
+model Role {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  code           String
+  name           String
+  description    String?
+  isSystem       Boolean  @default(false) @map("is_system")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization     Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rolePermissions  RolePermission[]
+  membershipRoles  MembershipRole[]
+  staffInvitations StaffInvitation[]
+
+  // A plain composite unique constraint treats every NULL `organizationId`
+  // as distinct, so this alone does not stop two system role templates
+  // from sharing a code — it only enforces uniqueness for org-scoped roles
+  // and gives the ORM a typed compound key for org-scoped upserts. True
+  // null-safe enforcement (including for system roles) comes from the two
+  // partial unique indexes added by hand in the initial migration.
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@map("roles")
+}
+
+/// Stable, seeded permission vocabulary (docs/API_SPEC.md section 27).
+/// Permissions are platform-level, not tenant-owned.
+model Permission {
+  id          String @id @default(uuid()) @db.Uuid
+  code        String @unique
+  description String
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String   @id @default(uuid()) @db.Uuid
+  roleId       String   @map("role_id") @db.Uuid
+  permissionId String   @map("permission_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+/// A membership can hold multiple roles. When the referenced Role is an
+/// organization-specific role (non-null `organizationId`), application
+/// services must verify it matches the membership's organization — system
+/// role templates (`role.organizationId IS NULL`) are usable by any
+/// organization's membership, so this relation intentionally is not a
+/// composite tenant foreign key on the role side.
+model MembershipRole {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  membershipId   String   @map("membership_id") @db.Uuid
+  roleId         String   @map("role_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  membership   OrganizationMembership @relation(fields: [organizationId, membershipId], references: [organizationId, id], onDelete: Cascade)
+  role         Role                   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, roleId])
+  @@index([organizationId, membershipId])
+  @@map("membership_roles")
+}
+
+// ---------------------------------------------------------------------------
+// Staff and invitations
+// ---------------------------------------------------------------------------
+
+/// Employment record inside an organization. This is distinct from the
+/// global User identity — a StaffProfile only exists for a membership that
+/// represents working staff, not every organization member.
+model StaffProfile {
+  id               String                @id @default(uuid()) @db.Uuid
+  organizationId   String                @map("organization_id") @db.Uuid
+  membershipId     String                @map("membership_id") @db.Uuid
+  staffNumber      String?               @map("staff_number")
+  jobTitle         String                @map("job_title")
+  bio              String?
+  employmentStatus StaffEmploymentStatus @default(ACTIVE) @map("employment_status")
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt       DateTime?             @map("archived_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  membership   OrganizationMembership @relation(fields: [organizationId, membershipId], references: [organizationId, id], onDelete: Cascade)
+
+  staffServiceAssignments     StaffServiceAssignment[]
+  staffAvailabilityRules      StaffAvailabilityRule[]
+  staffAvailabilityExceptions StaffAvailabilityException[]
+  appointments                Appointment[]
+
+  queueEntriesAssigned QueueEntry[]
+  serviceSessions      ServiceSession[]
+  serviceSessionItems  ServiceSessionItem[]
+
+  checkoutsAssigned              Checkout[]
+  checkoutLineItems              CheckoutLineItem[]
+  paymentRecordsConfirmationOwed PaymentRecord[]
+  transactionsAssigned           Transaction[]
+  transactionLineItems           TransactionLineItem[]
+
+  commissionRulesScoped CommissionRule[]
+  commissionAccruals    CommissionAccrual[]
+
+  @@unique([organizationId, membershipId])
+  // Lets StaffServiceAssignment and Appointment hold a composite tenant
+  // FK to a specific staff profile by id, the same pattern Branch and
+  // OrganizationMembership already use — see the module header note in
+  // the services/availability/appointments section below.
+  @@unique([organizationId, id])
+  @@map("staff_profiles")
+}
+
+/// Staff invitation using a hashed, single-use acceptance token. The
+/// plaintext token is generated and returned once at creation time by the
+/// application layer and is never persisted — only `tokenHash` (SHA-256,
+/// same reasoning as RefreshToken.tokenHash: the token is already a
+/// high-entropy random value) is stored.
+///
+/// `roleId` and `branchId` make the invitation organization- AND
+/// branch-specific per the Phase 8 requirement: accepting it grants
+/// exactly this one role and (when set) scopes the new membership to this
+/// one branch via a BranchAssignment; a null `branchId` grants
+/// organization-wide access with no initial branch restriction. `roleId`
+/// is a plain (non-composite) foreign key rather than a tenant-composite
+/// one for the same reason as MembershipRole.role above: it must also
+/// accept system role templates, whose `organizationId` is null.
+model StaffInvitation {
+  id                    String                @id @default(uuid()) @db.Uuid
+  organizationId        String                @map("organization_id") @db.Uuid
+  emailNormalized       String?               @map("email_normalized")
+  phoneE164             String?               @map("phone_e164")
+  tokenHash             String                @unique @map("token_hash")
+  invitedByMembershipId String                @map("invited_by_membership_id") @db.Uuid
+  roleId                String                @map("role_id") @db.Uuid
+  branchId              String?               @map("branch_id") @db.Uuid
+  status                StaffInvitationStatus @default(PENDING)
+  expiresAt             DateTime              @map("expires_at") @db.Timestamptz(6)
+  acceptedAt            DateTime?             @map("accepted_at") @db.Timestamptz(6)
+  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    OrganizationMembership @relation("StaffInvitationInvitedBy", fields: [organizationId, invitedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  role         Role                   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  branch       Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@map("staff_invitations")
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions and entitlements
+// ---------------------------------------------------------------------------
+
+/// Plan catalog entry (Starter, Growth, Business, Enterprise, ...). Codes are
+/// data-driven; commercial names and codes are seeded, prices are not
+/// invented (see PlanPrice).
+model SubscriptionPlan {
+  id          String              @id @default(uuid()) @db.Uuid
+  code        String              @unique
+  name        String
+  description String?
+  status      PlanLifecycleStatus @default(DRAFT)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  planEntitlements          PlanEntitlement[]
+  planPrices                PlanPrice[]
+  organizationSubscriptions OrganizationSubscription[]
+
+  @@map("plans")
+}
+
+/// Configurable entitlement vocabulary (e.g. `branches.max`, `staff.max`,
+/// `reports.advanced`). Kept separate from PlanEntitlement so the same
+/// entitlement code can be reused, described once, and typed consistently
+/// across every plan.
+model EntitlementDefinition {
+  id          String               @id @default(uuid()) @db.Uuid
+  code        String               @unique
+  name        String
+  valueType   EntitlementValueType @map("value_type")
+  description String?
+
+  planEntitlements PlanEntitlement[]
+
+  @@map("entitlement_definitions")
+}
+
+/// The value is stored as JSON so it can hold a boolean, integer, or string
+/// payload as declared by the referenced EntitlementDefinition.valueType.
+model PlanEntitlement {
+  id            String @id @default(uuid()) @db.Uuid
+  planId        String @map("plan_id") @db.Uuid
+  entitlementId String @map("entitlement_id") @db.Uuid
+  value         Json
+
+  plan        SubscriptionPlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  entitlement EntitlementDefinition @relation(fields: [entitlementId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, entitlementId])
+  @@map("plan_entitlements")
+}
+
+/// Currency, billing period, and price are all data-driven per plan. No
+/// commercial price is invented here — `amountMinor` stays null until
+/// product pricing is approved (see the Phase 3 seed script).
+model PlanPrice {
+  id              String              @id @default(uuid()) @db.Uuid
+  planId          String              @map("plan_id") @db.Uuid
+  currency        String              @db.Char(3)
+  amountMinor     Int?                @map("amount_minor")
+  billingInterval BillingInterval     @map("billing_interval")
+  countryCode     String?             @map("country_code") @db.Char(2)
+  effectiveFrom   DateTime?           @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil  DateTime?           @map("effective_until") @db.Timestamptz(6)
+  status          PlanLifecycleStatus @default(DRAFT)
+
+  plan                      SubscriptionPlan           @relation(fields: [planId], references: [id], onDelete: Cascade)
+  organizationSubscriptions OrganizationSubscription[]
+
+  @@index([planId])
+  @@map("plan_prices")
+}
+
+/// Belongs to the organization, never to an individual owner. Only one
+/// current subscription is permitted per organization. Provider fields stay
+/// null until a billing provider is integrated (docs/ROADMAP.md Phase 10).
+model OrganizationSubscription {
+  id                     String             @id @default(uuid()) @db.Uuid
+  organizationId         String             @map("organization_id") @db.Uuid
+  planId                 String             @map("plan_id") @db.Uuid
+  planPriceId            String?            @map("plan_price_id") @db.Uuid
+  status                 SubscriptionStatus @default(TRIALING)
+  provider               String?
+  providerCustomerId     String?            @map("provider_customer_id")
+  providerSubscriptionId String?            @map("provider_subscription_id")
+  trialStartedAt         DateTime?          @map("trial_started_at") @db.Timestamptz(6)
+  trialEndsAt            DateTime?          @map("trial_ends_at") @db.Timestamptz(6)
+  currentPeriodStartedAt DateTime?          @map("current_period_started_at") @db.Timestamptz(6)
+  currentPeriodEndsAt    DateTime?          @map("current_period_ends_at") @db.Timestamptz(6)
+  graceEndsAt            DateTime?          @map("grace_ends_at") @db.Timestamptz(6)
+  cancelAt               DateTime?          @map("cancel_at") @db.Timestamptz(6)
+  canceledAt             DateTime?          @map("canceled_at") @db.Timestamptz(6)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         SubscriptionPlan    @relation(fields: [planId], references: [id], onDelete: Restrict)
+  planPrice    PlanPrice?          @relation(fields: [planPriceId], references: [id], onDelete: SetNull)
+  events       SubscriptionEvent[]
+
+  @@unique([organizationId])
+  @@unique([organizationId, id])
+  @@index([status])
+  @@map("organization_subscriptions")
+}
+
+/// Append-only internal lifecycle history. Application services only ever
+/// insert and read these rows.
+model SubscriptionEvent {
+  id             String              @id @default(uuid()) @db.Uuid
+  organizationId String              @map("organization_id") @db.Uuid
+  subscriptionId String              @map("subscription_id") @db.Uuid
+  type           String
+  effectiveAt    DateTime            @map("effective_at") @db.Timestamptz(6)
+  previousStatus SubscriptionStatus? @map("previous_status")
+  newStatus      SubscriptionStatus  @map("new_status")
+  source         String
+  sourceEventId  String?             @map("source_event_id")
+  metadata       Json?
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription OrganizationSubscription @relation(fields: [organizationId, subscriptionId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, effectiveAt])
+  @@map("subscription_events")
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/// Append-only audit trail. Application services only ever insert and read
+/// these rows — no update or delete path is exposed (docs/SECURITY.md
+/// section 19). `organizationId` is nullable to allow platform-level actions
+/// that are not scoped to a single organization. `actorUserId` is nullable
+/// for the same reason applied to identity itself: an OTP request for an
+/// email with no Kora account yet has no user to attribute the event to
+/// (the account, if any, is only created on successful verification) —
+/// `entityType`/`entityId` (e.g. `email_otp_challenge`/the challenge ID)
+/// carry the subject of such an event instead.
+model AuditEvent {
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String?  @map("organization_id") @db.Uuid
+  branchId          String?  @map("branch_id") @db.Uuid
+  actorUserId       String?  @map("actor_user_id") @db.Uuid
+  actorMembershipId String?  @map("actor_membership_id") @db.Uuid
+  action            String
+  entityType        String   @map("entity_type")
+  entityId          String   @map("entity_id")
+  requestId         String   @map("request_id")
+  source            String
+  sourceDeviceId    String?  @map("source_device_id")
+  previousState     Json?    @map("previous_state")
+  newState          Json?    @map("new_state")
+  metadata          Json?
+  occurredAt        DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization    Organization?           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorUser       User?                   @relation("AuditEventActorUser", fields: [actorUserId], references: [id], onDelete: Restrict)
+  actorMembership OrganizationMembership? @relation("AuditEventActorMembership", fields: [actorMembershipId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, occurredAt])
+  @@index([organizationId, entityType, entityId])
+  @@index([actorUserId])
+  @@map("audit_events")
+}
+
+// ---------------------------------------------------------------------------
+// Customer identity and public business discovery
+//
+// Two customer-shaped concepts, deliberately kept apart:
+// - CustomerProfile is the customer workspace of the single global User —
+//   it exists once per user, independent of any organization.
+// - CustomerRecord is one organization's private knowledge of a customer
+//   (for future booking/CRM history). It is only ever created when that
+//   customer actually interacts with that organization; nothing in this
+//   phase creates one yet, since booking/walk-in do not exist. One
+//   business can never see another business's CustomerRecord for the same
+//   person — there is no relation between CustomerRecord rows themselves.
+//
+// PublicBusinessProfile is the read side of discovery: the curated, public
+// subset of an Organization that PUBLIC/LINK_ONLY visibility exposes
+// through the discovery endpoints. It never carries subscription, staff,
+// audit, or customer data — see EntitlementsService/OnboardingService etc.
+// for that internal-only data, none of which this model can reach.
+// ---------------------------------------------------------------------------
+
+/// The customer workspace's identity: one row per User, created the first
+/// time that user acts as a customer (e.g. favoriting or, in a later
+/// phase, booking with a business). Distinct from OrganizationMembership,
+/// which is the business-workspace side of the same global User.
+model CustomerProfile {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Minimum booking information (docs task Phase 16). Display name and
+  // verified email/phone come from the linked User (see auth.service's
+  // `me()`/`updateCustomerProfile`) rather than being duplicated here.
+  // Location is stored only once the customer has explicitly provided
+  // it — `locationConsentedAt` records exactly when, and is null
+  // whenever both coordinates are null.
+  phoneE164           String?   @map("phone_e164")
+  city                String?
+  area                String?
+  latitude            Decimal?  @db.Decimal(9, 6)
+  longitude           Decimal?  @db.Decimal(9, 6)
+  locationConsentedAt DateTime? @map("location_consented_at") @db.Timestamptz(6)
+
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  favorites       CustomerFavorite[]
+  customerRecords CustomerRecord[]
+  appointments    Appointment[]
+
+  @@map("customer_profiles")
+}
+
+/// One organization's private record of a customer relationship
+/// (docs/DATA_MODEL.md section 6 `customers`, renamed to avoid colliding
+/// with the platform-wide CustomerProfile). `customerProfileId` is
+/// nullable because a staff-entered walk-in customer may not hold a Kora
+/// account at all. Organization-scoped and never joined across
+/// organizations — see the module header above.
+model CustomerRecord {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  customerProfileId String?   @map("customer_profile_id") @db.Uuid
+  name              String
+  phoneE164         String?   @map("phone_e164")
+  emailNormalized   String?   @map("email_normalized")
+  notes             String?
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt        DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customerProfile CustomerProfile? @relation(fields: [customerProfileId], references: [id], onDelete: SetNull)
+  appointments    Appointment[]
+  queueEntries    QueueEntry[]
+  serviceSessions ServiceSession[]
+  checkouts       Checkout[]
+  transactions    Transaction[]
+  receipts        Receipt[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, customerProfileId])
+  @@index([organizationId, phoneE164])
+  @@index([organizationId, emailNormalized])
+  @@map("customer_records")
+}
+
+/// A customer's saved business. Cross-organization by design (it belongs
+/// to the customer, not to any one organization), which is why it is not
+/// tenant-scoped the way CustomerRecord is.
+model CustomerFavorite {
+  id                String   @id @default(uuid()) @db.Uuid
+  customerProfileId String   @map("customer_profile_id") @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customerProfile CustomerProfile @relation(fields: [customerProfileId], references: [id], onDelete: Cascade)
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([customerProfileId, organizationId])
+  @@index([organizationId])
+  @@map("customer_favorites")
+}
+
+/// Seeded taxonomy for discovery filtering (e.g. "Salon & Barbershop",
+/// "Spa & Wellness"). Platform-level, not tenant-owned.
+model BusinessCategory {
+  id        String  @id @default(uuid()) @db.Uuid
+  code      String  @unique
+  name      String
+  sortOrder Int     @default(0) @map("sort_order")
+  active    Boolean @default(true)
+
+  organizationAssignments OrganizationCategoryAssignment[]
+
+  @@map("business_categories")
+}
+
+model OrganizationCategoryAssignment {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  categoryId     String   @map("category_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  category     BusinessCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, categoryId])
+  @@index([categoryId])
+  @@map("organization_category_assignments")
+}
+
+/// The curated public read model for one Organization (docs task Phase 9).
+/// One row per organization. Only PUBLIC and LINK_ONLY profiles with
+/// `publishedAt` set are ever returned by the discovery endpoints — see
+/// DiscoveryService. Nothing here references subscription, staff, audit,
+/// or CustomerRecord data.
+model PublicBusinessProfile {
+  id                 String                     @id @default(uuid()) @db.Uuid
+  organizationId     String                     @unique @map("organization_id") @db.Uuid
+  slug               String                     @unique
+  displayName        String                     @map("display_name")
+  description        String?
+  logoImageUrl       String?                    @map("logo_image_url")
+  coverImageUrl      String?                    @map("cover_image_url")
+  visibility         BusinessProfileVisibility  @default(PRIVATE)
+  verificationStatus BusinessVerificationStatus @default(UNVERIFIED) @map("verification_status")
+  searchKeywords     String?                    @map("search_keywords")
+  publishedAt        DateTime?                  @map("published_at") @db.Timestamptz(6)
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // A profile is eligible for *general search* only once published and
+  // PUBLIC; LINK_ONLY profiles are still resolvable by exact slug (see
+  // DiscoveryService) but are excluded from the search index by this
+  // composite index's intended query shape.
+  @@index([visibility, publishedAt])
+  @@map("public_business_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Service catalogue, staff assignment, business hours, staff availability,
+// and appointments (docs task "Service Catalogue -> Staff-Service
+// Assignments -> Business Hours -> Staff Availability -> Appointment
+// Availability -> Customer Booking").
+//
+// Every tenant-owned model below that references another tenant-owned
+// model by id (Branch, Service, StaffProfile, CustomerRecord) does so
+// through a *composite* foreign key of (organizationId, id) rather than a
+// plain id — the same pattern BranchAssignment/MembershipRole/
+// StaffInvitation already use — so a cross-tenant reference is rejected
+// by the database itself, not just application logic.
+//
+// A confirmed appointment's actual double-booking protection is a
+// PostgreSQL EXCLUDE constraint on Appointment, added by hand in this
+// phase's migration (Prisma has no first-class way to declare one) — see
+// that migration's header comment and docs/SECURITY.md section 30.
+// ---------------------------------------------------------------------------
+
+enum ServicePricingType {
+  FIXED
+  FROM
+
+  @@map("service_pricing_type")
+}
+
+enum BranchScheduleExceptionType {
+  CLOSED
+  SPECIAL_HOURS
+  HOLIDAY
+  EMERGENCY_CLOSURE
+
+  @@map("branch_schedule_exception_type")
+}
+
+enum StaffAvailabilityExceptionType {
+  TIME_OFF
+  SICK_LEAVE
+  HOLIDAY
+  SPECIAL_AVAILABILITY
+
+  @@map("staff_availability_exception_type")
+}
+
+enum AppointmentSource {
+  CUSTOMER_APP
+  BUSINESS_STAFF
+
+  @@map("appointment_source")
+}
+
+/// Deliberately small for V1 (docs task Phase 17): a confirmed booking can
+/// only become CANCELLED or NO_SHOW. There is no COMPLETED value here —
+/// completion is a claim about work actually performed, which only a
+/// future ServiceSession can prove; an Appointment alone is never treated
+/// as evidence that a service happened.
+enum AppointmentStatus {
+  CONFIRMED
+  CANCELLED
+  NO_SHOW
+
+  @@map("appointment_status")
+}
+
+/// An organization-owned grouping for its own bookable services (e.g.
+/// "Haircuts", "Braiding"). Deliberately separate from BusinessCategory,
+/// which is the platform-seeded taxonomy public discovery search filters
+/// by — a tenant's internal catalogue structure and the public taxonomy
+/// it is discovered under are different concerns.
+model ServiceCategory {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  description    String?
+  sortOrder      Int       @default(0) @map("sort_order")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  services     Service[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt])
+  @@map("service_categories")
+}
+
+/// One organization's catalogue entry. Never hard-deleted once any
+/// AppointmentItem references it (docs task Phase 11: "Do not permanently
+/// delete a service ... Use archival/deactivation") — `archivedAt` is the
+/// only removal path, and historical appointments keep their own
+/// name/duration/price snapshot on AppointmentItem regardless of later
+/// catalogue edits, so archiving or editing a service never rewrites
+/// history.
+model Service {
+  id                   String             @id @default(uuid()) @db.Uuid
+  organizationId       String             @map("organization_id") @db.Uuid
+  serviceCategoryId    String?            @map("service_category_id") @db.Uuid
+  name                 String
+  description          String?
+  durationMinutes      Int                @map("duration_minutes")
+  priceMinor           Int                @map("price_minor")
+  currency             String             @db.Char(3)
+  pricingType          ServicePricingType @default(FIXED) @map("pricing_type")
+  isBookableByCustomer Boolean            @default(true) @map("is_bookable_by_customer")
+  sortOrder            Int                @default(0) @map("sort_order")
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt           DateTime?          @map("archived_at") @db.Timestamptz(6)
+
+  organization         Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceCategory      ServiceCategory?         @relation(fields: [organizationId, serviceCategoryId], references: [organizationId, id], onDelete: Restrict)
+  branchServices       BranchService[]
+  staffAssignments     StaffServiceAssignment[]
+  appointmentItems     AppointmentItem[]
+  queueEntryServices   QueueEntryService[]
+  serviceSessionItems  ServiceSessionItem[]
+  checkoutLineItems    CheckoutLineItem[]
+  transactionLineItems TransactionLineItem[]
+
+  commissionRulesScoped CommissionRule[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt])
+  @@index([organizationId, serviceCategoryId])
+  @@map("services")
+}
+
+/// Per-branch availability and overrides for one Service (docs task
+/// Phase 11: "A service can be offered at one branch and unavailable at
+/// another"). A missing row for a (branch, service) pair means the
+/// service is not offered at that branch at all — this table is
+/// opt-in, not opt-out. `isBookableByCustomerOverride` is a tri-state
+/// override: null inherits Service.isBookableByCustomer, true/false
+/// pins it at this branch regardless of the service-level default.
+model BranchService {
+  id                           String   @id @default(uuid()) @db.Uuid
+  organizationId               String   @map("organization_id") @db.Uuid
+  branchId                     String   @map("branch_id") @db.Uuid
+  serviceId                    String   @map("service_id") @db.Uuid
+  isEnabled                    Boolean  @default(true) @map("is_enabled")
+  priceOverrideMinor           Int?     @map("price_override_minor")
+  durationOverrideMinutes      Int?     @map("duration_override_minutes")
+  isBookableByCustomerOverride Boolean? @map("is_bookable_by_customer_override")
+  createdAt                    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  service      Service      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([branchId, serviceId])
+  @@index([organizationId, branchId])
+  @@map("branch_services")
+}
+
+/// Connects an eligible staff provider to one service at one branch
+/// (docs task Phase 11: "A staff member may offer different services at
+/// different branches"). Creation must be refused unless the staff
+/// member holds an active membership in the organization *and* an
+/// explicit BranchAssignment for this branch — enforced in
+/// StaffServiceAssignmentService, not by a DB constraint, because
+/// membership/branch-assignment state changes independently over time
+/// and a later removal must not retroactively corrupt this row; the
+/// service layer re-checks eligibility at read/booking time instead.
+model StaffServiceAssignment {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  staffProfileId          String   @map("staff_profile_id") @db.Uuid
+  branchId                String   @map("branch_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  isBookable              Boolean  @default(true) @map("is_bookable")
+  durationOverrideMinutes Int?     @map("duration_override_minutes")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffProfile StaffProfile @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  service      Service      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([staffProfileId, branchId, serviceId])
+  @@index([organizationId, branchId, serviceId])
+  @@map("staff_service_assignments")
+}
+
+/// One recurring weekly opening interval for a branch (docs task Phase
+/// 13). A branch with no rows for a given `dayOfWeek` is closed that day
+/// — this table is opt-in, the same convention BranchService uses.
+/// `startLocalTime`/`endLocalTime` are wall-clock "HH:mm" strings
+/// interpreted under Branch.timeZone, deliberately not a `@db.Time`
+/// column (Prisma maps that to a JS Date with a meaningless 1970-01-01
+/// date part) and deliberately not a UTC instant (a recurring weekly rule
+/// has no single date to convert against — see AvailabilityService for
+/// where the branch-local -> UTC conversion actually happens, per
+/// requested date).
+model BranchBusinessHours {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  branchId       String   @map("branch_id") @db.Uuid
+  dayOfWeek      Int      @map("day_of_week")
+  startLocalTime String   @map("start_local_time") @db.VarChar(5)
+  endLocalTime   String   @map("end_local_time") @db.VarChar(5)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, branchId, dayOfWeek])
+  @@map("branch_business_hours")
+}
+
+/// A specific-date override to BranchBusinessHours (docs task Phase 13):
+/// closed, special hours, holiday, or emergency closure. Always wins over
+/// the recurring weekly rule for that one local date. `intervals` is a
+/// JSON array of `{start, end}` "HH:mm" pairs (the same small-structured-
+/// list use of Json that PlanEntitlement.value and AuditEvent.metadata
+/// already establish in this schema) — required and non-empty only when
+/// `type` is SPECIAL_HOURS; every other type means the branch is fully
+/// closed that date and `intervals` stays null.
+model BranchScheduleException {
+  id             String                      @id @default(uuid()) @db.Uuid
+  organizationId String                      @map("organization_id") @db.Uuid
+  branchId       String                      @map("branch_id") @db.Uuid
+  date           DateTime                    @db.Date
+  type           BranchScheduleExceptionType
+  intervals      Json?
+  reason         String?
+  createdAt      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([branchId, date])
+  @@index([organizationId, branchId, date])
+  @@map("branch_schedule_exceptions")
+}
+
+/// Centralized, per-branch editable booking policy (docs task Phase 13).
+/// A branch with no row here uses the documented hardcoded defaults (see
+/// BranchBookingPolicyService) rather than failing — every field is
+/// still NOT NULL once a row exists, so a stored policy is always fully
+/// resolved, never partially defaulted at read time.
+model BranchBookingPolicy {
+  id                             String   @id @default(uuid()) @db.Uuid
+  organizationId                 String   @map("organization_id") @db.Uuid
+  branchId                       String   @map("branch_id") @db.Uuid
+  slotIntervalMinutes            Int      @map("slot_interval_minutes")
+  minBookingLeadTimeMinutes      Int      @map("min_booking_lead_time_minutes")
+  maxBookingHorizonDays          Int      @map("max_booking_horizon_days")
+  bufferBeforeMinutes            Int      @map("buffer_before_minutes")
+  bufferAfterMinutes             Int      @map("buffer_after_minutes")
+  cancellationCutoffMinutes      Int      @map("cancellation_cutoff_minutes")
+  allowCustomerProviderSelection Boolean  @map("allow_customer_provider_selection")
+  allowAnyProvider               Boolean  @map("allow_any_provider")
+  createdAt                      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@unique([organizationId, branchId])
+  @@map("branch_booking_policies")
+}
+
+/// One recurring weekly availability interval for a staff member at one
+/// branch (docs task Phase 14). Branch opening hours and staff
+/// availability are deliberately separate tables — a provider is
+/// bookable only where both intersect (see AvailabilityService).
+model StaffAvailabilityRule {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  staffProfileId String    @map("staff_profile_id") @db.Uuid
+  branchId       String    @map("branch_id") @db.Uuid
+  dayOfWeek      Int       @map("day_of_week")
+  startLocalTime String    @map("start_local_time") @db.VarChar(5)
+  endLocalTime   String    @map("end_local_time") @db.VarChar(5)
+  effectiveFrom  DateTime? @map("effective_from") @db.Date
+  effectiveUntil DateTime? @map("effective_until") @db.Date
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffProfile StaffProfile @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, staffProfileId, branchId, dayOfWeek])
+  @@map("staff_availability_rules")
+}
+
+/// A specific-date override to a staff member's recurring availability
+/// (docs task Phase 14): time off, sick leave, holiday, or special
+/// (added) availability, full-day or partial. TIME_OFF/SICK_LEAVE/HOLIDAY
+/// always *remove* availability for their window; SPECIAL_AVAILABILITY
+/// *adds* availability on top of (or in place of) the recurring rule.
+/// `branchId` is required, matching StaffAvailabilityRule, so this row's
+/// `date` is always unambiguous under exactly one branch's timeZone — a
+/// staff member off across several branches on the same date gets one
+/// exception row per branch.
+model StaffAvailabilityException {
+  id             String                         @id @default(uuid()) @db.Uuid
+  organizationId String                         @map("organization_id") @db.Uuid
+  staffProfileId String                         @map("staff_profile_id") @db.Uuid
+  branchId       String                         @map("branch_id") @db.Uuid
+  date           DateTime                       @db.Date
+  type           StaffAvailabilityExceptionType
+  isFullDay      Boolean                        @default(true) @map("is_full_day")
+  startLocalTime String?                        @map("start_local_time") @db.VarChar(5)
+  endLocalTime   String?                        @map("end_local_time") @db.VarChar(5)
+  reason         String?
+  createdAt      DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffProfile StaffProfile @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([organizationId, staffProfileId, branchId, date])
+  @@map("staff_availability_exceptions")
+}
+
+/// One booked appointment. `startAt`/`endAt` are the service time itself;
+/// `occupiedStartAt`/`occupiedEndAt` additionally include the branch's
+/// buffer-before/buffer-after (docs task Phase 17/18) and are what the
+/// double-booking exclusion constraint actually guards — see this
+/// phase's migration. `branchTimeZone` snapshots Branch.timeZone at
+/// creation time so a later branch timezone change never reinterprets an
+/// already-booked appointment's local meaning. `version` supports
+/// optimistic concurrency for reschedule/cancel commands issued
+/// concurrently with a staff-side edit.
+///
+/// Appointment is not a ServiceSession, a Payment, or a Transaction —
+/// none of those exist yet. A CONFIRMED appointment is a reservation, not
+/// proof that work happened or that revenue was earned; only a future
+/// ServiceSession can establish that (docs/SECURITY.md section 30).
+model Appointment {
+  id                         String            @id @default(uuid()) @db.Uuid
+  organizationId             String            @map("organization_id") @db.Uuid
+  branchId                   String            @map("branch_id") @db.Uuid
+  reference                  String            @unique
+  // Nullable: a staff-assisted booking for a walk-in-style customer with
+  // no Kora account has no CustomerProfile at all (the same reasoning
+  // CustomerRecord.customerProfileId already documents). customerRecordId
+  // is always required — every appointment has an organization-scoped
+  // customer relationship, even when that customer holds no Kora account.
+  customerProfileId          String?           @map("customer_profile_id") @db.Uuid
+  customerRecordId           String            @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId     String            @map("assigned_staff_profile_id") @db.Uuid
+  startAt                    DateTime          @map("start_at") @db.Timestamptz(6)
+  endAt                      DateTime          @map("end_at") @db.Timestamptz(6)
+  occupiedStartAt            DateTime          @map("occupied_start_at") @db.Timestamptz(6)
+  occupiedEndAt              DateTime          @map("occupied_end_at") @db.Timestamptz(6)
+  branchTimeZone             String            @map("branch_time_zone")
+  status                     AppointmentStatus @default(CONFIRMED)
+  source                     AppointmentSource
+  currency                   String            @db.Char(3)
+  totalPriceMinor            Int               @map("total_price_minor")
+  idempotencyKey             String?           @map("idempotency_key")
+  cancelledAt                DateTime?         @map("cancelled_at") @db.Timestamptz(6)
+  cancelledReason            String?           @map("cancelled_reason")
+  cancelledByMembershipId    String?           @map("cancelled_by_membership_id") @db.Uuid
+  noShowMarkedAt             DateTime?         @map("no_show_marked_at") @db.Timestamptz(6)
+  noShowMarkedByMembershipId String?           @map("no_show_marked_by_membership_id") @db.Uuid
+  createdByUserId            String?           @map("created_by_user_id") @db.Uuid
+  createdByMembershipId      String?           @map("created_by_membership_id") @db.Uuid
+  version                    Int               @default(1)
+  createdAt                  DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization         Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch                     @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  customerProfile      CustomerProfile?           @relation(fields: [customerProfileId], references: [id], onDelete: SetNull)
+  customerRecord       CustomerRecord             @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile               @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  items                AppointmentItem[]
+  statusHistory        AppointmentStatusHistory[]
+  queueEntry           QueueEntry?
+  serviceSessions      ServiceSession[]
+
+  // Lets QueueEntry and ServiceSession hold a composite tenant FK to a
+  // specific appointment by id (docs task "Walk-in intake -> Live branch
+  // queue -> Staff assignment -> Service Session -> Service completion"),
+  // the same pattern Branch/Service/StaffProfile/CustomerRecord already
+  // establish.
+  @@unique([organizationId, id])
+  @@index([organizationId, branchId, startAt])
+  @@index([organizationId, assignedStaffProfileId, startAt])
+  @@index([customerProfileId, startAt])
+  @@map("appointments")
+}
+
+/// One sequential service within a V1 appointment (docs task Phase 17: "one
+/// or more sequential services performed by the same provider"). The
+/// snapshot fields are the historical record; `service` is kept only to
+/// let operational tooling navigate back to the current catalogue entry
+/// and is never used to recompute a past appointment's price or
+/// duration.
+model AppointmentItem {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  appointmentId           String   @map("appointment_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  serviceNameSnapshot     String   @map("service_name_snapshot")
+  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
+  priceMinorSnapshot      Int      @map("price_minor_snapshot")
+  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
+  displayOrder            Int      @map("display_order")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointment  Appointment  @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  service      Service      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([appointmentId, displayOrder])
+  @@map("appointment_items")
+}
+
+/// Append-only status transition log for one appointment (docs task
+/// Phase 17/21). `previousStatus` is null only for the row created
+/// alongside the appointment itself (CONFIRMED, nothing before it).
+model AppointmentStatusHistory {
+  id                String             @id @default(uuid()) @db.Uuid
+  organizationId    String             @map("organization_id") @db.Uuid
+  appointmentId     String             @map("appointment_id") @db.Uuid
+  previousStatus    AppointmentStatus? @map("previous_status")
+  newStatus         AppointmentStatus  @map("new_status")
+  actorUserId       String?            @map("actor_user_id") @db.Uuid
+  actorMembershipId String?            @map("actor_membership_id") @db.Uuid
+  reason            String?
+  occurredAt        DateTime           @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointment  Appointment  @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@index([appointmentId, occurredAt])
+  @@map("appointment_status_history")
+}
+
+/// Guarantees a client-generated idempotency key is honored (docs task
+/// Phase 19). Scoped per customer, not global, both because a key only
+/// needs to be unique within one customer's own request stream and so a
+/// lookup is always filtered by the *authenticated* customer's own id —
+/// never accepted bare from a request. `appointmentId` and this row are
+/// created together, in the same transaction as the appointment itself
+/// (see AppointmentBookingService), so a row only ever exists once
+/// fully resolved; there is no "reserved but not yet resolved" state to
+/// leak a stale key into.
+model AppointmentIdempotencyKey {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organizationId     String   @map("organization_id") @db.Uuid
+  customerProfileId  String   @map("customer_profile_id") @db.Uuid
+  idempotencyKey     String   @map("idempotency_key")
+  requestFingerprint String   @map("request_fingerprint")
+  appointmentId      String   @map("appointment_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([customerProfileId, idempotencyKey])
+  @@map("appointment_idempotency_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Walk-in intake, live branch queue, and service sessions (docs task
+// "Walk-in intake -> Live branch queue -> Staff assignment -> Service
+// Session -> Service completion").
+//
+// Domain separation (kept strict throughout this module):
+// - An Appointment is a reservation.
+// - A QueueEntry represents a customer waiting for or receiving service at
+//   a branch — created either from a genuine walk-in (no prior
+//   Appointment) or from checking a CONFIRMED Appointment into the
+//   branch's live queue for today. Checking in never mutates or
+//   completes the Appointment itself; it only creates a QueueEntry that
+//   references it.
+// - A ServiceSession represents actual work performed. A completed
+//   ServiceSession is not a Payment, Transaction, Receipt, Commission, or
+//   revenue event — none of those exist yet (deliberately deferred).
+//
+// Design decision: QueueEntry itself is the durable walk-in record. No
+// separate WalkIn table exists — a WALK_IN-sourced QueueEntry and an
+// APPOINTMENT-sourced one share exactly the same lifecycle
+// (WAITING -> CALLED/IN_SERVICE -> COMPLETED/CANCELLED/NO_SHOW) and the
+// same QueueEntryStatusHistory trail; `source` alone distinguishes how a
+// row was created. Introducing a second table would only duplicate that
+// lifecycle for no behavioral gain.
+//
+// Every tenant-owned model below that references another tenant-owned
+// model by id does so through a *composite* foreign key of
+// (organizationId, id), continuing the pattern established in the
+// services/availability/appointments section above — a cross-tenant
+// reference is rejected by the database itself.
+//
+// Two independent concurrency-safety mechanisms are enforced at the
+// database level in this phase's migration (Prisma has no declarative
+// way to express either):
+// - Ticket numbers are issued via a single atomic
+//   `INSERT ... ON CONFLICT (organization_id, branch_id, business_date)
+//   DO UPDATE SET last_ticket_number = last_ticket_number + 1` on
+//   BranchQueueDay (Prisma's `upsert`), backed by the unique constraint
+//   below; `QueueEntry`'s own `@@unique([branchId, businessDate,
+//   ticketNumber])` is a second, structural line of defense.
+// - Two partial unique indexes on ServiceSession (`WHERE status =
+//   'IN_PROGRESS'`) guarantee at most one active session per staff
+//   profile and at most one active session per queue entry — see this
+//   phase's migration.
+// ---------------------------------------------------------------------------
+
+enum QueueEntrySource {
+  WALK_IN
+  APPOINTMENT
+
+  @@map("queue_entry_source")
+}
+
+/// Deliberately small (docs task Phase 3): IN_SERVICE can only be reached
+/// through ServiceSession creation, and COMPLETED can only be reached
+/// through ServiceSession completion — never a direct manual transition.
+/// Every other transition is a plain staff command. Terminal states
+/// (COMPLETED, CANCELLED, NO_SHOW) cannot be reopened in this phase.
+enum QueueEntryStatus {
+  WAITING
+  CALLED
+  IN_SERVICE
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+
+  @@map("queue_entry_status")
+}
+
+/// Postgres orders native enum values by declaration position, not
+/// alphabetically — `ORDER BY priority DESC` therefore sorts PRIORITY
+/// before NORMAL for free (see QueueQueriesService), matching the
+/// required default ordering (docs task Phase 3: "Priority
+/// classification; Join time; Ticket number; ID").
+enum QueueEntryPriority {
+  NORMAL
+  PRIORITY
+
+  @@map("queue_entry_priority")
+}
+
+enum ServiceSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+
+  @@map("service_session_status")
+}
+
+/// Only meaningful when `ServiceSession.status` is CANCELLED (docs task
+/// Phase 5): which queue disposition the cancellation carried.
+enum ServiceSessionCancelDisposition {
+  RETURN_TO_QUEUE
+  CANCEL_VISIT
+
+  @@map("service_session_cancel_disposition")
+}
+
+/// One record per organization, branch, and branch-local business date
+/// (docs task Phase 1). The sole purpose of this row is atomic ticket
+/// issuance and a monotonically increasing `revision` mobile clients can
+/// poll against — see QueueTicketService, which performs both via a
+/// single native Postgres upsert-with-increment rather than a
+/// read-then-write application check.
+model BranchQueueDay {
+  id               String   @id @default(uuid()) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  branchId         String   @map("branch_id") @db.Uuid
+  businessDate     DateTime @map("business_date") @db.Date
+  lastTicketNumber Int      @default(0) @map("last_ticket_number")
+  revision         Int      @default(0)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  queueEntries QueueEntry[]
+
+  @@unique([organizationId, branchId, businessDate])
+  @@unique([organizationId, id])
+  @@map("branch_queue_days")
+}
+
+/// A customer waiting for or receiving service at a branch (docs task
+/// Phase 1) — the durable walk-in record itself (see the module header
+/// above for why no separate WalkIn table exists). `businessDate` is
+/// denormalized from the owning BranchQueueDay for direct indexing;
+/// `appointmentId` is nullable (WALK_IN source has none) but globally
+/// unique when set, so an Appointment can never be linked to more than
+/// one QueueEntry (docs task: "at most one QueueEntry per Appointment").
+model QueueEntry {
+  id                     String             @id @default(uuid()) @db.Uuid
+  organizationId         String             @map("organization_id") @db.Uuid
+  branchId               String             @map("branch_id") @db.Uuid
+  branchQueueDayId       String             @map("branch_queue_day_id") @db.Uuid
+  businessDate           DateTime           @map("business_date") @db.Date
+  ticketNumber           Int                @map("ticket_number")
+  source                 QueueEntrySource
+  appointmentId          String?            @unique @map("appointment_id") @db.Uuid
+  customerRecordId       String             @map("customer_record_id") @db.Uuid
+  status                 QueueEntryStatus   @default(WAITING)
+  priority               QueueEntryPriority @default(NORMAL)
+  assignedStaffProfileId String?            @map("assigned_staff_profile_id") @db.Uuid
+  notes                  String?
+  joinedAt               DateTime           @default(now()) @map("joined_at") @db.Timestamptz(6)
+  calledAt               DateTime?          @map("called_at") @db.Timestamptz(6)
+  serviceStartedAt       DateTime?          @map("service_started_at") @db.Timestamptz(6)
+  completedAt            DateTime?          @map("completed_at") @db.Timestamptz(6)
+  cancelledAt            DateTime?          @map("cancelled_at") @db.Timestamptz(6)
+  noShowAt               DateTime?          @map("no_show_at") @db.Timestamptz(6)
+  createdByMembershipId  String             @map("created_by_membership_id") @db.Uuid
+  version                Int                @default(1)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization         Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  branchQueueDay       BranchQueueDay         @relation(fields: [organizationId, branchQueueDayId], references: [organizationId, id], onDelete: Cascade)
+  appointment          Appointment?           @relation(fields: [organizationId, appointmentId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord         @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile?          @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  createdByMembership  OrganizationMembership @relation(fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  services        QueueEntryService[]
+  statusHistory   QueueEntryStatusHistory[]
+  serviceSessions ServiceSession[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, appointmentId])
+  @@unique([branchId, businessDate, ticketNumber])
+  @@index([organizationId, branchId, businessDate, status])
+  @@index([organizationId, assignedStaffProfileId, status])
+  @@index([organizationId, customerRecordId])
+  @@map("queue_entries")
+}
+
+/// A service requested at walk-in/check-in intake (docs task Phase 1).
+/// Deliberately unpriced — "these are requested services, not financial
+/// records"; ServiceSessionItem captures the priced, provider-attributed
+/// snapshot once work actually starts.
+model QueueEntryService {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  queueEntryId   String   @map("queue_entry_id") @db.Uuid
+  serviceId      String   @map("service_id") @db.Uuid
+  displayOrder   Int      @map("display_order")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  queueEntry   QueueEntry   @relation(fields: [queueEntryId], references: [id], onDelete: Cascade)
+  service      Service      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([queueEntryId, displayOrder])
+  @@map("queue_entry_services")
+}
+
+/// Append-only transition log for one queue entry (docs task Phase 1).
+/// No update or delete path is exposed through application services —
+/// the same convention AppointmentStatusHistory/AuditEvent establish.
+model QueueEntryStatusHistory {
+  id                String            @id @default(uuid()) @db.Uuid
+  organizationId    String            @map("organization_id") @db.Uuid
+  queueEntryId      String            @map("queue_entry_id") @db.Uuid
+  previousStatus    QueueEntryStatus? @map("previous_status")
+  newStatus         QueueEntryStatus  @map("new_status")
+  actorUserId       String?           @map("actor_user_id") @db.Uuid
+  actorMembershipId String?           @map("actor_membership_id") @db.Uuid
+  reason            String?
+  occurredAt        DateTime          @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  queueEntry   QueueEntry   @relation(fields: [queueEntryId], references: [id], onDelete: Cascade)
+
+  @@index([queueEntryId, occurredAt])
+  @@map("queue_entry_status_history")
+}
+
+/// Guarantees a client-supplied `Idempotency-Key` header is honored for
+/// walk-in intake and appointment check-in (docs task Phase 2). Scoped
+/// per acting membership, not globally — the same reasoning
+/// AppointmentIdempotencyKey applies per customer, applied here to the
+/// staff member performing the intake instead, since both intake paths
+/// are staff-initiated rather than customer-initiated.
+model QueueIntakeIdempotencyKey {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organizationId     String   @map("organization_id") @db.Uuid
+  membershipId       String   @map("membership_id") @db.Uuid
+  idempotencyKey     String   @map("idempotency_key")
+  requestFingerprint String   @map("request_fingerprint")
+  queueEntryId       String   @map("queue_entry_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, idempotencyKey])
+  @@map("queue_intake_idempotency_keys")
+}
+
+/// The operational representation of work actually performed (docs task
+/// Phase 4). Deliberately not a payment, transaction, receipt,
+/// commission, or revenue record — `serviceTotalMinor` is the value of
+/// performed services, not proof that money was received. One
+/// ServiceSession has exactly one primary provider in V1
+/// (`assignedStaffProfileId`); every item is attributed to that same
+/// provider (see ServiceSessionItem). `queueEntryId` is intentionally
+/// *not* globally unique — a queue entry can accumulate more than one
+/// ServiceSession over its lifetime (e.g. RETURN_TO_QUEUE cancels one
+/// and a later start-service creates another) — only one *active*
+/// (IN_PROGRESS) session per queue entry, and per staff profile, is
+/// permitted, enforced by two partial unique indexes added by hand in
+/// this phase's migration.
+model ServiceSession {
+  id                      String                           @id @default(uuid()) @db.Uuid
+  organizationId          String                           @map("organization_id") @db.Uuid
+  branchId                String                           @map("branch_id") @db.Uuid
+  queueEntryId            String                           @map("queue_entry_id") @db.Uuid
+  appointmentId           String?                          @map("appointment_id") @db.Uuid
+  customerRecordId        String                           @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId  String                           @map("assigned_staff_profile_id") @db.Uuid
+  status                  ServiceSessionStatus             @default(IN_PROGRESS)
+  currency                String                           @db.Char(3)
+  serviceTotalMinor       Int                              @map("service_total_minor")
+  startedAt               DateTime                         @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt             DateTime?                        @map("completed_at") @db.Timestamptz(6)
+  cancelledAt             DateTime?                        @map("cancelled_at") @db.Timestamptz(6)
+  cancelReason            String?                          @map("cancel_reason")
+  cancelDisposition       ServiceSessionCancelDisposition? @map("cancel_disposition")
+  createdByMembershipId   String                           @map("created_by_membership_id") @db.Uuid
+  completedByMembershipId String?                          @map("completed_by_membership_id") @db.Uuid
+  version                 Int                              @default(1)
+  createdAt               DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization          Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  queueEntry            QueueEntry              @relation(fields: [organizationId, queueEntryId], references: [organizationId, id], onDelete: Restrict)
+  appointment           Appointment?            @relation(fields: [organizationId, appointmentId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord        CustomerRecord          @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile  StaffProfile            @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  createdByMembership   OrganizationMembership  @relation("ServiceSessionCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  completedByMembership OrganizationMembership? @relation("ServiceSessionCompletedBy", fields: [organizationId, completedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  items         ServiceSessionItem[]
+  statusHistory ServiceSessionStatusHistory[]
+  checkout      Checkout?
+  transaction   Transaction?
+
+  // Lets Checkout and Transaction hold a composite tenant FK to a
+  // specific service session by id (docs task "Completed ServiceSession
+  // -> Checkout -> Manual payment recording -> Provider confirmation or
+  // dispute -> Manager resolution -> Immutable verified Transaction"),
+  // the same pattern every other tenant-owned aggregate root in this
+  // schema already establishes.
+  @@unique([organizationId, id])
+  @@index([organizationId, branchId, status])
+  @@index([organizationId, assignedStaffProfileId, status])
+  @@index([organizationId, queueEntryId])
+  @@map("service_sessions")
+}
+
+/// A snapshot of one service actually being performed within a
+/// ServiceSession (docs task Phase 4). Server-resolved from the
+/// catalogue, branch configuration, and staff-service assignment at the
+/// moment the session starts or its items are replaced — never accepted
+/// as authoritative values from a client. Immutable once the owning
+/// session is COMPLETED (enforced in ServiceSessionsService, which
+/// refuses `replaceItems` unless `status = IN_PROGRESS`).
+model ServiceSessionItem {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  serviceSessionId        String   @map("service_session_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  staffProfileId          String   @map("staff_profile_id") @db.Uuid
+  serviceNameSnapshot     String   @map("service_name_snapshot")
+  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
+  priceMinorSnapshot      Int      @map("price_minor_snapshot")
+  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
+  displayOrder            Int      @map("display_order")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceSession       ServiceSession        @relation(fields: [serviceSessionId], references: [id], onDelete: Cascade)
+  service              Service               @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile         StaffProfile          @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  checkoutLineItems    CheckoutLineItem[]
+  transactionLineItems TransactionLineItem[]
+
+  @@index([serviceSessionId, displayOrder])
+  @@map("service_session_items")
+}
+
+/// Append-only domain lifecycle ledger for one ServiceSession (docs
+/// task "ServiceSession status history" correction) — the ServiceSession
+/// equivalent of QueueEntryStatusHistory/AppointmentStatusHistory, and
+/// deliberately separate from the global AuditEvent trail (section 19):
+/// AuditEvent is the platform-wide, cross-entity security/operational
+/// record every mutation writes to regardless of type; this table is
+/// the typed, queryable lifecycle of *this one aggregate*, structured
+/// for the same kind of reporting/timeline UI the queue and appointment
+/// history tables already support. Both are written on every session
+/// transition — neither replaces the other.
+///
+/// `previousStatus` is null only for the row created alongside session
+/// start (no status before IN_PROGRESS); a CHECK constraint added by
+/// hand in this phase's migration enforces that a row targets
+/// IN_PROGRESS if and only if `previousStatus` is null, since no
+/// transition other than session start ever produces IN_PROGRESS.
+/// `cancelDisposition` is set if and only if `newStatus` is CANCELLED,
+/// also CHECK-enforced. Only ServiceSessionsService ever writes here,
+/// always inside the same transaction as the status-change update
+/// itself — no update or delete path is exposed through application
+/// services, matching QueueEntryStatusHistory/AppointmentStatusHistory.
+model ServiceSessionStatusHistory {
+  id                String                           @id @default(uuid()) @db.Uuid
+  organizationId    String                           @map("organization_id") @db.Uuid
+  serviceSessionId  String                           @map("service_session_id") @db.Uuid
+  previousStatus    ServiceSessionStatus?            @map("previous_status")
+  newStatus         ServiceSessionStatus             @map("new_status")
+  actorUserId       String?                          @map("actor_user_id") @db.Uuid
+  actorMembershipId String?                          @map("actor_membership_id") @db.Uuid
+  reason            String?
+  cancelDisposition ServiceSessionCancelDisposition? @map("cancel_disposition")
+  occurredAt        DateTime                         @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceSession ServiceSession @relation(fields: [serviceSessionId], references: [id], onDelete: Cascade)
+
+  @@index([serviceSessionId, occurredAt])
+  @@index([organizationId, occurredAt])
+  @@map("service_session_status_history")
+}
+
+// ---------------------------------------------------------------------------
+// Checkout, manual payment recording, provider verification/disputes, and
+// posted transactions (docs task "Completed ServiceSession -> Checkout ->
+// Manual payment recording -> Provider confirmation or dispute -> Manager
+// resolution -> Immutable verified Transaction").
+//
+// Locked domain separation, kept strict throughout this section:
+// - ServiceSession proves that work occurred (section above).
+// - Checkout calculates the amount due for that completed work.
+// - PaymentRecord is a *claim* that money was received — never itself
+//   verified revenue.
+// - Transaction is the immutable, posted commercial record — created only
+//   once a Checkout is fully covered by CONFIRMED PaymentRecords, and the
+//   only thing later reporting may ever count as business revenue.
+// Kora does not hold, transfer, or settle customer money in this phase —
+// every PaymentRecord is a manually-recorded staff claim, never a live
+// payment-gateway callback. Customer service payments (this section) and
+// organization subscription payments (OrganizationSubscription, above) are
+// completely separate domains with no shared table or code path.
+//
+// Every tenant-owned model below that references another tenant-owned
+// model by id does so through a composite (organizationId, ...) foreign
+// key, continuing the pattern the rest of this schema establishes — a
+// cross-tenant reference is rejected by the database itself.
+//
+// Money is always integer minor units plus a three-character ISO currency
+// code, matching Service.priceMinor/AppointmentItem.priceMinorSnapshot
+// elsewhere in this schema. `adjustmentTotalMinor` is a *signed* net value
+// (positive for a net surcharge, negative for a net discount) so that
+// `totalMinor = subtotalMinor + adjustmentTotalMinor` always holds exactly
+// — enforced by a CHECK constraint added by hand in this phase's
+// migration, the same way the double-booking exclusion constraint and the
+// service-session partial unique indexes were added by hand in earlier
+// phases.
+// ---------------------------------------------------------------------------
+
+enum CheckoutStatus {
+  OPEN
+  AWAITING_VERIFICATION
+  DISPUTED
+  SETTLED
+  VOIDED
+
+  @@map("checkout_status")
+}
+
+enum CheckoutAdjustmentType {
+  DISCOUNT
+  SURCHARGE
+
+  @@map("checkout_adjustment_type")
+}
+
+/// Recording categories only (docs task Phase 2: "Do not connect
+/// Paystack, Hubtel, Flutterwave, Stripe, banks, card processors or
+/// mobile-money APIs") — no provider integration exists behind any of
+/// these values.
+enum PaymentMethod {
+  CASH
+  MOBILE_MONEY
+  CARD
+  BANK_TRANSFER
+  OTHER
+
+  @@map("payment_method")
+}
+
+/// RECORDED is a claim only. CONFIRMED is the only state a PaymentRecord
+/// can contribute toward posting a Transaction. DISPUTED and VOIDED are
+/// both terminal-adjacent: DISPUTED must be resolved (to CONFIRMED or
+/// VOIDED) by an owner/manager; VOIDED cannot be reopened in this phase.
+enum PaymentRecordStatus {
+  RECORDED
+  CONFIRMED
+  DISPUTED
+  VOIDED
+
+  @@map("payment_record_status")
+}
+
+enum PaymentVerificationAction {
+  RECORDED
+  CONFIRMED
+  DISPUTED
+  RESOLVED_CONFIRMED
+  RESOLVED_REJECTED
+  VOIDED
+
+  @@map("payment_verification_action")
+}
+
+enum PaymentDisputeStatus {
+  OPEN
+  RESOLVED_CONFIRMED
+  RESOLVED_REJECTED
+
+  @@map("payment_dispute_status")
+}
+
+enum PaymentDisputeResolution {
+  CONFIRM_PAYMENT
+  REJECT_PAYMENT
+
+  @@map("payment_dispute_resolution")
+}
+
+/// A single status for this phase — POSTED. Reversal/refund concepts are
+/// explicitly deferred to a future phase (docs task: "Reserve
+/// reversal/refund concepts for a future phase; do not implement them
+/// now").
+enum TransactionStatus {
+  POSTED
+
+  @@map("transaction_status")
+}
+
+/// The narrow, open vocabulary of financial commands that require
+/// idempotency in this phase — see FinancialIdempotencyKey.
+enum FinancialIdempotencyOperation {
+  CREATE_CHECKOUT
+  RECORD_PAYMENT
+  REQUEST_CORRECTION
+  EXECUTE_CORRECTION
+
+  @@map("financial_idempotency_operation")
+}
+
+/// The amount due for one COMPLETED ServiceSession (docs task Phase 1).
+/// Exactly one Checkout may exist per ServiceSession, enforced by the
+/// unique constraint on `serviceSessionId` below — not only an
+/// application check. Once any PaymentRecord exists against this
+/// checkout, `items`/`adjustments` become locked (enforced in
+/// CheckoutService, which refuses further line-item or adjustment
+/// mutations once `payments` is non-empty); once SETTLED or VOIDED, the
+/// entire row is immutable. `subtotalMinor` is the sum of
+/// CheckoutLineItem snapshots; `adjustmentTotalMinor` is the signed net
+/// of every CheckoutAdjustment; `totalMinor = subtotalMinor +
+/// adjustmentTotalMinor` always (CHECK-enforced).
+model Checkout {
+  id                     String         @id @default(uuid()) @db.Uuid
+  organizationId         String         @map("organization_id") @db.Uuid
+  branchId               String         @map("branch_id") @db.Uuid
+  serviceSessionId       String         @unique @map("service_session_id") @db.Uuid
+  customerRecordId       String         @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId String         @map("assigned_staff_profile_id") @db.Uuid
+  reference              String         @unique
+  status                 CheckoutStatus @default(OPEN)
+  currency               String         @db.Char(3)
+  subtotalMinor          Int            @map("subtotal_minor")
+  adjustmentTotalMinor   Int            @default(0) @map("adjustment_total_minor")
+  totalMinor             Int            @map("total_minor")
+  version                Int            @default(1)
+  createdByMembershipId  String         @map("created_by_membership_id") @db.Uuid
+  createdAt              DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  settledAt              DateTime?      @map("settled_at") @db.Timestamptz(6)
+  voidedAt               DateTime?      @map("voided_at") @db.Timestamptz(6)
+  voidedByMembershipId   String?        @map("voided_by_membership_id") @db.Uuid
+  voidReason             String?        @map("void_reason")
+
+  organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  serviceSession       ServiceSession          @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord          @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile            @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  createdByMembership  OrganizationMembership  @relation("CheckoutCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  voidedByMembership   OrganizationMembership? @relation("CheckoutVoidedBy", fields: [organizationId, voidedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  items       CheckoutLineItem[]
+  adjustments CheckoutAdjustment[]
+  payments    PaymentRecord[]
+  transaction Transaction?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, serviceSessionId])
+  @@index([organizationId, branchId, status])
+  @@index([organizationId, assignedStaffProfileId, status])
+  @@index([organizationId, customerRecordId])
+  @@map("checkouts")
+}
+
+/// An immutable snapshot of one ServiceSessionItem at checkout-creation
+/// time (docs task Phase 1: "Never recalculate an existing checkout from
+/// the current Service catalogue"). `serviceSessionItemId` is kept only
+/// to navigate back to the session's own record; every financial value
+/// used by this checkout comes from the snapshot columns here, never a
+/// live join.
+model CheckoutLineItem {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  checkoutId              String   @map("checkout_id") @db.Uuid
+  serviceSessionItemId    String   @map("service_session_item_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  staffProfileId          String   @map("staff_profile_id") @db.Uuid
+  serviceNameSnapshot     String   @map("service_name_snapshot")
+  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
+  priceMinorSnapshot      Int      @map("price_minor_snapshot")
+  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
+  displayOrder            Int      @map("display_order")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  checkout           Checkout           @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+  serviceSessionItem ServiceSessionItem @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
+  service            Service            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile       StaffProfile       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([checkoutId, displayOrder])
+  @@map("checkout_line_items")
+}
+
+/// An append-only discount or surcharge against one Checkout (docs task
+/// Phase 1: "Adjustments are append-only. Corrections must use a
+/// compensating adjustment instead of editing or deleting an old
+/// adjustment"). `amountMinor` is always a positive magnitude; `type`
+/// determines whether it subtracts (DISCOUNT) or adds (SURCHARGE) when
+/// CheckoutService recomputes `Checkout.adjustmentTotalMinor`. A
+/// discount can never take the running total below zero (validated in
+/// CheckoutService before the row is written, not only trusted from a
+/// CHECK constraint, since the *combined* effect of all adjustments —
+/// not this one row alone — is what must stay non-negative).
+model CheckoutAdjustment {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  organizationId        String                 @map("organization_id") @db.Uuid
+  checkoutId            String                 @map("checkout_id") @db.Uuid
+  type                  CheckoutAdjustmentType
+  amountMinor           Int                    @map("amount_minor")
+  reason                String
+  createdByMembershipId String                 @map("created_by_membership_id") @db.Uuid
+  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  checkout     Checkout     @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+
+  @@index([checkoutId, createdAt])
+  @@map("checkout_adjustments")
+}
+
+/// A staff member's *claim* that money was received against one Checkout
+/// (docs task Phase 2) — never itself verified revenue. Amount, method,
+/// and currency become immutable immediately after creation (enforced in
+/// PaymentRecordsService, which exposes no update path for them at all —
+/// only status-transition commands); a mistake is corrected by voiding
+/// and creating a replacement, never editing. `confirmationRequiredByStaffProfileId`
+/// snapshots which provider must verify this specific payment — the
+/// ServiceSession's assigned provider at recording time — so a later
+/// (impossible, since Checkout/ServiceSession are themselves immutable
+/// by this point) change could never silently redirect who must confirm
+/// it. `tenderedAmountMinor` is only ever meaningful for CASH (the
+/// change given back is derived, never itself stored or treated as
+/// revenue).
+model PaymentRecord {
+  id                                   String              @id @default(uuid()) @db.Uuid
+  organizationId                       String              @map("organization_id") @db.Uuid
+  branchId                             String              @map("branch_id") @db.Uuid
+  checkoutId                           String              @map("checkout_id") @db.Uuid
+  reference                            String              @unique
+  method                               PaymentMethod
+  status                               PaymentRecordStatus @default(RECORDED)
+  appliedAmountMinor                   Int                 @map("applied_amount_minor")
+  tenderedAmountMinor                  Int?                @map("tendered_amount_minor")
+  currency                             String              @db.Char(3)
+  externalReference                    String?             @map("external_reference")
+  note                                 String?
+  recordedByMembershipId               String              @map("recorded_by_membership_id") @db.Uuid
+  confirmationRequiredByStaffProfileId String              @map("confirmation_required_by_staff_profile_id") @db.Uuid
+  confirmedByMembershipId              String?             @map("confirmed_by_membership_id") @db.Uuid
+  recordedAt                           DateTime            @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  confirmedAt                          DateTime?           @map("confirmed_at") @db.Timestamptz(6)
+  disputedAt                           DateTime?           @map("disputed_at") @db.Timestamptz(6)
+  voidedAt                             DateTime?           @map("voided_at") @db.Timestamptz(6)
+  voidedByMembershipId                 String?             @map("voided_by_membership_id") @db.Uuid
+  voidReason                           String?             @map("void_reason")
+  version                              Int                 @default(1)
+  createdAt                            DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                            DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization                       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                             Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  checkout                           Checkout                @relation(fields: [organizationId, checkoutId], references: [organizationId, id], onDelete: Restrict)
+  recordedByMembership               OrganizationMembership  @relation("PaymentRecordedBy", fields: [organizationId, recordedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  confirmationRequiredByStaffProfile StaffProfile            @relation(fields: [organizationId, confirmationRequiredByStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  confirmedByMembership              OrganizationMembership? @relation("PaymentConfirmedBy", fields: [organizationId, confirmedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  voidedByMembership                 OrganizationMembership? @relation("PaymentVoidedBy", fields: [organizationId, voidedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  verificationEvents PaymentVerificationEvent[]
+  dispute            PaymentDispute?
+  allocations        TransactionPaymentAllocation[]
+  cashLedgerEntry    CashLedgerEntry?
+  correctionPayments TransactionCorrectionPayment[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, checkoutId, status])
+  @@index([organizationId, confirmationRequiredByStaffProfileId, status])
+  @@map("payment_records")
+}
+
+/// Append-only verification lifecycle log for one PaymentRecord (docs
+/// task Phase 3) — the PaymentRecord equivalent of
+/// ServiceSessionStatusHistory, and likewise distinct from the global
+/// AuditEvent trail. No update or delete path is exposed through
+/// application services.
+model PaymentVerificationEvent {
+  id                String                    @id @default(uuid()) @db.Uuid
+  organizationId    String                    @map("organization_id") @db.Uuid
+  paymentRecordId   String                    @map("payment_record_id") @db.Uuid
+  action            PaymentVerificationAction
+  previousStatus    PaymentRecordStatus?      @map("previous_status")
+  newStatus         PaymentRecordStatus       @map("new_status")
+  actorUserId       String?                   @map("actor_user_id") @db.Uuid
+  actorMembershipId String?                   @map("actor_membership_id") @db.Uuid
+  reason            String?
+  occurredAt        DateTime                  @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentRecord PaymentRecord @relation(fields: [paymentRecordId], references: [id], onDelete: Cascade)
+
+  @@index([paymentRecordId, occurredAt])
+  @@index([organizationId, occurredAt])
+  @@map("payment_verification_events")
+}
+
+/// At most one dispute per PaymentRecord (docs task Phase 3) — a
+/// terminal CONFIRMED or VOIDED record cannot be reopened in this
+/// phase, so a payment never needs a second dispute row. `resolution`
+/// and `resolvedAt`/`resolvedByMembershipId` are set together, only
+/// once, only by an owner/manager holding `payments.resolve`
+/// (CHECK-enforced shape in this phase's migration).
+model PaymentDispute {
+  id                     String                    @id @default(uuid()) @db.Uuid
+  organizationId         String                    @map("organization_id") @db.Uuid
+  paymentRecordId        String                    @unique @map("payment_record_id") @db.Uuid
+  status                 PaymentDisputeStatus      @default(OPEN)
+  reason                 String
+  openedByMembershipId   String                    @map("opened_by_membership_id") @db.Uuid
+  openedAt               DateTime                  @default(now()) @map("opened_at") @db.Timestamptz(6)
+  resolvedByMembershipId String?                   @map("resolved_by_membership_id") @db.Uuid
+  resolvedAt             DateTime?                 @map("resolved_at") @db.Timestamptz(6)
+  resolution             PaymentDisputeResolution?
+  resolutionNote         String?                   @map("resolution_note")
+
+  organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentRecord        PaymentRecord           @relation(fields: [organizationId, paymentRecordId], references: [organizationId, id], onDelete: Cascade)
+  openedByMembership   OrganizationMembership  @relation("PaymentDisputeOpenedBy", fields: [organizationId, openedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  resolvedByMembership OrganizationMembership? @relation("PaymentDisputeResolvedBy", fields: [organizationId, resolvedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, paymentRecordId])
+  @@index([organizationId, status])
+  @@map("payment_disputes")
+}
+
+/// The immutable, posted commercial record (docs task Phase 4) — the
+/// only thing a future reporting phase may ever count as business
+/// revenue. Created exactly once per Checkout (unique constraint below),
+/// only when confirmed PaymentRecord applied amounts exactly equal
+/// `Checkout.totalMinor` (TransactionsService, inside the same
+/// transaction that confirms or resolves the final required payment —
+/// see that service for the row-locking strategy). No update or delete
+/// path is exposed through any public service. A single `POSTED` status
+/// exists in this phase; reversal/refund concepts are deliberately
+/// deferred.
+/// `kind` distinguishes the original sale from a corrective transaction
+/// (docs task Phase 3). Every `*Minor` column is always a non-negative
+/// magnitude regardless of kind — SALE is a positive contribution to
+/// revenue, REFUND/REVERSAL are negative contributions, but that sign is
+/// derived at the reporting layer (`transactionKindSign`,
+/// apps/api/src/modules/reports/) from `kind`, never stored as a negative
+/// database value. `checkoutId`/`serviceSessionId` are null for a
+/// REFUND/REVERSAL — a correction has no checkout or service session of
+/// its own, only a `correctedTransactionId` pointing back to the
+/// original SALE. Existing rows were safely backfilled to `kind = SALE`
+/// by this column's own migration default.
+model Transaction {
+  id                     String            @id @default(uuid()) @db.Uuid
+  organizationId         String            @map("organization_id") @db.Uuid
+  branchId               String            @map("branch_id") @db.Uuid
+  checkoutId             String?           @unique @map("checkout_id") @db.Uuid
+  serviceSessionId       String?           @unique @map("service_session_id") @db.Uuid
+  customerRecordId       String            @map("customer_record_id") @db.Uuid
+  assignedStaffProfileId String            @map("assigned_staff_profile_id") @db.Uuid
+  reference              String            @unique
+  status                 TransactionStatus @default(POSTED)
+  kind                   TransactionKind   @default(SALE)
+  correctedTransactionId String?           @map("corrected_transaction_id") @db.Uuid
+  currency               String            @db.Char(3)
+  subtotalMinor          Int               @map("subtotal_minor")
+  adjustmentTotalMinor   Int               @map("adjustment_total_minor")
+  totalMinor             Int               @map("total_minor")
+  postedAt               DateTime          @default(now()) @map("posted_at") @db.Timestamptz(6)
+  createdAt              DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization         Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch          @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  checkout             Checkout?       @relation(fields: [organizationId, checkoutId], references: [organizationId, id], onDelete: Restrict)
+  serviceSession       ServiceSession? @relation(fields: [organizationId, serviceSessionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord       CustomerRecord  @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  assignedStaffProfile StaffProfile    @relation(fields: [organizationId, assignedStaffProfileId], references: [organizationId, id], onDelete: Restrict)
+  correctedTransaction Transaction?    @relation("TransactionCorrectionOf", fields: [organizationId, correctedTransactionId], references: [organizationId, id], onDelete: Restrict)
+  corrections          Transaction[]   @relation("TransactionCorrectionOf")
+
+  items       TransactionLineItem[]
+  allocations TransactionPaymentAllocation[]
+
+  commissionAccruals            CommissionAccrual[]
+  receipt                       Receipt?
+  cashLedgerEntriesAsCorrection CashLedgerEntry[]
+  correction                    TransactionCorrection?  @relation("TransactionCorrectionExecuted")
+  correctionsAsOriginal         TransactionCorrection[] @relation("TransactionCorrectionOriginal")
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, checkoutId])
+  @@unique([organizationId, serviceSessionId])
+  @@index([organizationId, branchId, postedAt])
+  @@index([organizationId, assignedStaffProfileId, postedAt])
+  @@index([organizationId, correctedTransactionId])
+  @@index([organizationId, kind, postedAt])
+  @@map("transactions")
+}
+
+/// An immutable snapshot copied from CheckoutLineItem at posting time
+/// (docs task Phase 4: "Never recompute a historical Transaction from
+/// mutable catalogue data").
+model TransactionLineItem {
+  id                      String   @id @default(uuid()) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  transactionId           String   @map("transaction_id") @db.Uuid
+  serviceSessionItemId    String   @map("service_session_item_id") @db.Uuid
+  serviceId               String   @map("service_id") @db.Uuid
+  staffProfileId          String   @map("staff_profile_id") @db.Uuid
+  serviceNameSnapshot     String   @map("service_name_snapshot")
+  durationMinutesSnapshot Int      @map("duration_minutes_snapshot")
+  priceMinorSnapshot      Int      @map("price_minor_snapshot")
+  currencySnapshot        String   @map("currency_snapshot") @db.Char(3)
+  displayOrder            Int      @map("display_order")
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction        Transaction        @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  serviceSessionItem ServiceSessionItem @relation(fields: [serviceSessionItemId], references: [id], onDelete: Restrict)
+  service            Service            @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile       StaffProfile       @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+
+  commissionAccrual CommissionAccrual?
+  receiptLineItem   ReceiptLineItem?
+  correctionItems   TransactionCorrectionItem[]
+
+  // Needed so CommissionAccrual/ReceiptLineItem can hold a composite
+  // tenant-safe FK to a specific line item by id, the same pattern every
+  // other financial-domain "child references a specific row" relation in
+  // this schema already uses.
+  @@unique([organizationId, id])
+  @@index([transactionId, displayOrder])
+  @@map("transaction_line_items")
+}
+
+/// Which CONFIRMED PaymentRecord(s) — and how much of each — funded one
+/// posted Transaction. Immutable once created.
+model TransactionPaymentAllocation {
+  id                 String   @id @default(uuid()) @db.Uuid
+  organizationId     String   @map("organization_id") @db.Uuid
+  transactionId      String   @map("transaction_id") @db.Uuid
+  paymentRecordId    String   @map("payment_record_id") @db.Uuid
+  appliedAmountMinor Int      @map("applied_amount_minor")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction   Transaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  paymentRecord PaymentRecord @relation(fields: [organizationId, paymentRecordId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([transactionId, paymentRecordId])
+  @@index([organizationId, paymentRecordId])
+  @@map("transaction_payment_allocations")
+}
+
+/// Generic financial-command idempotency (docs task Phase 5) — covers
+/// both Checkout creation and PaymentRecord creation, the two
+/// replay-sensitive commands in this phase, under one reusable shape
+/// rather than one narrowly-scoped table per command. Scoped per acting
+/// membership (not globally), matching QueueIntakeIdempotencyKey's own
+/// reasoning: both commands here are staff-initiated. `resourceType`/
+/// `resourceId` let a single lookup resolve back to whichever row the
+/// original request created, regardless of operation.
+model FinancialIdempotencyKey {
+  id                 String                        @id @default(uuid()) @db.Uuid
+  organizationId     String                        @map("organization_id") @db.Uuid
+  membershipId       String                        @map("membership_id") @db.Uuid
+  operation          FinancialIdempotencyOperation
+  idempotencyKey     String                        @map("idempotency_key")
+  requestFingerprint String                        @map("request_fingerprint")
+  resourceType       String                        @map("resource_type")
+  resourceId         String                        @map("resource_id") @db.Uuid
+  createdAt          DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, operation, idempotencyKey])
+  @@map("financial_idempotency_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Commissions, receipts, and reporting (docs task: "Posted Transaction ->
+// Commission calculation -> Service receipt -> Staff earnings -> Owner/
+// manager reporting"). Commissions and receipts are both derived
+// exclusively from an immutable, already-POSTED Transaction — never from a
+// PaymentRecord (a claim only) and never re-derived from current Service
+// prices. See CommissionAccrualService/ReceiptService (modules/commissions,
+// modules/receipts) for the calculation and the atomic posting integration.
+// ---------------------------------------------------------------------------
+
+enum CommissionRuleType {
+  PERCENTAGE
+  FIXED
+  NONE
+
+  @@map("commission_rule_type")
+}
+
+/// GROSS_LINE: commission on a TransactionLineItem's own snapshotted
+/// price, unaffected by checkout-level adjustments. NET_LINE_AFTER_
+/// ADJUSTMENTS: commission on that price after the Transaction's overall
+/// adjustmentTotalMinor has been allocated across every line item by a
+/// deterministic largest-remainder method (CommissionCalculationService.
+/// allocateAdjustmentsAcrossLines) — see docs/ARCHITECTURE.md for why
+/// largest-remainder rather than naive proportional rounding.
+enum CommissionCalculationBasis {
+  GROSS_LINE
+  NET_LINE_AFTER_ADJUSTMENTS
+
+  @@map("commission_calculation_basis")
+}
+
+/// POLICY: a CommissionRule was matched and used (even if it calculated
+/// to zero, e.g. a NONE-type rule or a 0-basis-point PERCENTAGE rule).
+/// NO_POLICY: no rule matched any of the eight precedence levels at all
+/// — an explicit zero-value accrual is still created (docs task Phase 1:
+/// "Missing policy must not prevent legitimate transaction posting").
+enum CommissionAccrualSource {
+  POLICY
+  NO_POLICY
+
+  @@map("commission_accrual_source")
+}
+
+/// A versioned commission policy. Never edited in place once created —
+/// changing a rule always either supersedes it with a brand-new row
+/// (`supersedesRuleId`/`supersededBy`, both the old row's `effectiveUntil`
+/// and the new row's `effectiveFrom` set to the same instant so temporal
+/// resolution never sees a gap or overlap) or explicitly deactivates it
+/// (`deactivatedAt`/`deactivatedByMembershipId`, with no replacement).
+/// Scope (`branchId`/`staffProfileId`/`serviceId`) is independently
+/// optional in each dimension — a null dimension means "any" — enabling
+/// the eight-level precedence CommissionCalculationService.
+/// selectMostSpecificRule implements (staff+branch+service down to the
+/// bare organization default, all four scoped fields null). Only one
+/// CURRENT rule (`effectiveUntil IS NULL AND deactivatedAt IS NULL`) may
+/// exist per exact scope combination — enforced by a hand-written partial
+/// unique index with `NULLS NOT DISTINCT` in this migration (scope
+/// columns are nullable, so a plain `@@unique` would treat every NULL as
+/// distinct and fail to prevent duplicates — see the migration.sql header
+/// comment, confirmed by a real-database integration test).
+model CommissionRule {
+  id                        String                     @id @default(uuid()) @db.Uuid
+  organizationId            String                     @map("organization_id") @db.Uuid
+  branchId                  String?                    @map("branch_id") @db.Uuid
+  staffProfileId            String?                    @map("staff_profile_id") @db.Uuid
+  serviceId                 String?                    @map("service_id") @db.Uuid
+  type                      CommissionRuleType
+  rateBasisPoints           Int?                       @map("rate_basis_points")
+  fixedAmountMinor          Int?                       @map("fixed_amount_minor")
+  fixedCurrency             String?                    @map("fixed_currency") @db.Char(3)
+  basis                     CommissionCalculationBasis @default(GROSS_LINE)
+  effectiveFrom             DateTime                   @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil            DateTime?                  @map("effective_until") @db.Timestamptz(6)
+  createdByMembershipId     String                     @map("created_by_membership_id") @db.Uuid
+  supersedesRuleId          String?                    @map("supersedes_rule_id") @db.Uuid
+  deactivatedAt             DateTime?                  @map("deactivated_at") @db.Timestamptz(6)
+  deactivatedByMembershipId String?                    @map("deactivated_by_membership_id") @db.Uuid
+  version                   Int                        @default(1)
+  createdAt                 DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile StaffProfile? @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  service      Service?      @relation(fields: [organizationId, serviceId], references: [organizationId, id], onDelete: Restrict)
+
+  createdByMembership     OrganizationMembership  @relation("CommissionRuleCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  deactivatedByMembership OrganizationMembership? @relation("CommissionRuleDeactivatedBy", fields: [organizationId, deactivatedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  supersedes   CommissionRule?  @relation("CommissionRuleSupersession", fields: [organizationId, supersedesRuleId], references: [organizationId, id], onDelete: Restrict)
+  supersededBy CommissionRule[] @relation("CommissionRuleSupersession")
+
+  accruals CommissionAccrual[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, supersedesRuleId])
+  @@index([organizationId, effectiveFrom, effectiveUntil])
+  @@index([organizationId, branchId])
+  @@index([organizationId, staffProfileId])
+  @@index([organizationId, serviceId])
+  @@map("commission_rules")
+}
+
+/// The immutable calculated commission for exactly one TransactionLineItem
+/// and its performing provider. Created only inside the same database
+/// transaction that posts the parent Transaction (TransactionPostingService)
+/// — never editable, never recalculated later even if the matched
+/// CommissionRule is subsequently superseded or deactivated, since every
+/// value a real calculation depended on is snapshotted onto this row.
+/// `kind` distinguishes a normal earned accrual from a corrective
+/// adjustment (docs task Phase 4). REFUNDED/REVERSED rows always carry
+/// `originalAccrualId` (the EARNED row being adjusted) and are resolved
+/// only from that original row's own immutable snapshot — never from
+/// the current CommissionRule, which may have since changed or been
+/// deactivated. `calculatedAmountMinor` remains a non-negative magnitude
+/// for every kind; direction is derived at the reporting layer from
+/// `kind`, exactly like Transaction.kind.
+model CommissionAccrual {
+  id                       String                     @id @default(uuid()) @db.Uuid
+  organizationId           String                     @map("organization_id") @db.Uuid
+  transactionId            String                     @map("transaction_id") @db.Uuid
+  transactionLineItemId    String                     @map("transaction_line_item_id") @db.Uuid
+  staffProfileId           String                     @map("staff_profile_id") @db.Uuid
+  commissionRuleId         String?                    @map("commission_rule_id") @db.Uuid
+  kind                     CommissionAccrualKind      @default(EARNED)
+  originalAccrualId        String?                    @map("original_accrual_id") @db.Uuid
+  source                   CommissionAccrualSource
+  ruleTypeSnapshot         CommissionRuleType?        @map("rule_type_snapshot")
+  rateBasisPointsSnapshot  Int?                       @map("rate_basis_points_snapshot")
+  fixedAmountMinorSnapshot Int?                       @map("fixed_amount_minor_snapshot")
+  basisSnapshot            CommissionCalculationBasis @map("basis_snapshot")
+  basisAmountMinor         Int                        @map("basis_amount_minor")
+  calculatedAmountMinor    Int                        @map("calculated_amount_minor")
+  currency                 String                     @db.Char(3)
+  calculatedAt             DateTime                   @map("calculated_at") @db.Timestamptz(6)
+  createdAt                DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction         Transaction         @relation(fields: [organizationId, transactionId], references: [organizationId, id], onDelete: Restrict)
+  transactionLineItem TransactionLineItem @relation(fields: [organizationId, transactionLineItemId], references: [organizationId, id], onDelete: Restrict)
+  staffProfile        StaffProfile        @relation(fields: [organizationId, staffProfileId], references: [organizationId, id], onDelete: Restrict)
+  commissionRule      CommissionRule?     @relation(fields: [organizationId, commissionRuleId], references: [organizationId, id], onDelete: Restrict)
+  originalAccrual     CommissionAccrual?  @relation("CommissionAccrualCorrectionOf", fields: [organizationId, originalAccrualId], references: [organizationId, id], onDelete: Restrict)
+  correctiveAccruals  CommissionAccrual[] @relation("CommissionAccrualCorrectionOf")
+
+  @@unique([transactionLineItemId, staffProfileId])
+  @@unique([organizationId, transactionLineItemId])
+  @@unique([organizationId, id])
+  @@index([organizationId, staffProfileId, calculatedAt])
+  @@index([organizationId, transactionId])
+  @@index([organizationId, originalAccrualId])
+  @@map("commission_accruals")
+}
+
+/// Atomic per-(branch, calendar year) receipt-number counter — the exact
+/// same "single native upsert, no read-then-write" pattern
+/// `allocateQueueTicket`/`BranchQueueDay` already established for queue
+/// ticket numbers (apps/api/src/modules/queue/queue-ticket.util.ts).
+model BranchReceiptSequence {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  branchId       String   @map("branch_id") @db.Uuid
+  year           Int
+  lastSequence   Int      @default(0) @map("last_sequence")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  receipts     Receipt[]
+
+  @@unique([organizationId, branchId, year])
+  @@map("branch_receipt_sequences")
+}
+
+/// An immutable service receipt for exactly one POSTED Transaction — not
+/// a statutory VAT/tax invoice (no TIN, no tax calculation, no compliance
+/// claim of any kind). Every business/branch/customer/line/payment value
+/// is a snapshot taken atomically at issuance time (inside the same
+/// database transaction as Transaction posting and commission accrual —
+/// TransactionPostingService), never a later live read of mutable Branch/
+/// CustomerRecord/PaymentRecord rows.
+/// `kind` distinguishes the original sale receipt from a corrective
+/// document (docs task Phase 5) — REFUND_RECEIPT/REVERSAL_RECORD are
+/// deliberately not called a statutory credit note or tax document.
+/// `originalReceiptId` links a corrective receipt back to the sale
+/// receipt it corrects (null for a SALE_RECEIPT); `remainingRefundable
+/// MinorSnapshot` is only ever set on a REFUND_RECEIPT.
+model Receipt {
+  id                               String      @id @default(uuid()) @db.Uuid
+  organizationId                   String      @map("organization_id") @db.Uuid
+  branchId                         String      @map("branch_id") @db.Uuid
+  branchReceiptSequenceId          String      @map("branch_receipt_sequence_id") @db.Uuid
+  transactionId                    String      @unique @map("transaction_id") @db.Uuid
+  customerRecordId                 String      @map("customer_record_id") @db.Uuid
+  receiptNumber                    String      @map("receipt_number")
+  sequenceNumber                   Int         @map("sequence_number")
+  kind                             ReceiptKind @default(SALE_RECEIPT)
+  originalReceiptId                String?     @map("original_receipt_id") @db.Uuid
+  correctionReason                 String?     @map("correction_reason")
+  remainingRefundableMinorSnapshot Int?        @map("remaining_refundable_minor_snapshot")
+  businessNameSnapshot             String      @map("business_name_snapshot")
+  branchNameSnapshot               String      @map("branch_name_snapshot")
+  branchPhoneSnapshot              String?     @map("branch_phone_snapshot")
+  branchAddressSnapshot            String?     @map("branch_address_snapshot")
+  customerNameSnapshot             String      @map("customer_name_snapshot")
+  currency                         String      @db.Char(3)
+  subtotalMinorSnapshot            Int         @map("subtotal_minor_snapshot")
+  adjustmentTotalMinorSnapshot     Int         @map("adjustment_total_minor_snapshot")
+  totalMinorSnapshot               Int         @map("total_minor_snapshot")
+  issuedAt                         DateTime    @default(now()) @map("issued_at") @db.Timestamptz(6)
+  issuedByMembershipId             String      @map("issued_by_membership_id") @db.Uuid
+  createdAt                        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  branchReceiptSequence BranchReceiptSequence  @relation(fields: [branchReceiptSequenceId], references: [id], onDelete: Restrict)
+  transaction           Transaction            @relation(fields: [organizationId, transactionId], references: [organizationId, id], onDelete: Restrict)
+  customerRecord        CustomerRecord         @relation(fields: [organizationId, customerRecordId], references: [organizationId, id], onDelete: Restrict)
+  issuedByMembership    OrganizationMembership @relation("ReceiptIssuedBy", fields: [organizationId, issuedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  originalReceipt       Receipt?               @relation("ReceiptCorrectionOf", fields: [organizationId, originalReceiptId], references: [organizationId, id], onDelete: Restrict)
+  correctiveReceipts    Receipt[]              @relation("ReceiptCorrectionOf")
+
+  lineItems        ReceiptLineItem[]
+  paymentSummaries ReceiptPaymentSummary[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, transactionId])
+  // Deliberately scoped to the organization, not global — a receipt
+  // number is built from `Branch.code`, itself only unique per
+  // organization (@@unique([organizationId, code])), so two different
+  // organizations may legitimately format the same string (e.g. both
+  // naming a branch "MAIN"). Real-world receipt numbers are always
+  // business-scoped this way; nothing about "human-readable" or
+  // "database-enforced uniqueness" implies platform-wide uniqueness.
+  @@unique([organizationId, receiptNumber])
+  @@index([organizationId, branchId, issuedAt])
+  @@index([organizationId, customerRecordId])
+  @@index([organizationId, originalReceiptId])
+  @@map("receipts")
+}
+
+/// An immutable snapshot copied from one TransactionLineItem at receipt-
+/// issuance time. `quantity` is always 1 today — this schema has no
+/// concept of a repeated-quantity line item — kept as an explicit column
+/// only so a future phase never needs a migration to add it.
+model ReceiptLineItem {
+  id                     String   @id @default(uuid()) @db.Uuid
+  organizationId         String   @map("organization_id") @db.Uuid
+  receiptId              String   @map("receipt_id") @db.Uuid
+  transactionLineItemId  String   @map("transaction_line_item_id") @db.Uuid
+  serviceNameSnapshot    String   @map("service_name_snapshot")
+  quantity               Int      @default(1)
+  unitPriceMinorSnapshot Int      @map("unit_price_minor_snapshot")
+  lineTotalMinorSnapshot Int      @map("line_total_minor_snapshot")
+  currencySnapshot       String   @map("currency_snapshot") @db.Char(3)
+  displayOrder           Int      @map("display_order")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  receipt             Receipt             @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  transactionLineItem TransactionLineItem @relation(fields: [organizationId, transactionLineItemId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([transactionLineItemId])
+  @@unique([organizationId, transactionLineItemId])
+  @@index([receiptId, displayOrder])
+  @@map("receipt_line_items")
+}
+
+/// A safe payment-method summary line on a receipt — snapshotted from
+/// TransactionPaymentAllocation/PaymentRecord atomically at issuance
+/// time, never a later live read of a (mutable-until-posted) PaymentRecord.
+/// `safeReferenceSnapshot` copies only the already-safe-code-validated
+/// `PaymentRecord.externalReference` — never a card/account number, PIN,
+/// or other credential, and never `PaymentRecord.note` (unvalidated free
+/// text).
+model ReceiptPaymentSummary {
+  id                    String        @id @default(uuid()) @db.Uuid
+  organizationId        String        @map("organization_id") @db.Uuid
+  receiptId             String        @map("receipt_id") @db.Uuid
+  method                PaymentMethod
+  amountMinorSnapshot   Int           @map("amount_minor_snapshot")
+  currencySnapshot      String        @map("currency_snapshot") @db.Char(3)
+  safeReferenceSnapshot String?       @map("safe_reference_snapshot")
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  receipt      Receipt      @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  @@index([receiptId])
+  @@map("receipt_payment_summaries")
+}
+
+// ---------------------------------------------------------------------------
+// Branch cash controls (docs task: "Cash Controls and Reconciliation"). A
+// CashSession's expected/counted/variance figures are a physical-custody
+// calculation — proof of what is (or should be) in a drawer — and are never
+// treated as revenue anywhere in this codebase; only a POSTED Transaction
+// is revenue (docs/ARCHITECTURE.md). See CashSessionService (modules/cash)
+// for the locking strategy that keeps a session's ledger and its close
+// snapshot consistent under concurrency.
+// ---------------------------------------------------------------------------
+
+enum CashPolicyMode {
+  OPTIONAL
+  REQUIRED
+
+  @@map("cash_policy_mode")
+}
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+  REVIEWED
+
+  @@map("cash_session_status")
+}
+
+/// Positive magnitude only — direction is derived from `type`
+/// (CashLedgerEntryDirection, apps/api/src/modules/cash/cash-ledger-
+/// direction.util.ts), the same "type determines sign" convention
+/// CheckoutAdjustment already established.
+enum CashLedgerEntryType {
+  OPENING_FLOAT
+  PAYMENT_RECEIVED
+  CASH_IN
+  CASH_OUT
+  SAFE_DROP
+  REFUND_PAID
+
+  @@map("cash_ledger_entry_type")
+}
+
+enum CashSessionReviewOutcome {
+  MATCHED
+  ACCEPTED_VARIANCE
+  INVESTIGATION_REQUIRED
+
+  @@map("cash_session_review_outcome")
+}
+
+/// One policy row per branch (`branchId` unique), defaulting to OPTIONAL
+/// so an existing branch with no policy row at all behaves exactly as
+/// before this stage (CashSessionsService.resolveMode treats "no row" the
+/// same as OPTIONAL). Only when REQUIRED does recording a CASH
+/// PaymentRecord require a valid open CashSession.
+model BranchCashPolicy {
+  id                    String         @id @default(uuid()) @db.Uuid
+  organizationId        String         @map("organization_id") @db.Uuid
+  branchId              String         @unique @map("branch_id") @db.Uuid
+  mode                  CashPolicyMode @default(OPTIONAL)
+  updatedByMembershipId String         @map("updated_by_membership_id") @db.Uuid
+  createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization        Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch              Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  updatedByMembership OrganizationMembership @relation("BranchCashPolicyUpdatedBy", fields: [organizationId, updatedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, branchId])
+  @@map("branch_cash_policies")
+}
+
+/// A physical drawer/till. `code` is unique per branch, matching how
+/// `Branch.code` itself is unique per organization rather than globally.
+model CashRegister {
+  id                     String    @id @default(uuid()) @db.Uuid
+  organizationId         String    @map("organization_id") @db.Uuid
+  branchId               String    @map("branch_id") @db.Uuid
+  code                   String
+  name                   String
+  createdByMembershipId  String    @map("created_by_membership_id") @db.Uuid
+  archivedAt             DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedByMembershipId String?   @map("archived_by_membership_id") @db.Uuid
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch               Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  createdByMembership  OrganizationMembership  @relation("CashRegisterCreatedBy", fields: [organizationId, createdByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  archivedByMembership OrganizationMembership? @relation("CashRegisterArchivedBy", fields: [organizationId, archivedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  sessions      CashSession[]
+  ledgerEntries CashLedgerEntry[]
+
+  @@unique([organizationId, branchId, code])
+  @@unique([organizationId, id])
+  @@index([organizationId, branchId, archivedAt])
+  @@map("cash_registers")
+}
+
+/// One cashier's custody of one physical register for one currency,
+/// opened with a float and closed with a counted amount. `expectedClosing
+/// CashMinor`/`countedCashMinor`/`varianceMinor` are set exactly once, at
+/// close time, computed from — and only from — this session's own
+/// immutable CashLedgerEntry rows (CashSessionService.close); reviewing
+/// afterward never rewrites them. Only one OPEN session may exist per
+/// (register, currency) at a time — a hand-written partial UNIQUE index
+/// in this migration, since Prisma's schema DSL has no declarative
+/// partial-index support (see the migration.sql header comment).
+model CashSession {
+  id                       String            @id @default(uuid()) @db.Uuid
+  organizationId           String            @map("organization_id") @db.Uuid
+  branchId                 String            @map("branch_id") @db.Uuid
+  registerId               String            @map("register_id") @db.Uuid
+  currency                 String            @db.Char(3)
+  openedByMembershipId     String            @map("opened_by_membership_id") @db.Uuid
+  openingFloatMinor        Int               @map("opening_float_minor")
+  openedAt                 DateTime          @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt                 DateTime?         @map("closed_at") @db.Timestamptz(6)
+  closedByMembershipId     String?           @map("closed_by_membership_id") @db.Uuid
+  expectedClosingCashMinor Int?              @map("expected_closing_cash_minor")
+  countedCashMinor         Int?              @map("counted_cash_minor")
+  varianceMinor            Int?              @map("variance_minor")
+  status                   CashSessionStatus @default(OPEN)
+  version                  Int               @default(1)
+  createdAt                DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch             Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  register           CashRegister            @relation(fields: [organizationId, registerId], references: [organizationId, id], onDelete: Restrict)
+  openedByMembership OrganizationMembership  @relation("CashSessionOpenedBy", fields: [organizationId, openedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  closedByMembership OrganizationMembership? @relation("CashSessionClosedBy", fields: [organizationId, closedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  ledgerEntries CashLedgerEntry[]
+  review        CashSessionReview?
+
+  @@unique([organizationId, id])
+  @@index([organizationId, branchId, status])
+  @@index([organizationId, registerId, status])
+  @@index([organizationId, openedByMembershipId, status])
+  @@map("cash_sessions")
+}
+
+/// Append-only physical cash movement. `amountMinor` is always a positive
+/// magnitude; `type` alone determines whether it adds to or removes from
+/// the drawer (CashLedgerEntryDirection). No update or delete path is
+/// exposed through application services; a PostgreSQL trigger
+/// (`cash_ledger_entries_require_open_session`, this migration) also
+/// rejects any insert whose session is not OPEN, as a hard backstop
+/// behind the application-level row lock CashSessionService takes on the
+/// session before ever writing here.
+model CashLedgerEntry {
+  id                      String              @id @default(uuid()) @db.Uuid
+  organizationId          String              @map("organization_id") @db.Uuid
+  branchId                String              @map("branch_id") @db.Uuid
+  registerId              String              @map("register_id") @db.Uuid
+  cashSessionId           String              @map("cash_session_id") @db.Uuid
+  currency                String              @db.Char(3)
+  type                    CashLedgerEntryType
+  amountMinor             Int                 @map("amount_minor")
+  paymentRecordId         String?             @unique @map("payment_record_id") @db.Uuid
+  correctiveTransactionId String?             @map("corrective_transaction_id") @db.Uuid
+  reason                  String?
+  actorMembershipId       String              @map("actor_membership_id") @db.Uuid
+  occurredAt              DateTime            @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  register              CashRegister           @relation(fields: [organizationId, registerId], references: [organizationId, id], onDelete: Restrict)
+  cashSession           CashSession            @relation(fields: [organizationId, cashSessionId], references: [organizationId, id], onDelete: Restrict)
+  paymentRecord         PaymentRecord?         @relation(fields: [organizationId, paymentRecordId], references: [organizationId, id], onDelete: Restrict)
+  correctiveTransaction Transaction?           @relation(fields: [organizationId, correctiveTransactionId], references: [organizationId, id], onDelete: Restrict)
+  actorMembership       OrganizationMembership @relation("CashLedgerEntryActor", fields: [organizationId, actorMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, paymentRecordId])
+  @@index([organizationId, cashSessionId, occurredAt])
+  @@index([organizationId, correctiveTransactionId])
+  @@map("cash_ledger_entries")
+}
+
+/// Append-only review of one CLOSED session's already-frozen expected/
+/// counted/variance snapshot — reviewing only ever adds this row and
+/// moves the session CLOSED -> REVIEWED; it never touches the snapshot
+/// itself. One review per session (the session's own status transition
+/// is one-way and terminal at REVIEWED, matching the single `.../review`
+/// endpoint this phase adds — docs/API_SPEC.md).
+model CashSessionReview {
+  id                     String                   @id @default(uuid()) @db.Uuid
+  organizationId         String                   @map("organization_id") @db.Uuid
+  cashSessionId          String                   @unique @map("cash_session_id") @db.Uuid
+  outcome                CashSessionReviewOutcome
+  reason                 String
+  reviewedByMembershipId String                   @map("reviewed_by_membership_id") @db.Uuid
+  reviewedAt             DateTime                 @default(now()) @map("reviewed_at") @db.Timestamptz(6)
+  createdAt              DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization         Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  cashSession          CashSession            @relation(fields: [organizationId, cashSessionId], references: [organizationId, id], onDelete: Restrict)
+  reviewedByMembership OrganizationMembership @relation("CashSessionReviewedBy", fields: [organizationId, reviewedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, cashSessionId])
+  @@map("cash_session_reviews")
+}
+
+// ---------------------------------------------------------------------------
+// Refund / reversal correction workflow (docs task: "Refund/Correction
+// Approval -> Immutable Refund or Reversal Transaction -> Commission
+// Adjustment -> Corrected Receipt and Reporting"). The original SALE
+// Transaction is never mutated or deleted — a correction always produces a
+// brand-new, separately posted Transaction (kind REFUND or REVERSAL) that
+// references it. See TransactionCorrectionsService (modules/corrections)
+// for the full state machine and atomic execution.
+// ---------------------------------------------------------------------------
+
+enum TransactionKind {
+  SALE
+  REFUND
+  REVERSAL
+
+  @@map("transaction_kind")
+}
+
+enum CommissionAccrualKind {
+  EARNED
+  REFUNDED
+  REVERSED
+
+  @@map("commission_accrual_kind")
+}
+
+/// Not a statutory tax invoice or statutory credit note — a plain
+/// service document (docs task Phase 5).
+enum ReceiptKind {
+  SALE_RECEIPT
+  REFUND_RECEIPT
+  REVERSAL_RECORD
+
+  @@map("receipt_kind")
+}
+
+enum TransactionCorrectionType {
+  REFUND
+  REVERSAL
+
+  @@map("transaction_correction_type")
+}
+
+/// REQUESTED -> APPROVED -> EXECUTED is the only path that ever posts a
+/// corrective Transaction. REQUESTED -> REJECTED, REQUESTED -> CANCELLED,
+/// and APPROVED -> CANCELLED are all terminal with no corrective
+/// Transaction. Every terminal state (REJECTED, CANCELLED, EXECUTED) is
+/// final — none ever reopens (docs task Phase 3).
+enum TransactionCorrectionStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXECUTED
+
+  @@map("transaction_correction_status")
+}
+
+/// One correction request/decision/execution record against one original
+/// SALE Transaction. A REFUND may have several TransactionCorrections
+/// executed against the same original (cumulative amounts capped at the
+/// remaining refundable balance, recalculated from immutable records at
+/// execution time); a REVERSAL may only ever have one, and only when no
+/// prior correction has been executed against that sale at all.
+/// `correctiveTransactionId` is set only at EXECUTED, pointing to the
+/// immutable REFUND/REVERSAL Transaction this correction produced.
+model TransactionCorrection {
+  id                      String                      @id @default(uuid()) @db.Uuid
+  organizationId          String                      @map("organization_id") @db.Uuid
+  branchId                String                      @map("branch_id") @db.Uuid
+  originalTransactionId   String                      @map("original_transaction_id") @db.Uuid
+  correctionType          TransactionCorrectionType   @map("correction_type")
+  status                  TransactionCorrectionStatus @default(REQUESTED)
+  reason                  String
+  currency                String                      @db.Char(3)
+  returnMethod            PaymentMethod               @map("return_method")
+  totalRequestedMinor     Int                         @map("total_requested_minor")
+  requestedByMembershipId String                      @map("requested_by_membership_id") @db.Uuid
+  requestedAt             DateTime                    @default(now()) @map("requested_at") @db.Timestamptz(6)
+  approvedByMembershipId  String?                     @map("approved_by_membership_id") @db.Uuid
+  approvedAt              DateTime?                   @map("approved_at") @db.Timestamptz(6)
+  rejectedByMembershipId  String?                     @map("rejected_by_membership_id") @db.Uuid
+  rejectedAt              DateTime?                   @map("rejected_at") @db.Timestamptz(6)
+  rejectionReason         String?                     @map("rejection_reason")
+  cancelledByMembershipId String?                     @map("cancelled_by_membership_id") @db.Uuid
+  cancelledAt             DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
+  cancellationReason      String?                     @map("cancellation_reason")
+  executedByMembershipId  String?                     @map("executed_by_membership_id") @db.Uuid
+  executedAt              DateTime?                   @map("executed_at") @db.Timestamptz(6)
+  correctiveTransactionId String?                     @unique @map("corrective_transaction_id") @db.Uuid
+  soloOwnerOverride       Boolean                     @default(false) @map("solo_owner_override")
+  soloOwnerOverrideReason String?                     @map("solo_owner_override_reason")
+  version                 Int                         @default(1)
+  createdAt               DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization          Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch                Branch                  @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  originalTransaction   Transaction             @relation("TransactionCorrectionOriginal", fields: [organizationId, originalTransactionId], references: [organizationId, id], onDelete: Restrict)
+  correctiveTransaction Transaction?            @relation("TransactionCorrectionExecuted", fields: [organizationId, correctiveTransactionId], references: [organizationId, id], onDelete: Restrict)
+  requestedByMembership OrganizationMembership  @relation("TransactionCorrectionRequestedBy", fields: [organizationId, requestedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  approvedByMembership  OrganizationMembership? @relation("TransactionCorrectionApprovedBy", fields: [organizationId, approvedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  rejectedByMembership  OrganizationMembership? @relation("TransactionCorrectionRejectedBy", fields: [organizationId, rejectedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  cancelledByMembership OrganizationMembership? @relation("TransactionCorrectionCancelledBy", fields: [organizationId, cancelledByMembershipId], references: [organizationId, id], onDelete: Restrict)
+  executedByMembership  OrganizationMembership? @relation("TransactionCorrectionExecutedBy", fields: [organizationId, executedByMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  items         TransactionCorrectionItem[]
+  payments      TransactionCorrectionPayment[]
+  statusHistory TransactionCorrectionStatusHistory[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, correctiveTransactionId])
+  @@index([organizationId, originalTransactionId, status])
+  @@index([organizationId, branchId, status])
+  @@index([organizationId, requestedByMembershipId])
+  @@map("transaction_corrections")
+}
+
+/// Which original TransactionLineItem, and how much of it, this
+/// correction requests back. For a REVERSAL, one row is generated per
+/// original line item at its full original amount; for a REFUND, the
+/// requester names the exact lines and minor-unit amounts — never
+/// trusted totals (docs task Phase 3).
+model TransactionCorrectionItem {
+  id                            String   @id @default(uuid()) @db.Uuid
+  organizationId                String   @map("organization_id") @db.Uuid
+  correctionId                  String   @map("correction_id") @db.Uuid
+  originalTransactionLineItemId String   @map("original_transaction_line_item_id") @db.Uuid
+  requestedAmountMinor          Int      @map("requested_amount_minor")
+  createdAt                     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization                Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  correction                  TransactionCorrection @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+  originalTransactionLineItem TransactionLineItem   @relation(fields: [organizationId, originalTransactionLineItemId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([correctionId, originalTransactionLineItemId])
+  @@index([organizationId, originalTransactionLineItemId])
+  @@map("transaction_correction_items")
+}
+
+/// The declared return-method breakdown for one correction, written at
+/// EXECUTED time from the immutable execution snapshot — never a later
+/// live read. `originalPaymentRecordId` is informational only (which
+/// original claim, if any, this return corresponds to); the return
+/// itself may legitimately use a different method than the original
+/// payment. `safeReferenceSnapshot` is a safe code only, matching
+/// PaymentRecord.externalReference's own convention — never a card/
+/// bank/mobile-money credential (docs task Phase 3: "mask or hash
+/// sensitive external references").
+model TransactionCorrectionPayment {
+  id                      String        @id @default(uuid()) @db.Uuid
+  organizationId          String        @map("organization_id") @db.Uuid
+  correctionId            String        @map("correction_id") @db.Uuid
+  method                  PaymentMethod
+  amountMinor             Int           @map("amount_minor")
+  safeReferenceSnapshot   String?       @map("safe_reference_snapshot")
+  originalPaymentRecordId String?       @map("original_payment_record_id") @db.Uuid
+  createdAt               DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization          Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  correction            TransactionCorrection @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+  originalPaymentRecord PaymentRecord?        @relation(fields: [organizationId, originalPaymentRecordId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([correctionId])
+  @@index([organizationId, originalPaymentRecordId])
+  @@map("transaction_correction_payments")
+}
+
+/// Append-only state-transition log for one TransactionCorrection — the
+/// same role QueueEntryStatusHistory/ServiceSessionStatusHistory/
+/// PaymentVerificationEvent already play for their own aggregates,
+/// distinct from the platform-wide AuditEvent trail.
+model TransactionCorrectionStatusHistory {
+  id                String                       @id @default(uuid()) @db.Uuid
+  organizationId    String                       @map("organization_id") @db.Uuid
+  correctionId      String                       @map("correction_id") @db.Uuid
+  previousStatus    TransactionCorrectionStatus? @map("previous_status")
+  newStatus         TransactionCorrectionStatus  @map("new_status")
+  actorUserId       String?                      @map("actor_user_id") @db.Uuid
+  actorMembershipId String?                      @map("actor_membership_id") @db.Uuid
+  reason            String?
+  occurredAt        DateTime                     @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  correction      TransactionCorrection   @relation(fields: [correctionId], references: [id], onDelete: Cascade)
+  actorMembership OrganizationMembership? @relation("TransactionCorrectionStatusHistoryActor", fields: [organizationId, actorMembershipId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([correctionId, occurredAt])
+  @@index([organizationId, occurredAt])
+  @@map("transaction_correction_status_history")
+}

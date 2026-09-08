@@ -1,0 +1,441 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { koraData } from "@/lib/api/kora-api";
+import type { ActiveWorkspace } from "@/lib/api/dashboard";
+import { getKoraSession } from "@/lib/auth/session";
+
+interface WorkdayService {
+  serviceId: string;
+  name: string;
+  durationMinutes: number;
+  priceMinor: number;
+  currency: string;
+}
+
+interface WorkdayAppointment {
+  id: string;
+  reference: string;
+  branchId: string;
+  status: string;
+  startAt: string;
+  endAt: string;
+  currency: string;
+  totalPriceMinor: number;
+  customer: {
+    id: string;
+    name: string;
+    phoneE164: string | null;
+  };
+  services: WorkdayService[];
+}
+
+interface WorkdayQueueEntry {
+  id: string;
+  ticketNumber?: number | string;
+  status: string;
+  customerName?: string | null;
+  customerRecord?: {
+    id: string;
+    name: string;
+    phoneE164?: string | null;
+  } | null;
+  services?: Array<{
+    serviceName?: string;
+    name?: string;
+  }>;
+  items?: Array<{
+    serviceNameSnapshot?: string;
+    serviceName?: string;
+  }>;
+}
+
+interface WorkdaySession {
+  id: string;
+  status?: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+interface Workday {
+  date: string;
+  provider: {
+    staffProfileId: string;
+    displayName: string;
+  };
+  summary: {
+    appointments: number;
+    queueEntries: number;
+    serviceSessions: number;
+  };
+  appointments: WorkdayAppointment[];
+  queue: WorkdayQueueEntry[];
+  serviceSessions: WorkdaySession[];
+}
+
+function localDateKey(timeZone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+
+    const values = Object.fromEntries(
+      parts.map((part) => [part.type, part.value]),
+    );
+
+    return `${values.year}-${values.month}-${values.day}`;
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function formatTime(value: string, timeZone: string) {
+  try {
+    return new Intl.DateTimeFormat("en-GH", {
+      timeZone,
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function queueCustomer(entry: WorkdayQueueEntry) {
+  return (
+    entry.customerName ||
+    entry.customerRecord?.name ||
+    "Walk-in customer"
+  );
+}
+
+function queueServices(entry: WorkdayQueueEntry) {
+  const services =
+    entry.services
+      ?.map((service) => service.serviceName || service.name)
+      .filter(Boolean) ?? [];
+
+  if (services.length) {
+    return services.join(", ");
+  }
+
+  const items =
+    entry.items
+      ?.map(
+        (item) =>
+          item.serviceNameSnapshot || item.serviceName,
+      )
+      .filter(Boolean) ?? [];
+
+  return items.join(", ") || "Service";
+}
+
+export default function ProviderMyDay({
+  workspace,
+}: {
+  workspace: ActiveWorkspace;
+}) {
+  const [workday, setWorkday] = useState<Workday | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+
+  const date = useMemo(
+    () => localDateKey(workspace.timeZone),
+    [workspace.timeZone],
+  );
+
+  const load = useCallback(
+    async (manual = false) => {
+      if (manual) {
+        setRefreshing(true);
+      }
+
+      setError("");
+
+      try {
+        const data = await koraData<Workday>(
+          `/organizations/${workspace.organizationId}/me/workday?date=${encodeURIComponent(date)}`,
+        );
+
+        setWorkday(data);
+      } catch (reason) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Kora could not load your workday.",
+        );
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [date, workspace.organizationId],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const session = getKoraSession();
+
+  const greetingName =
+    session?.user?.displayName?.trim() ||
+    workday?.provider.displayName?.trim() ||
+    "team member";
+
+  const liveQueue =
+    workday?.queue.filter((entry) =>
+      ["WAITING", "CALLED", "IN_SERVICE"].includes(
+        entry.status,
+      ),
+    ) ?? [];
+
+  const activeSessions =
+    workday?.serviceSessions.filter(
+      (session) =>
+        !session.completedAt &&
+        session.status !== "COMPLETED" &&
+        session.status !== "CANCELLED",
+    ) ?? [];
+
+  return (
+    <>
+      <section className="provider-day-hero">
+        <div>
+          <span className="workspace-kicker">MY DAY</span>
+          <h1>
+            Good to see you,
+            <br />
+            <em>
+              {greetingName}.
+            </em>
+          </h1>
+          <p>
+            Your appointments, queue and active work for today at{" "}
+            <strong>{workspace.branchName}</strong>.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          className="workspace-refresh-button"
+          onClick={() => void load(true)}
+          disabled={refreshing}
+        >
+          {refreshing ? "Refreshing..." : "Refresh my day"}
+        </button>
+      </section>
+
+      {loading && (
+        <div className="workspace-system-state">
+          <div className="workspace-spinner" />
+          <strong>Preparing your day</strong>
+          <span>
+            Loading only the work assigned to you…
+          </span>
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="workspace-system-state error">
+          <strong>We couldn&apos;t load your day.</strong>
+          <span>{error}</span>
+          <div className="workspace-state-actions">
+            <button
+              type="button"
+              onClick={() => void load(true)}
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && workday && (
+        <>
+          <section className="provider-day-stats">
+            <article>
+              <span>Appointments</span>
+              <strong>{workday.summary.appointments}</strong>
+              <small>Assigned to you today</small>
+            </article>
+
+            <article>
+              <span>My queue</span>
+              <strong>{liveQueue.length}</strong>
+              <small>Waiting or in service</small>
+            </article>
+
+            <article>
+              <span>Active work</span>
+              <strong>{activeSessions.length}</strong>
+              <small>Services currently in progress</small>
+            </article>
+          </section>
+
+          <section className="workspace-grid provider-day-grid">
+            <article className="workspace-panel appointments-panel">
+              <div className="workspace-panel-head">
+                <div>
+                  <span>TODAY</span>
+                  <h2>My appointments</h2>
+                </div>
+                <Link href="/app/appointments">
+                  View appointments →
+                </Link>
+              </div>
+
+              {workday.appointments.length === 0 ? (
+                <div className="workspace-empty-state">
+                  <div>▧</div>
+                  <strong>No appointments assigned yet</strong>
+                  <p>
+                    Appointments assigned to you will appear here.
+                  </p>
+                </div>
+              ) : (
+                <div className="dashboard-appointment-list">
+                  {workday.appointments.map((appointment) => (
+                    <Link
+                      key={appointment.id}
+                      href={`/app/appointments?id=${appointment.id}`}
+                      className="dashboard-appointment-row"
+                    >
+                      <div className="dashboard-appointment-time">
+                        {formatTime(
+                          appointment.startAt,
+                          workspace.timeZone,
+                        )}
+                      </div>
+
+                      <div className="dashboard-appointment-main">
+                        <strong>
+                          {appointment.services
+                            .map((service) => service.name)
+                            .join(", ")}
+                        </strong>
+                        <span>
+                          {appointment.customer.name} ·{" "}
+                          {appointment.reference}
+                        </span>
+                      </div>
+
+                      <em className="provider-status-pill">
+                        {appointment.status
+                          .replaceAll("_", " ")
+                          .toLowerCase()}
+                      </em>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="workspace-panel">
+              <div className="workspace-panel-head">
+                <div>
+                  <span>LIVE</span>
+                  <h2>My queue</h2>
+                </div>
+                <Link href="/app/queue">
+                  Open queue →
+                </Link>
+              </div>
+
+              {liveQueue.length === 0 ? (
+                <div className="workspace-empty-small">
+                  Nobody is currently assigned to your queue.
+                </div>
+              ) : (
+                <div className="dashboard-live-queue">
+                  {liveQueue.slice(0, 6).map((entry) => (
+                    <Link
+                      key={entry.id}
+                      href={`/app/queue?id=${entry.id}`}
+                    >
+                      <b>
+                        {entry.ticketNumber
+                          ? `#${entry.ticketNumber}`
+                          : "QUEUE"}
+                      </b>
+
+                      <div>
+                        <strong>{queueCustomer(entry)}</strong>
+                        <span>{queueServices(entry)}</span>
+                      </div>
+
+                      <em>
+                        {entry.status
+                          .replaceAll("_", " ")
+                          .toLowerCase()}
+                      </em>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="workspace-panel">
+              <div className="workspace-panel-head">
+                <div>
+                  <span>WORK</span>
+                  <h2>Active services</h2>
+                </div>
+              </div>
+
+              {activeSessions.length === 0 ? (
+                <div className="workspace-empty-small">
+                  You have no service currently in progress.
+                </div>
+              ) : (
+                <div className="provider-active-work">
+                  {activeSessions.map((session) => (
+                    <div key={session.id}>
+                      <strong>Service in progress</strong>
+                      <span>
+                        {session.startedAt
+                          ? `Started ${formatTime(
+                              session.startedAt,
+                              workspace.timeZone,
+                            )}`
+                          : "Active"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="workspace-panel provider-privacy-card">
+              <div className="workspace-panel-head">
+                <div>
+                  <span>KORA WORKSPACE</span>
+                  <h2>Your workspace</h2>
+                </div>
+              </div>
+
+              <p>
+                You&apos;re signed in as{" "}
+                <strong>
+                  {workspace.roleNames.join(", ") ||
+                    "Service Provider"}
+                </strong>
+                . Kora shows only the business areas and work
+                available to your role.
+              </p>
+            </article>
+          </section>
+        </>
+      )}
+    </>
+  );
+}

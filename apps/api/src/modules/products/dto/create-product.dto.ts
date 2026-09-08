@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  IsUrl,
   Matches,
   MaxLength,
   Min,
@@ -36,6 +37,18 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   trackInventory?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isVisibleOnMarketplace?: boolean;
+
+  @IsOptional()
+  @IsUrl({
+    require_protocol: true,
+    protocols: ['http', 'https'],
+  })
+  @MaxLength(2000)
+  imageUrl?: string;
 
   @IsOptional()
   @IsInt()

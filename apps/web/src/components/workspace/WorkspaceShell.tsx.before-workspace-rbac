@@ -1,0 +1,207 @@
+"use client";
+
+import Image from "next/image";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { getKoraSession } from "@/lib/auth/session";
+import { resolveActiveWorkspace } from "@/lib/api/dashboard";
+
+const navItems = [
+  ["Overview", "▣", "/app"],
+  ["Appointments", "▧", "/app/appointments"],
+  ["Queue", "◌", "/app/queue"],
+  ["Customers", "◉", "/app/customers"],
+  ["Staff", "♙", "/app/staff"],
+  ["Services", "▤", "/app/services"],
+  ["Products & Inventory", "▦", "/app/products"],
+  ["QR & Storefront", "⌗", "/app/qr"],
+  ["Payments", "▥", "/app/payments"],
+  ["Reports", "◫", "/app/reports"],
+  ["Settings", "⚙", "/app/settings"],
+];
+
+interface WorkspaceIdentity {
+  businessName: string;
+  branchName: string;
+  email: string | null;
+}
+
+export default function WorkspaceShell({
+  title,
+  children,
+  actions,
+}: {
+  title: string;
+  children: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  const pathname = usePathname();
+
+  const [identity, setIdentity] = useState<WorkspaceIdentity>({
+    businessName: "Your Kora Business",
+    branchName: "Primary location",
+    email: null,
+  });
+
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const session = getKoraSession();
+
+      void resolveActiveWorkspace()
+        .then((workspace) => {
+          setIdentity({
+            businessName: workspace.organizationName,
+            branchName: workspace.branchName,
+            email: session?.user?.email ?? null,
+          });
+        })
+        .catch(() => {
+          setIdentity((current) => ({
+            ...current,
+            email: session?.user?.email ?? null,
+          }));
+        });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return (
+    <main className="workspace-page">
+      <aside className="workspace-sidebar">
+        <div className="workspace-brand">
+          <Image
+            src="/brand/kora-app-icon.png"
+            alt="Kora OS"
+            width={38}
+            height={38}
+            priority
+          />
+          <span>Kora OS</span>
+        </div>
+
+        <div className="workspace-business">
+          <small>WORKSPACE</small>
+          <strong>{identity.businessName}</strong>
+          <span>{identity.branchName}</span>
+        </div>
+
+        <nav className="workspace-nav">
+          {navItems.map(([label, icon, href]) => {
+            const active =
+              href === "/app"
+                ? pathname === "/app"
+                : pathname.startsWith(href);
+
+            return (
+              <Link
+                key={label}
+                href={href}
+                className={active ? "active" : ""}
+              >
+                <span>{icon}</span>
+                {label}
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="workspace-sidebar-footer">
+          <div className="workspace-user">
+            <div className="workspace-avatar">
+              {identity.email?.slice(0, 1).toUpperCase() || "K"}
+            </div>
+
+            <div>
+              <strong>Business owner</strong>
+              <span>{identity.email || "Kora account"}</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <section className="workspace-main">
+        <header className="workspace-topbar">
+          <button
+            type="button"
+            className="workspace-mobile-nav-toggle"
+            aria-expanded={mobileNavOpen}
+            aria-controls="workspace-mobile-nav"
+            aria-label={
+              mobileNavOpen
+                ? "Close workspace menu"
+                : "Open workspace menu"
+            }
+            onClick={() => setMobileNavOpen((current) => !current)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+
+          <div className="workspace-topbar-title">
+            <span>Kora workspace</span>
+            <strong>{title}</strong>
+          </div>
+
+          {actions && (
+            <div className="workspace-actions">
+              {actions}
+            </div>
+          )}
+        </header>
+
+        <div className="workspace-content">
+          {children}
+        </div>
+      </section>
+
+      {mobileNavOpen ? (
+        <div
+          className="workspace-mobile-nav-backdrop"
+          onClick={() => setMobileNavOpen(false)}
+        >
+          <nav
+            id="workspace-mobile-nav"
+            className="workspace-mobile-nav"
+            aria-label="Workspace navigation"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="workspace-mobile-nav-head">
+              <span>{identity.businessName}</span>
+              <button
+                type="button"
+                aria-label="Close workspace menu"
+                onClick={() => setMobileNavOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            {navItems.map(([label, icon, href]) => {
+              const active =
+                href === "/app"
+                  ? pathname === "/app"
+                  : pathname.startsWith(href);
+
+              return (
+                <Link
+                  key={label}
+                  href={href}
+                  className={active ? "active" : ""}
+                  onClick={() => setMobileNavOpen(false)}
+                >
+                  <span>{icon}</span>
+                  {label}
+                </Link>
+              );
+            })}
+          </nav>
+        </div>
+      ) : null}
+    </main>
+  );
+}

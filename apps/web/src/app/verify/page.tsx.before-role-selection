@@ -1,0 +1,213 @@
+"use client";
+
+import { FormEvent, Suspense, useState } from "react";
+import Image from "next/image";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  saveKoraSession,
+  type KoraSession,
+} from "@/lib/auth/session";
+import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
+
+function VerifyContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const email = searchParams.get("email")?.trim().toLowerCase() ?? "";
+  const challengeId = searchParams.get("challengeId") ?? "";
+  const mode = searchParams.get("mode") === "signup" ? "signup" : "signin";
+
+  const [code, setCode] = useState("");
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [message, setMessage] = useState("");
+
+  async function handleVerify(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!challengeId) {
+      setStatus("error");
+      setMessage("This verification session is no longer valid. Request a new code.");
+      return;
+    }
+
+    if (code.length < 4 || code.length > 10) {
+      setStatus("error");
+      setMessage("Enter the verification code from your email.");
+      return;
+    }
+
+    const apiBase = process.env.NEXT_PUBLIC_KORA_API_URL;
+
+    if (!apiBase) {
+      setStatus("error");
+      setMessage("Kora web authentication is not connected to the API.");
+      return;
+    }
+
+    setStatus("loading");
+    setMessage("");
+
+    let response: Response;
+
+    try {
+      response = await fetch(`${apiBase}/v1/auth/email-otp/verify`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          challengeId,
+          code,
+          deviceLabel: "Kora Web",
+        }),
+      });
+    } catch {
+      setStatus("error");
+      setMessage(
+        "Kora could not reach the API. Check your connection and try again.",
+      );
+      return;
+    }
+
+    const payload = await readResponseBody(response);
+
+    if (!response.ok) {
+      setStatus("error");
+      setMessage(errorMessage(response.status, payload));
+      return;
+    }
+
+    const session = (payload as { data?: KoraSession } | null)?.data;
+
+    if (!session?.accessToken) {
+      setStatus("error");
+      setMessage("Kora sent an unexpected response. Please try again.");
+      return;
+    }
+
+    saveKoraSession(session);
+
+    router.replace(mode === "signup" ? "/onboarding" : "/app");
+  }
+
+  if (!email || !challengeId) {
+    return (
+      <main className="auth-page">
+        <section className="auth-card">
+          <Link href="/" className="auth-logo">
+            <Image
+              src="/brand/kora-app-icon.png"
+              alt="Kora OS"
+              width={44}
+              height={44}
+              priority
+            />
+            <strong>Kora OS</strong>
+          </Link>
+
+          <div className="auth-heading">
+            <span>VERIFY YOUR EMAIL</span>
+            <h1>Request a new code.</h1>
+            <p>
+              This verification session is missing the information Kora needs
+              to continue securely.
+            </p>
+          </div>
+
+          <Link
+            href={mode === "signup" ? "/get-started" : "/login"}
+            className="auth-primary-link"
+          >
+            Request a new code
+          </Link>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="auth-page">
+      <section className="auth-card verify-card">
+        <Link href="/" className="auth-logo">
+          <Image
+            src="/brand/kora-app-icon.png"
+            alt="Kora OS"
+            width={44}
+            height={44}
+            priority
+          />
+          <strong>Kora OS</strong>
+        </Link>
+
+        <div className="auth-heading">
+          <span>VERIFY YOUR EMAIL</span>
+          <h1>Enter your verification code.</h1>
+          <p>
+            We sent a code to <strong>{email}</strong>.
+          </p>
+        </div>
+
+        <form className="auth-form" onSubmit={handleVerify}>
+          <label htmlFor="code">Verification code</label>
+
+          <input
+            id="code"
+            className="otp-input"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={10}
+            placeholder="000000"
+            value={code}
+            onChange={(event) =>
+              setCode(event.target.value.replace(/\D/g, "").slice(0, 10))
+            }
+            disabled={status === "loading"}
+            required
+          />
+
+          {status === "error" && (
+            <div className="auth-error">{message}</div>
+          )}
+
+          <button
+            type="submit"
+            className="auth-primary-button"
+            disabled={status === "loading"}
+          >
+            {status === "loading"
+              ? "Verifying..."
+              : "Verify and continue"}
+          </button>
+        </form>
+
+        <Link
+          href={mode === "signup" ? "/get-started" : "/login"}
+          className="auth-back-link"
+        >
+          Use a different email
+        </Link>
+      </section>
+    </main>
+  );
+}
+
+export default function VerifyPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="auth-page">
+          <section className="auth-card">
+            <div className="auth-heading">
+              <span>KORA OS</span>
+              <h1>Loading verification...</h1>
+            </div>
+          </section>
+        </main>
+      }
+    >
+      <VerifyContent />
+    </Suspense>
+  );
+}

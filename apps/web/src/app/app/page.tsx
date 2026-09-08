@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import WorkspaceShell from "@/components/workspace/WorkspaceShell";
+import ProviderMyDay from "@/components/workspace/ProviderMyDay";
 import {
   amountMinor,
   loadDashboardData,
@@ -18,12 +19,12 @@ import {
 
 interface DashboardState {
   workspace: ActiveWorkspace;
-  appointments: Appointment[];
-  queue: QueueView;
-  staff: StaffMember[];
-  overview: OverviewReport;
-  revenue: RevenueReport;
-  setup: SetupStatus;
+  appointments?: Appointment[];
+  queue?: QueueView;
+  staff?: StaffMember[];
+  overview?: OverviewReport;
+  revenue?: RevenueReport;
+  setup?: SetupStatus;
 }
 
 function formatMoney(minor: number, currency: string) {
@@ -164,6 +165,17 @@ export default function KoraWorkspacePage() {
 
     try {
       const workspace = await resolveActiveWorkspace();
+
+      const canLoadBusinessOverview =
+        workspace.permissionCodes.includes("reports.read") ||
+        workspace.permissionCodes.includes("reports.basic") ||
+        workspace.permissionCodes.includes("reports.advanced");
+
+      if (!canLoadBusinessOverview) {
+        setDashboard({ workspace });
+        return;
+      }
+
       const data = await loadDashboardData(workspace);
 
       setDashboard({
@@ -192,11 +204,11 @@ export default function KoraWorkspacePage() {
     };
   }, [load]);
 
-  const progress = dashboard
+  const progress = dashboard?.setup
     ? setupProgress(dashboard.setup)
     : 0;
 
-  const nextSetup = dashboard
+  const nextSetup = dashboard?.setup
     ? setupNext(dashboard.setup)
     : {
         label: "Complete your business setup",
@@ -204,17 +216,17 @@ export default function KoraWorkspacePage() {
       };
 
   const activeStaff =
-    dashboard?.staff.filter(
+    dashboard?.staff?.filter(
       (member) => member.status === "ACTIVE",
     ).length ?? 0;
 
   const confirmedAppointments =
-    dashboard?.appointments.filter(
+    dashboard?.appointments?.filter(
       (appointment) =>
         appointment.status === "CONFIRMED",
     ) ?? [];
 
-  const queueCounts = dashboard?.queue.counts;
+  const queueCounts = dashboard?.queue?.counts;
 
   const waiting =
     queueCounts?.waiting ?? 0;
@@ -231,9 +243,9 @@ export default function KoraWorkspacePage() {
     dashboard?.workspace.currency ?? "GHS";
 
   const todayRevenue = amountMinor(
-    dashboard?.overview.netPostedRevenue?.length
-      ? dashboard.overview.netPostedRevenue
-      : dashboard?.overview.postedRevenue,
+    dashboard?.overview?.netPostedRevenue?.length
+      ? dashboard.overview!.netPostedRevenue
+      : dashboard?.overview?.postedRevenue,
     currency,
   );
 
@@ -242,7 +254,7 @@ export default function KoraWorkspacePage() {
     [dashboard?.revenue],
   );
 
-  const weekRevenue = dashboard?.revenue.buckets
+  const weekRevenue = dashboard?.revenue?.buckets
     .filter((bucket) => bucket.currency === currency)
     .reduce((sum, bucket) => sum + bucket.totalMinor, 0) ?? 0;
 
@@ -255,6 +267,25 @@ export default function KoraWorkspacePage() {
           new Date(b.startAt).getTime(),
       )
       .slice(0, 4);
+
+  const canLoadBusinessOverview =
+    dashboard?.workspace.permissionCodes.includes("reports.read") ||
+    dashboard?.workspace.permissionCodes.includes("reports.basic") ||
+    dashboard?.workspace.permissionCodes.includes("reports.advanced") ||
+    false;
+
+  if (
+    !loading &&
+    !error &&
+    dashboard &&
+    !canLoadBusinessOverview
+  ) {
+    return (
+      <WorkspaceShell title="My Day">
+        <ProviderMyDay workspace={dashboard.workspace} />
+      </WorkspaceShell>
+    );
+  }
 
   return (
     <WorkspaceShell
@@ -399,9 +430,9 @@ export default function KoraWorkspacePage() {
                     {formatMoney(todayRevenue, currency)}
                   </strong>
                   <small>
-                    {dashboard.overview.transactionCount} posted
+                    {dashboard.overview!.transactionCount} posted
                     transaction
-                    {dashboard.overview.transactionCount === 1
+                    {dashboard.overview!.transactionCount === 1
                       ? ""
                       : "s"}
                   </small>
@@ -520,13 +551,13 @@ export default function KoraWorkspacePage() {
                     </div>
                   </div>
 
-                  {dashboard.queue.entries.length === 0 ? (
+                  {dashboard.queue!.entries.length === 0 ? (
                     <div className="workspace-empty-small">
                       No queue activity yet today.
                     </div>
                   ) : (
                     <div className="dashboard-live-queue">
-                      {dashboard.queue.entries
+                      {dashboard.queue!.entries
                         .filter((entry) =>
                           [
                             "WAITING",

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { isUniqueConstraintViolation } from '../../common/database/postgres-constraint-error.util.js';
 import { PrismaService } from '../../database/prisma.service.js';
@@ -6,6 +6,7 @@ import {
   BranchStatus,
   MembershipStatus,
   OrganizationStatus,
+  QrCodeType,
   SubscriptionStatus,
 } from '../../generated/prisma/client.js';
 import type {
@@ -166,6 +167,16 @@ export class OnboardingService {
             timeZone: input.primaryBranch.timeZone ?? input.timeZone,
             currency: input.primaryBranch.currency ?? input.defaultCurrency,
             status: BranchStatus.ACTIVE,
+          },
+        });
+
+        await tx.businessQrCode.create({
+          data: {
+            organizationId: organization.id,
+            code: createBusinessQrCode(),
+            type: QrCodeType.BUSINESS,
+            label: organization.name,
+            isActive: true,
           },
         });
 
@@ -335,4 +346,8 @@ function computeOnboardingFingerprint(input: OnboardOrganizationInput): string {
     trialPlanCode: input.trialPlanCode ?? null,
   });
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+function createBusinessQrCode(): string {
+  return `kora_${randomUUID().replaceAll("-", "")}`;
 }

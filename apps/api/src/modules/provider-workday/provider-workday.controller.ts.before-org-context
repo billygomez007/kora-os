@@ -1,0 +1,27 @@
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { CurrentTenant } from '../../common/authorization/decorators/current-tenant.decorator.js';
+import { RequirePermissions } from '../../common/authorization/decorators/require-permissions.decorator.js';
+import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
+import { TenantAccessGuard } from '../../common/authorization/tenant-access.guard.js';
+import { ProviderWorkdayService } from './provider-workday.service.js';
+
+@Controller('me/workday')
+@UseGuards(TenantAccessGuard)
+export class ProviderWorkdayController {
+  constructor(
+    private readonly workdayService: ProviderWorkdayService,
+  ) {}
+
+  @Get()
+  @RequirePermissions('appointments.read')
+  getWorkday(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('date') date?: string,
+  ) {
+    return this.workdayService.getWorkday({
+      organizationId: tenant.organizationId,
+      membershipId: tenant.membershipId,
+      date,
+    });
+  }
+}

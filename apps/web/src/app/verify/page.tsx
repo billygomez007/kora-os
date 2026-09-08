@@ -17,6 +17,9 @@ function VerifyContent() {
   const email = searchParams.get("email")?.trim().toLowerCase() ?? "";
   const challengeId = searchParams.get("challengeId") ?? "";
   const mode = searchParams.get("mode") === "signup" ? "signup" : "signin";
+  const journey =
+    searchParams.get("journey") === "customer" ? "customer" : "business";
+  const invitationToken = searchParams.get("invitation")?.trim() ?? "";
 
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
@@ -89,7 +92,19 @@ function VerifyContent() {
 
     saveKoraSession(session);
 
-    router.replace(mode === "signup" ? "/onboarding" : "/app");
+    if (invitationToken) {
+      router.replace(`/invite/${encodeURIComponent(invitationToken)}`);
+      return;
+    }
+
+    if (mode === "signup") {
+      router.replace(
+        journey === "customer" ? "/customer-onboarding" : "/onboarding",
+      );
+      return;
+    }
+
+    router.replace("/app");
   }
 
   if (!email || !challengeId) {

@@ -377,12 +377,71 @@ export default function SettingsPage() {
       setError("");
       setNotice("");
 
-      await koraData(
+      if (!published && branch) {
+        const discoveryPayload = {
+          ...(branch.latitude != null ? { latitude: branch.latitude } : {}),
+          ...(branch.longitude != null ? { longitude: branch.longitude } : {}),
+          ...(branch.publicPhone?.trim()
+            ? { publicPhone: branch.publicPhone.trim() }
+            : {}),
+          ...(branch.publicEmail?.trim()
+            ? { publicEmail: branch.publicEmail.trim() }
+            : {}),
+          ...(branch.openingHoursNote?.trim()
+            ? { openingHoursNote: branch.openingHoursNote.trim() }
+            : {}),
+          isDiscoverable: Boolean(branch.isDiscoverable),
+        };
+
+        const savedBranch = await koraData<BranchDetail>(
+          `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/discovery`,
+          {
+            method: "PUT",
+            body: JSON.stringify(discoveryPayload),
+          },
+        );
+
+        setBranch((current) =>
+          current ? { ...current, ...savedBranch } : current,
+        );
+      }
+
+      if (!published) {
+        const publicProfile = await koraData<BusinessProfile>(
+          `/organizations/${workspace.organizationId}/business-profile`,
+          {
+            method: "PUT",
+            body: JSON.stringify({
+              ...(profile.slug?.trim() ? { slug: profile.slug.trim() } : {}),
+              displayName: profile.displayName.trim(),
+              ...(profile.description?.trim()
+                ? { description: profile.description.trim() }
+                : {}),
+              ...(profile.logoImageUrl?.trim()
+                ? { logoImageUrl: profile.logoImageUrl.trim() }
+                : {}),
+              ...(profile.coverImageUrl?.trim()
+                ? { coverImageUrl: profile.coverImageUrl.trim() }
+                : {}),
+              visibility: "PUBLIC",
+              ...(profile.searchKeywords?.trim()
+                ? { searchKeywords: profile.searchKeywords.trim() }
+                : {}),
+            }),
+          },
+        );
+
+        setProfile(publicProfile);
+      }
+
+      const publicationResult = await koraData<BusinessProfile>(
         `/organizations/${workspace.organizationId}/business-profile/${
           published ? "unpublish" : "publish"
         }`,
         { method: "POST" },
       );
+
+      setProfile(publicationResult);
 
       await load();
       setNotice(

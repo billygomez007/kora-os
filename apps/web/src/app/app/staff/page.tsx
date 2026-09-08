@@ -39,6 +39,33 @@ interface StaffInvitation {
   createdAt: string;
 }
 
+interface StaffAvailabilityRule {
+  id?: string;
+  dayOfWeek: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  effectiveFrom?: string | null;
+  effectiveUntil?: string | null;
+  isActive?: boolean;
+}
+
+interface BusinessHour {
+  id?: string;
+  dayOfWeek: number;
+  startLocalTime: string;
+  endLocalTime: string;
+}
+
+const WORKING_DAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
 interface CreateInvitationResult {
   invitation: {
     id: string;
@@ -132,6 +159,12 @@ export default function StaffPage() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [availabilityRules, setAvailabilityRules] =
+    useState<StaffAvailabilityRule[]>([]);
+  const [availabilityLoading, setAvailabilityLoading] =
+    useState(false);
+  const [availabilityMode, setAvailabilityMode] =
+    useState<"business" | "custom">("business");
 
   const [showInvite, setShowInvite] = useState(false);
   const [selectedMember, setSelectedMember] =
@@ -282,6 +315,179 @@ export default function StaffPage() {
         ),
     [invitations],
   );
+
+  async function loadStaffAvailability(member: StaffMember) {
+    if (!member.staffProfileId) {
+      setAvailabilityRules([]);
+      return;
+    }
+
+    setAvailabilityLoading(true);
+    setError("");
+
+    try {
+      const workspace = await resolveActiveWorkspace();
+
+      const rules = await koraData<StaffAvailabilityRule[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/staff/${member.staffProfileId}/availability-rules`,
+      );
+
+      setAvailabilityRules(rules ?? []);
+      setAvailabilityMode((rules ?? []).length ? "custom" : "business");
+    } catch (reason) {
+      setAvailabilityRules([]);
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to load this team member's working hours.",
+      );
+    } finally {
+      setAvailabilityLoading(false);
+    }
+  }
+
+  function availabilityByDay() {
+    const map = new Map<number, StaffAvailabilityRule>();
+    for (const rule of availabilityRules) {
+      if (rule.isActive !== false && !map.has(rule.dayOfWeek)) {
+        map.set(rule.dayOfWeek, rule);
+      }
+    }
+    return map;
+  }
+
+  function toggleAvailabilityDay(dayOfWeek: number) {
+    const existing = availabilityRules.some(
+      (rule) => rule.dayOfWeek === dayOfWeek && rule.isActive !== false,
+    );
+
+    if (existing) {
+      setAvailabilityRules((current) =>
+        current.filter((rule) => rule.dayOfWeek !== dayOfWeek),
+      );
+      return;
+    }
+
+    setAvailabilityRules((current) => [
+      ...current,
+      {
+        dayOfWeek,
+        startLocalTime: "09:00",
+        endLocalTime: "17:00",
+        isActive: true,
+      },
+    ]);
+  }
+
+  function updateAvailabilityHour(
+    dayOfWeek: number,
+    field: "startLocalTime" | "endLocalTime",
+    value: string,
+  ) {
+    setAvailabilityRules((current) =>
+      current.map((rule) =>
+        rule.dayOfWeek === dayOfWeek
+          ? { ...rule, [field]: value }
+          : rule,
+      ),
+    );
+  }
+
+  async function applyBusinessHoursToStaff() {
+    if (!selectedMember?.staffProfileId) return;
+
+    setWorking(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const workspace = await resolveActiveWorkspace();
+
+      const businessHours = await koraData<BusinessHour[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/business-hours`,
+      );
+
+      if (!businessHours?.length) {
+        setError(
+          "Set this branch's business hours in Settings before using them for staff availability.",
+        );
+        return;
+      }
+
+      const rules = businessHours.map((hour) => ({
+        dayOfWeek: hour.dayOfWeek,
+        startLocalTime: hour.startLocalTime,
+        endLocalTime: hour.endLocalTime,
+        isActive: true,
+      }));
+
+      const saved = await koraData<StaffAvailabilityRule[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/staff/${selectedMember.staffProfileId}/availability-rules`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ rules }),
+        },
+      );
+
+      setAvailabilityRules(saved ?? rules);
+      setAvailabilityMode("business");
+      setNotice(
+        `${displayName(selectedMember)} now follows ${workspace.branchName}'s business hours.`,
+      );
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to apply business hours to this team member.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function saveCustomAvailability() {
+    if (!selectedMember?.staffProfileId) return;
+
+    if (!availabilityRules.length) {
+      setError("Choose at least one working day.");
+      return;
+    }
+
+    setWorking(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const workspace = await resolveActiveWorkspace();
+
+      const rules = availabilityRules.map((rule) => ({
+        dayOfWeek: rule.dayOfWeek,
+        startLocalTime: rule.startLocalTime,
+        endLocalTime: rule.endLocalTime,
+        isActive: true,
+      }));
+
+      const saved = await koraData<StaffAvailabilityRule[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/staff/${selectedMember.staffProfileId}/availability-rules`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ rules }),
+        },
+      );
+
+      setAvailabilityRules(saved ?? rules);
+      setAvailabilityMode("custom");
+      setNotice(`${displayName(selectedMember)}'s working hours were saved.`);
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to save this team member's working hours.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
 
   async function inviteStaff(event: FormEvent) {
     event.preventDefault();
@@ -565,9 +771,12 @@ export default function StaffPage() {
                 <button
                   type="button"
                   className="staff-manage-button"
-                  onClick={() =>
-                    setSelectedMember(member)
-                  }
+                  onClick={() => {
+                    setSelectedMember(member);
+                    setAvailabilityMode("business");
+                    setAvailabilityRules([]);
+                    void loadStaffAvailability(member);
+                  }}
                 >
                   Manage
                 </button>
@@ -849,9 +1058,10 @@ export default function StaffPage() {
               <button
                 type="button"
                 aria-label="Close staff details"
-                onClick={() =>
-                  setSelectedMember(null)
-                }
+                onClick={() => {
+                  setSelectedMember(null);
+                  setAvailabilityRules([]);
+                }}
               >
                 ×
               </button>
@@ -954,6 +1164,112 @@ export default function StaffPage() {
                   >
                     Manage service assignments →
                   </Link>
+                )}
+              </section>
+
+              <section className="staff-working-hours">
+                <small>WORKING HOURS</small>
+
+                {!selectedMember.staffProfileId ? (
+                  <p>
+                    Working hours become available after this team member has
+                    an active staff profile.
+                  </p>
+                ) : (
+                  <>
+                    <div className="staff-hours-mode">
+                      <button
+                        type="button"
+                        className={availabilityMode === "business" ? "active" : ""}
+                        disabled={working || availabilityLoading}
+                        onClick={() => void applyBusinessHoursToStaff()}
+                      >
+                        Use business hours
+                      </button>
+
+                      <button
+                        type="button"
+                        className={availabilityMode === "custom" ? "active" : ""}
+                        disabled={working || availabilityLoading}
+                        onClick={() => setAvailabilityMode("custom")}
+                      >
+                        Custom hours
+                      </button>
+                    </div>
+
+                    {availabilityLoading ? (
+                      <p>Loading working hours…</p>
+                    ) : availabilityMode === "custom" ? (
+                      <>
+                        <div className="staff-hours-list">
+                          {WORKING_DAYS.map((day, dayOfWeek) => {
+                            const item = availabilityByDay().get(dayOfWeek);
+
+                            return (
+                              <div className="staff-hours-row" key={day}>
+                                <div className="staff-hours-day">
+                                  <button
+                                    type="button"
+                                    className={`settingsSwitch ${item ? "on" : ""}`}
+                                    onClick={() => toggleAvailabilityDay(dayOfWeek)}
+                                    aria-label={`${item ? "Disable" : "Enable"} ${day}`}
+                                  >
+                                    <i />
+                                  </button>
+                                  <strong>{day}</strong>
+                                </div>
+
+                                {item ? (
+                                  <div className="staff-hours-times">
+                                    <input
+                                      type="time"
+                                      value={item.startLocalTime}
+                                      onChange={(event) =>
+                                        updateAvailabilityHour(
+                                          dayOfWeek,
+                                          "startLocalTime",
+                                          event.target.value,
+                                        )
+                                      }
+                                    />
+                                    <span>to</span>
+                                    <input
+                                      type="time"
+                                      value={item.endLocalTime}
+                                      onChange={(event) =>
+                                        updateAvailabilityHour(
+                                          dayOfWeek,
+                                          "endLocalTime",
+                                          event.target.value,
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                ) : (
+                                  <span className="hoursClosed">Unavailable</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <button
+                          type="button"
+                          className="workspace-primary-button staff-hours-save"
+                          disabled={working}
+                          onClick={() => void saveCustomAvailability()}
+                        >
+                          {working ? "Saving…" : "Save working hours"}
+                        </button>
+                      </>
+                    ) : (
+                      <p className="staff-hours-note">
+                        This team member follows the current branch business
+                        hours. Choose the button above again whenever branch
+                        hours change to refresh their schedule.
+                      </p>
+                    )}
+                  </>
                 )}
               </section>
             </div>

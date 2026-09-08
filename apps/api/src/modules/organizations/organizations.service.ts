@@ -11,17 +11,55 @@ export class OrganizationsService {
   async listForUser(userId: string) {
     const memberships = await this.prisma.organizationMembership.findMany({
       where: { userId, status: MembershipStatus.ACTIVE },
-      include: { organization: true },
+      include: {
+        organization: true,
+        membershipRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: {
+                  include: {
+                    permission: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       orderBy: { createdAt: 'asc' },
     });
 
-    return memberships.map((membership) => ({
-      id: membership.organization.id,
-      name: membership.organization.name,
-      slug: membership.organization.slug,
-      status: membership.organization.status,
-      membershipId: membership.id,
-    }));
+    return memberships.map((membership) => {
+      const roleCodes = membership.membershipRoles.map(
+        (membershipRole) => membershipRole.role.code,
+      );
+
+      const roleNames = membership.membershipRoles.map(
+        (membershipRole) => membershipRole.role.name,
+      );
+
+      const permissionCodes = [
+        ...new Set(
+          membership.membershipRoles.flatMap((membershipRole) =>
+            membershipRole.role.rolePermissions.map(
+              (rolePermission) => rolePermission.permission.code,
+            ),
+          ),
+        ),
+      ].sort();
+
+      return {
+        id: membership.organization.id,
+        name: membership.organization.name,
+        slug: membership.organization.slug,
+        status: membership.organization.status,
+        membershipId: membership.id,
+        roleCodes,
+        roleNames,
+        permissionCodes,
+      };
+    });
   }
 
   /**

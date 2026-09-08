@@ -34,6 +34,62 @@ datasource db {
   provider = "postgresql"
 }
 
+enum MarketplaceOrderStatus {
+  PENDING
+  ACCEPTED
+  READY_FOR_PICKUP
+  COMPLETED
+  CANCELLED
+}
+
+enum MarketplaceFulfillmentMethod {
+  PICKUP
+  DELIVERY
+}
+
+enum QrCodeType {
+  BUSINESS
+  BRANCH
+  TABLE
+  COUNTER
+  ROOM
+  CUSTOM
+}
+
+enum IntegrationCategory {
+  DELIVERY
+  PAYMENT
+  COMMUNICATION
+  ACCOUNTING
+  OTHER
+}
+
+enum IntegrationConnectionStatus {
+  PENDING
+  ACTIVE
+  PAUSED
+  ERROR
+  DISCONNECTED
+}
+
+enum DeliveryStatus {
+  DRAFT
+  QUOTING
+  QUOTED
+  REQUESTED
+  ASSIGNED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum DeliveryEventSource {
+  KORA
+  PROVIDER
+}
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
@@ -400,6 +456,7 @@ model Organization {
   categoryAssignments OrganizationCategoryAssignment[]
   customerRecords     CustomerRecord[]
   customerFavorites   CustomerFavorite[]
+  marketplaceOrders   MarketplaceOrder[]
 
   suppliers          Supplier[]
   productCategories  ProductCategory[]
@@ -462,6 +519,9 @@ model Organization {
   transactionCorrectionStatusHistory TransactionCorrectionStatusHistory[]
 
   organizationIdempotencyKeys OrganizationIdempotencyKey[]
+  businessQrCodes             BusinessQrCode[]
+  integrationConnections      IntegrationConnection[]
+  deliveryRequests            DeliveryRequest[]
 
   @@map("organizations")
 }
@@ -511,6 +571,9 @@ model Branch {
   staffAvailabilityRules      StaffAvailabilityRule[]
   staffAvailabilityExceptions StaffAvailabilityException[]
   appointments                Appointment[]
+  marketplaceOrders           MarketplaceOrder[]
+  businessQrCodes             BusinessQrCode[]
+  deliveryRequests            DeliveryRequest[]
 
   branchQueueDays BranchQueueDay[]
   queueEntries    QueueEntry[]
@@ -1020,10 +1083,11 @@ model CustomerProfile {
   longitude           Decimal?  @db.Decimal(9, 6)
   locationConsentedAt DateTime? @map("location_consented_at") @db.Timestamptz(6)
 
-  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  favorites       CustomerFavorite[]
-  customerRecords CustomerRecord[]
-  appointments    Appointment[]
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  favorites         CustomerFavorite[]
+  customerRecords   CustomerRecord[]
+  appointments      Appointment[]
+  marketplaceOrders MarketplaceOrder[]
 
   @@map("customer_profiles")
 }
@@ -1262,18 +1326,20 @@ model ProductCategory {
 }
 
 model Product {
-  id                String    @id @default(uuid()) @db.Uuid
-  organizationId    String    @map("organization_id") @db.Uuid
-  supplierId        String?   @map("supplier_id") @db.Uuid
-  productCategoryId String?   @map("product_category_id") @db.Uuid
-  name              String
-  description       String?
-  currency          String    @db.Char(3)
-  trackInventory    Boolean   @default(true) @map("track_inventory")
-  sortOrder         Int       @default(0) @map("sort_order")
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  archivedAt        DateTime? @map("archived_at") @db.Timestamptz(6)
+  id                     String    @id @default(uuid()) @db.Uuid
+  organizationId         String    @map("organization_id") @db.Uuid
+  supplierId             String?   @map("supplier_id") @db.Uuid
+  productCategoryId      String?   @map("product_category_id") @db.Uuid
+  name                   String
+  description            String?
+  currency               String    @db.Char(3)
+  trackInventory         Boolean   @default(true) @map("track_inventory")
+  isVisibleOnMarketplace Boolean   @default(false) @map("is_visible_on_marketplace")
+  imageUrl               String?   @map("image_url")
+  sortOrder              Int       @default(0) @map("sort_order")
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt             DateTime? @map("archived_at") @db.Timestamptz(6)
 
   organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   supplier             Supplier?             @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict)
@@ -3369,4 +3435,186 @@ model TransactionCorrectionStatusHistory {
   @@index([correctionId, occurredAt])
   @@index([organizationId, occurredAt])
   @@map("transaction_correction_status_history")
+}
+
+/// Customer-originated product order from the public Kora Marketplace.
+///
+/// This is deliberately separate from Checkout. A Marketplace customer is
+/// not a business employee and must never be assigned a fake StaffProfile
+/// merely to satisfy financial settlement invariants.
+///
+/// The business may later convert/fulfil this order through the existing
+/// Checkout -> Payment -> Transaction -> Receipt pipeline using a real staff
+/// operator.
+model MarketplaceOrder {
+  id                   String                       @id @default(uuid()) @db.Uuid
+  reference            String                       @unique
+  idempotencyKey       String                       @map("idempotency_key")
+  customerProfileId    String                       @map("customer_profile_id") @db.Uuid
+  organizationId       String                       @map("organization_id") @db.Uuid
+  branchId             String                       @map("branch_id") @db.Uuid
+  businessSlugSnapshot String                       @map("business_slug_snapshot")
+  businessNameSnapshot String                       @map("business_name_snapshot")
+  status               MarketplaceOrderStatus       @default(PENDING)
+  fulfillmentMethod    MarketplaceFulfillmentMethod @default(PICKUP) @map("fulfillment_method")
+  currency             String                       @db.Char(3)
+  subtotalMinor        Int                          @map("subtotal_minor")
+  totalMinor           Int                          @map("total_minor")
+  checkoutId           String?                      @map("checkout_id") @db.Uuid
+  customerNote         String?                      @map("customer_note")
+  sourceQrCodeId       String?                      @map("source_qr_code_id") @db.Uuid
+  sourceQrType         QrCodeType?                  @map("source_qr_type")
+  sourceQrLabel        String?                      @map("source_qr_label")
+  sourceQrResourceKey  String?                      @map("source_qr_resource_key")
+  acceptedAt           DateTime?                    @map("accepted_at") @db.Timestamptz(6)
+  readyForPickupAt     DateTime?                    @map("ready_for_pickup_at") @db.Timestamptz(6)
+  completedAt          DateTime?                    @map("completed_at") @db.Timestamptz(6)
+  cancelledAt          DateTime?                    @map("cancelled_at") @db.Timestamptz(6)
+  cancellationReason   String?                      @map("cancellation_reason")
+  createdAt            DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customerProfile CustomerProfile        @relation(fields: [customerProfileId], references: [id], onDelete: Restrict)
+  organization    Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch          Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  items           MarketplaceOrderItem[]
+  deliveryRequest DeliveryRequest?
+  sourceQrCode    BusinessQrCode?        @relation(fields: [sourceQrCodeId], references: [id], onDelete: SetNull)
+
+  @@unique([customerProfileId, idempotencyKey])
+  @@index([customerProfileId, createdAt])
+  @@index([organizationId, status, createdAt])
+  @@index([branchId, status, createdAt])
+  @@index([checkoutId])
+  @@index([sourceQrCodeId])
+  @@map("marketplace_orders")
+}
+
+model MarketplaceOrderItem {
+  id                     String   @id @default(uuid()) @db.Uuid
+  marketplaceOrderId     String   @map("marketplace_order_id") @db.Uuid
+  productId              String   @map("product_id") @db.Uuid
+  productVariantId       String   @map("product_variant_id") @db.Uuid
+  productNameSnapshot    String   @map("product_name_snapshot")
+  variantNameSnapshot    String   @map("variant_name_snapshot")
+  skuSnapshot            String?  @map("sku_snapshot")
+  imageUrlSnapshot       String?  @map("image_url_snapshot")
+  quantity               Int
+  unitPriceMinorSnapshot Int      @map("unit_price_minor_snapshot")
+  priceMinorSnapshot     Int      @map("price_minor_snapshot")
+  currencySnapshot       String   @map("currency_snapshot") @db.Char(3)
+  displayOrder           Int      @default(0) @map("display_order")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  marketplaceOrder MarketplaceOrder @relation(fields: [marketplaceOrderId], references: [id], onDelete: Cascade)
+
+  @@index([marketplaceOrderId, displayOrder])
+  @@index([productVariantId])
+  @@map("marketplace_order_items")
+}
+
+// ---------------------------------------------------------------------------
+// Kora physical-to-digital commerce and provider integration foundation.
+// QR codes use opaque permanent codes rather than storefront slugs so printed
+// assets remain valid when a business changes its name or public slug.
+// ---------------------------------------------------------------------------
+
+model BusinessQrCode {
+  id             String     @id @default(uuid()) @db.Uuid
+  organizationId String     @map("organization_id") @db.Uuid
+  branchId       String?    @map("branch_id") @db.Uuid
+  code           String     @unique
+  type           QrCodeType
+  label          String?
+  resourceKey    String?    @map("resource_key")
+  isActive       Boolean    @default(true) @map("is_active")
+  scanCount      BigInt     @default(0) @map("scan_count")
+  lastScannedAt  DateTime?  @map("last_scanned_at") @db.Timestamptz(6)
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch            Branch?            @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Cascade)
+  marketplaceOrders MarketplaceOrder[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, type, isActive])
+  @@index([organizationId, branchId])
+  @@map("business_qr_codes")
+}
+
+model IntegrationConnection {
+  id              String                      @id @default(uuid()) @db.Uuid
+  organizationId  String                      @map("organization_id") @db.Uuid
+  providerKey     String                      @map("provider_key")
+  category        IntegrationCategory
+  status          IntegrationConnectionStatus @default(PENDING)
+  displayName     String?                     @map("display_name")
+  configJson      Json?                       @map("config_json")
+  secretReference String?                     @map("secret_reference")
+  capabilities    Json?
+  lastHealthAt    DateTime?                   @map("last_health_at") @db.Timestamptz(6)
+  lastError       String?                     @map("last_error")
+  createdAt       DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveryRequests DeliveryRequest[]
+
+  @@unique([organizationId, providerKey])
+  @@index([organizationId, category, status])
+  @@map("integration_connections")
+}
+
+model DeliveryRequest {
+  id                      String         @id @default(uuid()) @db.Uuid
+  marketplaceOrderId      String         @map("marketplace_order_id") @db.Uuid
+  organizationId          String         @map("organization_id") @db.Uuid
+  branchId                String         @map("branch_id") @db.Uuid
+  integrationConnectionId String?        @map("integration_connection_id") @db.Uuid
+  status                  DeliveryStatus @default(DRAFT)
+  providerReference       String?        @map("provider_reference")
+  trackingUrl             String?        @map("tracking_url")
+  riderName               String?        @map("rider_name")
+  riderPhone              String?        @map("rider_phone")
+  currency                String?        @db.Char(3)
+  quotedFeeMinor          Int?           @map("quoted_fee_minor")
+  finalFeeMinor           Int?           @map("final_fee_minor")
+  destinationJson         Json           @map("destination_json")
+  pickupSnapshotJson      Json           @map("pickup_snapshot_json")
+  requestedAt             DateTime?      @map("requested_at") @db.Timestamptz(6)
+  assignedAt              DateTime?      @map("assigned_at") @db.Timestamptz(6)
+  pickedUpAt              DateTime?      @map("picked_up_at") @db.Timestamptz(6)
+  deliveredAt             DateTime?      @map("delivered_at") @db.Timestamptz(6)
+  cancelledAt             DateTime?      @map("cancelled_at") @db.Timestamptz(6)
+  createdAt               DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  marketplaceOrder      MarketplaceOrder       @relation(fields: [marketplaceOrderId], references: [id], onDelete: Restrict)
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch                Branch                 @relation(fields: [organizationId, branchId], references: [organizationId, id], onDelete: Restrict)
+  integrationConnection IntegrationConnection? @relation(fields: [integrationConnectionId], references: [id], onDelete: Restrict)
+  events                DeliveryEvent[]
+
+  @@unique([marketplaceOrderId])
+  @@index([organizationId, status])
+  @@index([integrationConnectionId, status])
+  @@map("delivery_requests")
+}
+
+model DeliveryEvent {
+  id                String              @id @default(uuid()) @db.Uuid
+  deliveryRequestId String              @map("delivery_request_id") @db.Uuid
+  status            DeliveryStatus
+  source            DeliveryEventSource
+  providerEventId   String?             @map("provider_event_id")
+  payloadJson       Json?               @map("payload_json")
+  occurredAt        DateTime            @map("occurred_at") @db.Timestamptz(6)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  deliveryRequest DeliveryRequest @relation(fields: [deliveryRequestId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryRequestId, occurredAt])
+  @@index([providerEventId])
+  @@map("delivery_events")
 }

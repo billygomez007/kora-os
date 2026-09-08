@@ -304,6 +304,8 @@ export class ProductsService {
         description: cleanOptional(dto.description),
         currency: dto.currency,
         trackInventory: dto.trackInventory ?? true,
+        isVisibleOnMarketplace: dto.isVisibleOnMarketplace ?? false,
+        imageUrl: cleanOptional(dto.imageUrl),
         sortOrder: dto.sortOrder ?? 0,
         variants: {
           create: {
@@ -332,6 +334,8 @@ export class ProductsService {
         name: product.name,
         currency: product.currency,
         trackInventory: product.trackInventory,
+        isVisibleOnMarketplace: product.isVisibleOnMarketplace,
+        imageUrl: product.imageUrl,
         productCategoryId: product.productCategoryId,
         supplierId: product.supplierId,
         defaultVariantId: product.variants[0]?.id ?? null,
@@ -371,6 +375,12 @@ export class ProductsService {
         ...(dto.trackInventory !== undefined
           ? { trackInventory: dto.trackInventory }
           : {}),
+        ...(dto.isVisibleOnMarketplace !== undefined
+          ? { isVisibleOnMarketplace: dto.isVisibleOnMarketplace }
+          : {}),
+        ...(dto.imageUrl !== undefined
+          ? { imageUrl: cleanOptional(dto.imageUrl) }
+          : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
       },
       include: productInclude,
@@ -389,11 +399,15 @@ export class ProductsService {
         name: existing.name,
         currency: existing.currency,
         trackInventory: existing.trackInventory,
+        isVisibleOnMarketplace: existing.isVisibleOnMarketplace,
+        imageUrl: existing.imageUrl,
       },
       newState: {
         name: product.name,
         currency: product.currency,
         trackInventory: product.trackInventory,
+        isVisibleOnMarketplace: product.isVisibleOnMarketplace,
+        imageUrl: product.imageUrl,
       },
     });
 

@@ -478,6 +478,126 @@ async function upsertBookingPolicy(organizationId: string, branchId: string): Pr
   });
 }
 
+
+async function upsertMarketplaceDemoProduct(
+  organizationId: string,
+  branchId: string,
+): Promise<{ productId: string; variantId: string }> {
+  const productName = 'Kora Nourishing Hair Serum';
+  const variantName = '100ml';
+  const sku = 'KORA-DEMO-SERUM-100';
+
+  let category = await prisma.productCategory.findFirst({
+    where: {
+      organizationId,
+      name: 'Hair Care Products',
+    },
+  });
+
+  category ??= await prisma.productCategory.create({
+    data: {
+      organizationId,
+      name: 'Hair Care Products',
+      description: 'Retail hair-care products for the Kora Marketplace demo.',
+      sortOrder: 0,
+    },
+  });
+
+  let product = await prisma.product.findFirst({
+    where: {
+      organizationId,
+      name: productName,
+    },
+  });
+
+  product = product
+    ? await prisma.product.update({
+        where: { id: product.id },
+        data: {
+          productCategoryId: category.id,
+          description:
+            'A lightweight nourishing hair serum for shine, softness and everyday styling. Development demo product only.',
+          currency: 'GHS',
+          trackInventory: true,
+          isVisibleOnMarketplace: true,
+          imageUrl: null,
+          sortOrder: 0,
+          archivedAt: null,
+        },
+      })
+    : await prisma.product.create({
+        data: {
+          organizationId,
+          productCategoryId: category.id,
+          name: productName,
+          description:
+            'A lightweight nourishing hair serum for shine, softness and everyday styling. Development demo product only.',
+          currency: 'GHS',
+          trackInventory: true,
+          isVisibleOnMarketplace: true,
+          sortOrder: 0,
+        },
+      });
+
+  let variant = await prisma.productVariant.findFirst({
+    where: {
+      organizationId,
+      productId: product.id,
+      name: variantName,
+    },
+  });
+
+  variant = variant
+    ? await prisma.productVariant.update({
+        where: { id: variant.id },
+        data: {
+          name: variantName,
+          sku,
+          costPriceMinor: 5500,
+          sellingPriceMinor: 9500,
+          sortOrder: 0,
+          archivedAt: null,
+        },
+      })
+    : await prisma.productVariant.create({
+        data: {
+          organizationId,
+          productId: product.id,
+          name: variantName,
+          sku,
+          costPriceMinor: 5500,
+          sellingPriceMinor: 9500,
+          sortOrder: 0,
+        },
+      });
+
+  await prisma.branchInventory.upsert({
+    where: {
+      branchId_productVariantId: {
+        branchId,
+        productVariantId: variant.id,
+      },
+    },
+    update: {
+      quantityOnHand: 25,
+      reorderLevel: 5,
+    },
+    create: {
+      organizationId,
+      branchId,
+      productId: product.id,
+      productVariantId: variant.id,
+      quantityOnHand: 25,
+      reorderLevel: 5,
+    },
+  });
+
+  return {
+    productId: product.id,
+    variantId: variant.id,
+  };
+}
+
 async function seedMainDemoBusiness(): Promise<void> {
   const owner = await upsertUser(OWNER_EMAIL, 'Kora Demo Owner');
   const organization = await upsertOrganization({
@@ -510,6 +630,11 @@ async function seedMainDemoBusiness(): Promise<void> {
   const services = await upsertServicesAndBranchAvailability(organization.id, branch.id);
   const serviceIds = services.map((service) => service.id);
 
+  const demoProduct = await upsertMarketplaceDemoProduct(
+    organization.id,
+    branch.id,
+  );
+
   const stylistOne = await upsertUser(STYLIST_ONE_EMAIL, 'Kora Demo Stylist One');
   const stylistOneProfile = await upsertStaffProvider({
     organizationId: organization.id,
@@ -536,6 +661,9 @@ async function seedMainDemoBusiness(): Promise<void> {
   console.log(`✔ Published demo business ready: slug="${MAIN_ORG_SLUG}", branchId=${branch.id}`);
   console.log(`  Services: ${services.map((service) => service.name).join(', ')}`);
   console.log('  Providers: Kora Demo Stylist One, Kora Demo Stylist Two');
+  console.log(
+    `  Product: Kora Nourishing Hair Serum (100ml, GHS 95.00, stock 25, productId=${demoProduct.productId}, variantId=${demoProduct.variantId})`,
+  );
 }
 
 /** A second, deliberately unpublished/private organization with no

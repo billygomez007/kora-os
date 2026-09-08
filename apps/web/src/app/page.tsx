@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Logo } from "@/components/marketing/Logo";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 
@@ -305,21 +306,21 @@ export default function Home() {
               <div className="business-photo one" />
               <strong>The Hair Lounge</strong>
               <small>Salon • Accra</small>
-              <a className="availability-link" href="/marketplace">View availability</a>
+              <Link className="availability-link" href="/marketplace">View availability</Link>
             </article>
 
             <article>
               <div className="business-photo two" />
               <strong>Kings & Co. Barbers</strong>
               <small>Barbershop • Accra</small>
-              <a className="availability-link" href="/marketplace">View availability</a>
+              <Link className="availability-link" href="/marketplace">View availability</Link>
             </article>
 
             <article>
               <div className="business-photo three" />
               <strong>Serene Spa</strong>
               <small>Spa • Accra</small>
-              <a className="availability-link" href="/marketplace">View availability</a>
+              <Link className="availability-link" href="/marketplace">View availability</Link>
             </article>
           </div>
         </div>
@@ -417,9 +418,9 @@ export default function Home() {
               </article>
             </div>
 
-            <a href="/marketplace" className="gold-text-link">
+            <Link href="/marketplace" className="gold-text-link">
               Explore the Kora marketplace →
-            </a>
+            </Link>
           </div>
         </div>
       </section>

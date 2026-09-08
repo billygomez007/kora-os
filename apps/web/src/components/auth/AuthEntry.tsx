@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
 
 type AuthMode = "signin" | "signup";
+type SignupJourney = "business" | "customer";
 
 interface OtpRequestResponse {
   data?: {
@@ -15,17 +16,48 @@ interface OtpRequestResponse {
   };
 }
 
-export default function AuthEntry({ mode }: { mode: AuthMode }) {
+export default function AuthEntry({
+  mode,
+  journey,
+  onBack,
+}: {
+  mode: AuthMode;
+  journey?: SignupJourney;
+  onBack?: () => void;
+}) {
   const router = useRouter();
 
   const [email, setEmail] = useState("");
+
+  function invitationTokenFromUrl(): string {
+    if (typeof window === "undefined") return "";
+
+    return (
+      new URLSearchParams(window.location.search)
+        .get("invitation")
+        ?.trim() ?? ""
+    );
+  }
+
+  function invitedEmailFromUrl(): string {
+    if (typeof window === "undefined") return "";
+
+    return (
+      new URLSearchParams(window.location.search)
+        .get("email")
+        ?.trim()
+        .toLowerCase() ?? ""
+    );
+  }
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [message, setMessage] = useState("");
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail =
+      email.trim().toLowerCase() || invitedEmailFromUrl();
+    const invitationToken = invitationTokenFromUrl();
 
     if (!normalizedEmail || !normalizedEmail.includes("@")) {
       setStatus("error");
@@ -90,6 +122,14 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
       mode,
     });
 
+    if (mode === "signup" && journey) {
+      params.set("journey", journey);
+    }
+
+    if (invitationToken) {
+      params.set("invitation", invitationToken);
+    }
+
     router.push(`/verify?${params.toString()}`);
   }
 
@@ -118,13 +158,17 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
           <h1>
             {mode === "signin"
               ? "Sign in to your Kora workspace."
-              : "Start running your business with Kora."}
+              : journey === "customer"
+                ? "Your Kora bookings start here."
+                : "Start running your business with Kora."}
           </h1>
 
           <p>
             {mode === "signin"
               ? "Enter your email and we’ll send you a secure verification code. No password required."
-              : "Create your Kora account with your email. We’ll send you a secure verification code to continue."}
+              : journey === "customer"
+                ? "Create your Kora account with your email. We’ll send you a secure verification code to continue to the marketplace."
+                : "Create your Kora account with your email. We’ll send you a secure verification code to continue."}
           </p>
         </div>
 
@@ -157,15 +201,43 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
           </button>
         </form>
 
+        {mode === "signup" && onBack && (
+          <button
+            type="button"
+            className="auth-back-button"
+            onClick={onBack}
+            disabled={status === "loading"}
+          >
+            ← Choose a different Kora experience
+          </button>
+        )}
+
         <div className="auth-switch">
           {mode === "signin" ? (
             <>
               New to Kora?{" "}
-              <Link href="/get-started">Create an account</Link>
+              <Link
+                href={
+                  invitationTokenFromUrl()
+                    ? `/get-started?invitation=${encodeURIComponent(invitationTokenFromUrl())}&email=${encodeURIComponent(email.trim().toLowerCase() || invitedEmailFromUrl())}`
+                    : "/get-started"
+                }
+              >
+                Create an account
+              </Link>
             </>
           ) : (
             <>
-              Already use Kora? <Link href="/login">Sign in</Link>
+              Already use Kora?{" "}
+              <Link
+                href={
+                  invitationTokenFromUrl()
+                    ? `/login?invitation=${encodeURIComponent(invitationTokenFromUrl())}&email=${encodeURIComponent(email.trim().toLowerCase() || invitedEmailFromUrl())}`
+                    : "/login"
+                }
+              >
+                Sign in
+              </Link>
             </>
           )}
         </div>

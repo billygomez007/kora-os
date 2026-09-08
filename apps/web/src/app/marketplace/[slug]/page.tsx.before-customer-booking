@@ -1,0 +1,675 @@
+"use client";
+
+import Image from "next/image";
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { koraData } from "@/lib/api/kora-api";
+
+interface Business {
+  organizationId: string;
+  slug: string;
+  displayName: string;
+  description: string | null;
+  logoImageUrl: string | null;
+  coverImageUrl: string | null;
+  verificationStatus: string;
+  categories: string[];
+}
+
+interface Branch {
+  branchId: string;
+  name: string;
+  city: string | null;
+  region: string | null;
+  countryCode: string;
+  latitude: number | null;
+  longitude: number | null;
+  publicPhone: string | null;
+  publicEmail: string | null;
+  openingHoursNote: string | null;
+}
+
+interface Service {
+  id: string;
+  name: string;
+  description: string | null;
+  durationMinutes: number;
+  priceMinor: number;
+  currency: string;
+  pricingType: string;
+  serviceCategoryId: string | null;
+}
+
+interface ProductVariant {
+  variantId: string;
+  name: string;
+  sellingPriceMinor: number;
+}
+
+interface Product {
+  productId: string;
+  name: string;
+  description: string | null;
+  imageUrl: string | null;
+  currency: string;
+  trackInventory: boolean;
+  category: {
+    id: string;
+    name: string;
+  } | null;
+  variants: ProductVariant[];
+  branchAvailability: Array<{
+    branchId: string;
+    branchName: string;
+    variants: Array<{
+      variantId: string;
+      available: boolean;
+    }>;
+  }>;
+}
+
+type Tab = "overview" | "services" | "products";
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+}
+
+function money(minor: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("en-GH", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+    }).format(minor / 100);
+  } catch {
+    return `${currency} ${(minor / 100).toFixed(2)}`;
+  }
+}
+
+function errorText(error: unknown) {
+  return error instanceof Error && error.message
+    ? error.message
+    : "Kora could not load this storefront.";
+}
+
+export default function MarketplaceStorefrontPage() {
+  const params = useParams<{ slug: string }>();
+  const slug = decodeURIComponent(params.slug);
+
+  const [business, setBusiness] = useState<Business | null>(null);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [services, setServices] = useState<Service[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState("");
+  const [tab, setTab] = useState<Tab>("overview");
+  const [loading, setLoading] = useState(true);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadStorefront() {
+      setLoading(true);
+      setMessage("");
+
+      try {
+        const [businessRow, branchRows, productRows] = await Promise.all([
+          koraData<Business>(
+            `/discovery/businesses/${encodeURIComponent(slug)}`,
+          ),
+          koraData<Branch[]>(
+            `/discovery/businesses/${encodeURIComponent(slug)}/branches`,
+          ),
+          koraData<Product[]>(
+            `/discovery/businesses/${encodeURIComponent(slug)}/products`,
+          ),
+        ]);
+
+        if (cancelled) return;
+
+        setBusiness(businessRow);
+        setBranches(Array.isArray(branchRows) ? branchRows : []);
+        setProducts(Array.isArray(productRows) ? productRows : []);
+
+        if (Array.isArray(branchRows) && branchRows.length > 0) {
+          setSelectedBranchId(branchRows[0].branchId);
+        }
+      } catch (error) {
+        if (!cancelled) setMessage(errorText(error));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadStorefront();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadServices() {
+      if (!selectedBranchId) {
+        setServices([]);
+        return;
+      }
+
+      setServicesLoading(true);
+
+      try {
+        const rows = await koraData<Service[]>(
+          `/discovery/businesses/${encodeURIComponent(slug)}/branches/${encodeURIComponent(selectedBranchId)}/services`,
+        );
+
+        if (!cancelled) {
+          setServices(Array.isArray(rows) ? rows : []);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setServices([]);
+          setMessage(errorText(error));
+        }
+      } finally {
+        if (!cancelled) setServicesLoading(false);
+      }
+    }
+
+    void loadServices();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedBranchId, slug]);
+
+  const selectedBranch = useMemo(
+    () => branches.find((branch) => branch.branchId === selectedBranchId) ?? null,
+    [branches, selectedBranchId],
+  );
+
+  const availableProducts = useMemo(() => {
+    if (!selectedBranchId) return products;
+
+    return products.filter((product) => {
+      const branch = product.branchAvailability.find(
+        (row) => row.branchId === selectedBranchId,
+      );
+
+      return branch?.variants.some((variant) => variant.available) ?? false;
+    });
+  }, [products, selectedBranchId]);
+
+  if (loading) {
+    return (
+      <main className="storefront-app">
+        <div className="storefront-loading">
+          <div className="marketplace-loader" />
+          <strong>Opening storefront…</strong>
+        </div>
+      </main>
+    );
+  }
+
+  if (!business) {
+    return (
+      <main className="storefront-app">
+        <div className="storefront-not-found">
+          <span>K</span>
+          <h1>Storefront unavailable</h1>
+          <p>{message || "This business is not currently available on Kora."}</p>
+          <Link href="/marketplace">Back to Marketplace</Link>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="storefront-app">
+      <header className="storefront-topbar">
+        <Link href="/marketplace" className="marketplace-brand">
+          <Image
+            src="/brand/kora-app-icon.png"
+            alt="Kora"
+            width={40}
+            height={40}
+            priority
+          />
+          <div>
+            <strong>Kora</strong>
+            <span>Marketplace</span>
+          </div>
+        </Link>
+
+        <Link href="/marketplace" className="storefront-back">
+          ← Explore Marketplace
+        </Link>
+      </header>
+
+      <section
+        className="storefront-cover"
+        style={
+          business.coverImageUrl
+            ? {
+                backgroundImage: `linear-gradient(90deg, rgba(4,10,18,.96), rgba(4,10,18,.68) 55%, rgba(4,10,18,.25)), url("${business.coverImageUrl}")`,
+              }
+            : undefined
+        }
+      >
+        <div className="storefront-cover-glow" />
+
+        <div className="storefront-identity">
+          <div className="storefront-logo">
+            {business.logoImageUrl ? (
+              <img src={business.logoImageUrl} alt="" />
+            ) : (
+              <span>{initials(business.displayName) || "K"}</span>
+            )}
+          </div>
+
+          <div className="storefront-identity-copy">
+            <div className="storefront-eyebrow">
+              <span>KORA BUSINESS</span>
+              {business.verificationStatus === "VERIFIED" && (
+                <strong>✓ Verified</strong>
+              )}
+            </div>
+
+            <h1>{business.displayName}</h1>
+
+            <div className="storefront-categories">
+              {business.categories.map((category) => (
+                <span key={category}>{category}</span>
+              ))}
+            </div>
+
+            {business.description && <p>{business.description}</p>}
+          </div>
+        </div>
+      </section>
+
+      <section className="storefront-controlbar">
+        <div className="storefront-tabs">
+          <button
+            className={tab === "overview" ? "is-active" : ""}
+            onClick={() => setTab("overview")}
+            type="button"
+          >
+            Overview
+          </button>
+
+          <button
+            className={tab === "services" ? "is-active" : ""}
+            onClick={() => setTab("services")}
+            type="button"
+          >
+            Services
+            {services.length > 0 && <span>{services.length}</span>}
+          </button>
+
+          <button
+            className={tab === "products" ? "is-active" : ""}
+            onClick={() => setTab("products")}
+            type="button"
+          >
+            Products
+            {products.length > 0 && <span>{products.length}</span>}
+          </button>
+        </div>
+
+        {branches.length > 0 && (
+          <label className="storefront-branch-select">
+            <span>Location</span>
+            <select
+              value={selectedBranchId}
+              onChange={(event) => setSelectedBranchId(event.target.value)}
+            >
+              {branches.map((branch) => (
+                <option key={branch.branchId} value={branch.branchId}>
+                  {branch.name}
+                  {branch.city ? ` · ${branch.city}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </section>
+
+      {message && (
+        <div className="storefront-message" role="alert">
+          {message}
+        </div>
+      )}
+
+      <section className="storefront-main">
+        {tab === "overview" && (
+          <>
+            <div className="storefront-overview-grid">
+              <article className="storefront-overview-card storefront-overview-primary">
+                <span className="storefront-label">WELCOME</span>
+                <h2>Everything from {business.displayName}, in one place.</h2>
+                <p>
+                  Explore services, discover products and choose the Kora
+                  experience that works for you.
+                </p>
+
+                <div className="storefront-overview-actions">
+                  {services.length > 0 && (
+                    <button type="button" onClick={() => setTab("services")}>
+                      Explore services
+                    </button>
+                  )}
+
+                  {products.length > 0 && (
+                    <button
+                      type="button"
+                      className="is-secondary"
+                      onClick={() => setTab("products")}
+                    >
+                      Shop products
+                    </button>
+                  )}
+                </div>
+              </article>
+
+              <article className="storefront-overview-card">
+                <span className="storefront-label">LOCATION</span>
+                <h3>{selectedBranch?.name || "Kora location"}</h3>
+
+                <p>
+                  {[
+                    selectedBranch?.city,
+                    selectedBranch?.region,
+                    selectedBranch?.countryCode,
+                  ]
+                    .filter(Boolean)
+                    .join(", ") || "Location details available from the business."}
+                </p>
+
+                {selectedBranch?.openingHoursNote && (
+                  <div className="storefront-info-row">
+                    <span>Hours</span>
+                    <strong>{selectedBranch.openingHoursNote}</strong>
+                  </div>
+                )}
+
+                {selectedBranch?.publicPhone && (
+                  <a
+                    className="storefront-contact"
+                    href={`tel:${selectedBranch.publicPhone}`}
+                  >
+                    Call {selectedBranch.publicPhone}
+                  </a>
+                )}
+
+                {selectedBranch?.publicEmail && (
+                  <a
+                    className="storefront-contact"
+                    href={`mailto:${selectedBranch.publicEmail}`}
+                  >
+                    Email business
+                  </a>
+                )}
+              </article>
+            </div>
+
+            {(services.length > 0 || products.length > 0) && (
+              <div className="storefront-preview">
+                <div className="storefront-section-title">
+                  <div>
+                    <span>DISCOVER</span>
+                    <h2>Available from this business</h2>
+                  </div>
+                </div>
+
+                <div className="storefront-preview-grid">
+                  {services.slice(0, 3).map((service) => (
+                    <button
+                      key={`service-${service.id}`}
+                      type="button"
+                      className="storefront-preview-card"
+                      onClick={() => setTab("services")}
+                    >
+                      <small>SERVICE</small>
+                      <strong>{service.name}</strong>
+                      <span>
+                        {money(service.priceMinor, service.currency)} ·{" "}
+                        {service.durationMinutes} min
+                      </span>
+                    </button>
+                  ))}
+
+                  {availableProducts.slice(0, 3).map((product) => (
+                    <button
+                      key={`product-${product.productId}`}
+                      type="button"
+                      className="storefront-preview-card"
+                      onClick={() => setTab("products")}
+                    >
+                      <small>PRODUCT</small>
+                      <strong>{product.name}</strong>
+                      <span>
+                        {product.variants[0]
+                          ? `From ${money(
+                              Math.min(
+                                ...product.variants.map(
+                                  (variant) => variant.sellingPriceMinor,
+                                ),
+                              ),
+                              product.currency,
+                            )}`
+                          : "View product"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === "services" && (
+          <section>
+            <div className="storefront-section-title">
+              <div>
+                <span>SERVICES</span>
+                <h2>Choose what you need</h2>
+              </div>
+              <p>
+                {selectedBranch
+                  ? `Available at ${selectedBranch.name}`
+                  : "Customer-bookable services"}
+              </p>
+            </div>
+
+            {servicesLoading ? (
+              <div className="storefront-empty">
+                <div className="marketplace-loader" />
+                <strong>Loading services…</strong>
+              </div>
+            ) : services.length === 0 ? (
+              <div className="storefront-empty">
+                <span>◇</span>
+                <h3>No customer-bookable services here yet</h3>
+                <p>Try another location or check back later.</p>
+              </div>
+            ) : (
+              <div className="storefront-service-grid">
+                {services.map((service) => (
+                  <article key={service.id} className="storefront-service-card">
+                    <div className="storefront-service-icon">
+                      {service.name.charAt(0).toUpperCase()}
+                    </div>
+
+                    <div className="storefront-service-copy">
+                      <span>SERVICE</span>
+                      <h3>{service.name}</h3>
+                      <p>
+                        {service.description ||
+                          "Professional service available through Kora."}
+                      </p>
+
+                      <div className="storefront-service-meta">
+                        <strong>
+                          {money(service.priceMinor, service.currency)}
+                        </strong>
+                        <span>{service.durationMinutes} min</span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="storefront-primary-action"
+                      disabled
+                      title="Booking flow will be connected next"
+                    >
+                      Book
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === "products" && (
+          <section>
+            <div className="storefront-section-title">
+              <div>
+                <span>PRODUCTS</span>
+                <h2>Shop this business</h2>
+              </div>
+              <p>
+                {selectedBranch
+                  ? `Availability at ${selectedBranch.name}`
+                  : "Products available on Kora"}
+              </p>
+            </div>
+
+            {products.length === 0 ? (
+              <div className="storefront-empty">
+                <span>□</span>
+                <h3>No products published yet</h3>
+                <p>This business has not published products to Marketplace.</p>
+              </div>
+            ) : availableProducts.length === 0 ? (
+              <div className="storefront-empty">
+                <span>□</span>
+                <h3>No products available at this location</h3>
+                <p>Try another branch to see its current catalogue.</p>
+              </div>
+            ) : (
+              <div className="storefront-product-grid">
+                {availableProducts.map((product) => {
+                  const lowestPrice = Math.min(
+                    ...product.variants.map(
+                      (variant) => variant.sellingPriceMinor,
+                    ),
+                  );
+
+                  return (
+                    <article
+                      key={product.productId}
+                      className="storefront-product-card"
+                    >
+                      <div className="storefront-product-image">
+                        {product.imageUrl ? (
+                          <img src={product.imageUrl} alt={product.name} />
+                        ) : (
+                          <div>
+                            <span>{product.name.charAt(0).toUpperCase()}</span>
+                            <small>KORA PRODUCT</small>
+                          </div>
+                        )}
+
+                        {product.category && (
+                          <span className="storefront-product-category">
+                            {product.category.name}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="storefront-product-copy">
+                        <h3>{product.name}</h3>
+                        <p>
+                          {product.description ||
+                            "Available from this Kora business."}
+                        </p>
+
+                        <div className="storefront-product-price">
+                          <span>
+                            {product.variants.length > 1 ? "From" : "Price"}
+                          </span>
+                          <strong>{money(lowestPrice, product.currency)}</strong>
+                        </div>
+
+                        {product.variants.length > 1 && (
+                          <div className="storefront-variants">
+                            {product.variants.slice(0, 4).map((variant) => (
+                              <span key={variant.variantId}>{variant.name}</span>
+                            ))}
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          className="storefront-primary-action"
+                          disabled
+                          title="Customer cart and checkout will be connected next"
+                        >
+                          Add to cart
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+      </section>
+
+      <nav
+        className="marketplace-mobile-nav storefront-mobile-nav"
+        aria-label="Storefront navigation"
+      >
+        <button
+          type="button"
+          className={tab === "overview" ? "is-active" : ""}
+          onClick={() => setTab("overview")}
+        >
+          <span>⌂</span>
+          Overview
+        </button>
+        <button
+          type="button"
+          className={tab === "services" ? "is-active" : ""}
+          onClick={() => setTab("services")}
+        >
+          <span>◇</span>
+          Services
+        </button>
+        <button
+          type="button"
+          className={tab === "products" ? "is-active" : ""}
+          onClick={() => setTab("products")}
+        >
+          <span>□</span>
+          Products
+        </button>
+        <Link href="/marketplace">
+          <span>⌕</span>
+          Explore
+        </Link>
+      </nav>
+    </main>
+  );
+}

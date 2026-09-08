@@ -90,6 +90,8 @@ import com.realtegic.kora.feature.business.setup.SetupScreen
 import com.realtegic.kora.feature.business.setup.SetupViewModel
 import com.realtegic.kora.feature.business.team.TeamScreen
 import com.realtegic.kora.feature.business.team.TeamViewModel
+import com.realtegic.kora.feature.business.team.profile.StaffProfileScreen
+import com.realtegic.kora.feature.business.team.profile.StaffProfileViewModel
 import com.realtegic.kora.feature.business.transactions.TransactionDetailScreen
 import com.realtegic.kora.feature.business.transactions.TransactionDetailViewModel
 import com.realtegic.kora.feature.business.transactions.TransactionsListScreen
@@ -131,6 +133,7 @@ private object BizRoutes {
     const val SERVICES = "services"
     const val BRANCH_SERVICES = "branch-services"
     const val TEAM = "team"
+    const val STAFF_PROFILE = "team/staff/{membershipId}"
     const val HOURS = "hours"
     const val MORE = "more"
 
@@ -342,9 +345,51 @@ private fun BusinessShell(
                     BranchServicesScreen(viewModel = viewModel, defaultCurrency = org.defaultCurrency, onBack = { navController.popBackStack() })
                 }
                 composable(BizRoutes.TEAM) {
-                    val viewModel = koraViewModel { TeamViewModel(org.organizationId, container.staffRepository) }
-                    TeamScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+                    val viewModel = koraViewModel {
+                        TeamViewModel(
+                            org.organizationId,
+                            container.staffRepository,
+                        )
+                    }
+
+                    TeamScreen(
+                        viewModel = viewModel,
+                        onBack = { navController.popBackStack() },
+                        onStaffSelected = { entry ->
+                            navController.currentBackStackEntry
+                                ?.savedStateHandle
+                                ?.set("selectedStaff", entry)
+
+                            navController.navigate(
+                                "team/staff/${entry.membershipId}",
+                            )
+                        },
+                    )
                 }
+
+                composable(BizRoutes.STAFF_PROFILE) {
+                    val staff = navController
+                        .previousBackStackEntry
+                        ?.savedStateHandle
+                        ?.get<com.realtegic.kora.core.model.StaffDirectoryEntryDto>(
+                            "selectedStaff",
+                        )
+                        ?: return@composable
+
+                    val viewModel = koraViewModel {
+                        StaffProfileViewModel(
+                            organizationId = org.organizationId,
+                            staff = staff,
+                            schedulingRepository = container.schedulingRepository,
+                        )
+                    }
+
+                    StaffProfileScreen(
+                        viewModel = viewModel,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
                 composable(BizRoutes.HOURS) {
                     if (branchId == null) return@composable
                     val viewModel = koraViewModel { BusinessHoursViewModel(org.organizationId, branchId, container.schedulingRepository) }

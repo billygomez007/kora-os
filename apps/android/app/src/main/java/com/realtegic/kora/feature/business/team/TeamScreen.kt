@@ -1,6 +1,7 @@
 package com.realtegic.kora.feature.business.team
 
 import android.content.Intent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,7 +48,11 @@ import com.realtegic.kora.core.model.StaffInvitationListItemDto
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TeamScreen(viewModel: TeamViewModel, onBack: () -> Unit) {
+fun TeamScreen(
+    viewModel: TeamViewModel,
+    onBack: () -> Unit,
+    onStaffSelected: (StaffDirectoryEntryDto) -> Unit,
+) {
     val state by viewModel.state.collectAsState()
 
     // The FAB is positioned manually via this outer Box, rather than
@@ -85,7 +90,12 @@ fun TeamScreen(viewModel: TeamViewModel, onBack: () -> Unit) {
                 is ScreenState.Error -> ErrorStateView(error = staff.error, onRetry = viewModel::loadStaff, modifier = Modifier.weight(1f))
                 ScreenState.Empty -> EmptyStateView(title = "No team members yet", modifier = Modifier.weight(1f))
                 is ScreenState.Content -> LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(staff.data, key = StaffDirectoryEntryDto::membershipId) { entry -> StaffRow(entry) }
+                    items(staff.data, key = StaffDirectoryEntryDto::membershipId) { entry ->
+                        StaffRow(
+                            entry = entry,
+                            onClick = { onStaffSelected(entry) },
+                        )
+                    }
                 }
                 ScreenState.AuthenticationExpired -> Unit
             }
@@ -203,8 +213,19 @@ private fun InvitationRow(invitation: StaffInvitationListItemDto, onRevoke: () -
 }
 
 @Composable
-private fun StaffRow(entry: StaffDirectoryEntryDto) {
-    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+private fun StaffRow(
+    entry: StaffDirectoryEntryDto,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+    ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(entry.displayName, style = MaterialTheme.typography.titleMedium)
             Text(

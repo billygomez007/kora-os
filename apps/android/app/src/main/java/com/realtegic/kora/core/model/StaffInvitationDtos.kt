@@ -88,13 +88,13 @@ data class AcceptInvitationResponseDto(
 data class StaffDirectoryBranchDto(
     val branchId: String,
     val name: String,
-)
+) : java.io.Serializable
 
 @JsonClass(generateAdapter = true)
 data class StaffDirectoryServiceDto(
     val serviceId: String,
     val name: String,
-)
+) : java.io.Serializable
 
 @JsonClass(generateAdapter = true)
 data class StaffDirectoryEntryDto(
@@ -111,4 +111,4 @@ data class StaffDirectoryEntryDto(
     val roleCodes: List<String>,
     val branches: List<StaffDirectoryBranchDto>,
     val services: List<StaffDirectoryServiceDto>,
-)
+) : java.io.Serializable

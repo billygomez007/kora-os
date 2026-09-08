@@ -5,6 +5,10 @@ import com.realtegic.kora.core.model.BranchScheduleExceptionDto
 import com.realtegic.kora.core.model.BusinessHoursIntervalDto
 import com.realtegic.kora.core.model.CreateBranchScheduleExceptionRequest
 import com.realtegic.kora.core.model.ReplaceBusinessHoursRequest
+import com.realtegic.kora.core.model.ReplaceStaffAvailabilityRulesRequest
+import com.realtegic.kora.core.model.StaffAvailabilityExceptionDto
+import com.realtegic.kora.core.model.StaffAvailabilityRuleIntervalDto
+import com.realtegic.kora.core.model.CreateStaffAvailabilityExceptionRequest
 import com.realtegic.kora.core.model.UpsertBookingPolicyRequest
 import com.realtegic.kora.core.network.ApiResult
 import com.realtegic.kora.core.network.SchedulingApi
@@ -57,4 +61,64 @@ class SchedulingRepository(
         branchId: String,
         request: UpsertBookingPolicyRequest,
     ): ApiResult<BookingPolicyDto> = safeApiCall(moshi) { api.upsertBookingPolicy(organizationId, branchId, request) }
+
+    suspend fun getStaffAvailabilityRules(
+        organizationId: String,
+        branchId: String,
+        staffProfileId: String,
+    ): ApiResult<List<BusinessHoursIntervalDto>> =
+        safeApiCall(moshi) {
+            api.getStaffAvailabilityRules(
+                organizationId,
+                branchId,
+                staffProfileId,
+            )
+        }
+
+    suspend fun replaceStaffAvailabilityRules(
+        organizationId: String,
+        branchId: String,
+        staffProfileId: String,
+        intervals: List<StaffAvailabilityRuleIntervalDto>,
+    ): ApiResult<List<BusinessHoursIntervalDto>> =
+        safeApiCall(moshi) {
+            api.replaceStaffAvailabilityRules(
+                organizationId,
+                branchId,
+                staffProfileId,
+                ReplaceStaffAvailabilityRulesRequest(intervals),
+            )
+        }
+
+    suspend fun getStaffAvailabilityExceptions(
+        organizationId: String,
+        branchId: String,
+        staffProfileId: String,
+        from: String,
+        to: String,
+    ): ApiResult<List<StaffAvailabilityExceptionDto>> =
+        safeApiCall(moshi) {
+            api.getStaffAvailabilityExceptions(
+                organizationId,
+                branchId,
+                staffProfileId,
+                from,
+                to,
+            )
+        }
+
+    suspend fun createStaffAvailabilityException(
+        organizationId: String,
+        branchId: String,
+        staffProfileId: String,
+        request: CreateStaffAvailabilityExceptionRequest,
+    ): ApiResult<StaffAvailabilityExceptionDto> =
+        safeApiCall(moshi) {
+            api.createStaffAvailabilityException(
+                organizationId,
+                branchId,
+                staffProfileId,
+                request,
+            )
+        }
 }

@@ -66,7 +66,58 @@ fun AppointmentDetailScreen(
                         modifier = Modifier.padding(top = 4.dp),
                     )
                     HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
-                    Text(MoneyFormatter.format(details.totalPriceMinor, details.currency), style = MaterialTheme.typography.titleMedium)
+
+                    Text(
+                        "Customer",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        details.customer.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    details.customer.phone?.takeIf { it.isNotBlank() }?.let { phone ->
+                        Text(
+                            phone,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    details.customer.email?.takeIf { it.isNotBlank() }?.let { email ->
+                        Text(
+                            email,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    details.customer.notes?.takeIf { it.isNotBlank() }?.let { notes ->
+                        Text(
+                            "Notes: $notes",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+
+                    Text(
+                        "Professional: ${details.providerDisplayName ?: "Not assigned"}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "Source: ${details.source.replace('_', ' ')}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+
+                    Text(
+                        MoneyFormatter.format(details.totalPriceMinor, details.currency),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
                     state.actionError?.let {
                         Text(it.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 16.dp))
                     }

@@ -1,7 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PaginatedPayload } from '../../common/http/api-response.interceptor.js';
 import { PrismaService } from '../../database/prisma.service.js';
-import { APPOINTMENT_VIEW_INCLUDE, toAppointmentView, type AppointmentView } from './appointment-view.js';
+import {
+  APPOINTMENT_VIEW_INCLUDE,
+  toAppointmentView,
+  toBusinessAppointmentView,
+  type AppointmentView,
+  type BusinessAppointmentView,
+} from './appointment-view.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 /** A branch-appointments listing must specify a bounded window — never
@@ -53,7 +59,7 @@ export class AppointmentQueriesService {
     organizationId: string,
     branchId: string,
     options: { from: string; to: string; cursor?: string; limit?: number },
-  ): Promise<PaginatedPayload<AppointmentView>> {
+  ): Promise<PaginatedPayload<BusinessAppointmentView>> {
     const from = new Date(options.from);
     const to = new Date(options.to);
     if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
@@ -82,7 +88,7 @@ export class AppointmentQueriesService {
     const hasMore = rows.length > limit;
     const page = rows.slice(0, limit);
     return {
-      data: page.map(toAppointmentView),
+      data: page.map(toBusinessAppointmentView),
       page: { hasMore, nextCursor: hasMore ? encodeCursor(page.at(-1)!.id) : null },
     };
   }
@@ -91,7 +97,7 @@ export class AppointmentQueriesService {
     organizationId: string,
     branchId: string,
     appointmentId: string,
-  ): Promise<AppointmentView> {
+  ): Promise<BusinessAppointmentView> {
     const appointment = await this.prisma.appointment.findFirst({
       where: { id: appointmentId, organizationId, branchId },
       include: APPOINTMENT_VIEW_INCLUDE,
@@ -99,7 +105,7 @@ export class AppointmentQueriesService {
     if (!appointment) {
       throw new NotFoundException('Appointment not found');
     }
-    return toAppointmentView(appointment);
+    return toBusinessAppointmentView(appointment);
   }
 }
 

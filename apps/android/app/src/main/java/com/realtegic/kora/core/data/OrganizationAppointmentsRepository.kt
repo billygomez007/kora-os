@@ -1,5 +1,6 @@
 package com.realtegic.kora.core.data
 
+import com.realtegic.kora.core.model.BusinessAppointmentDto
 import com.realtegic.kora.core.model.AppointmentDto
 import com.realtegic.kora.core.model.CancelAppointmentRequest
 import com.realtegic.kora.core.model.CreateStaffAppointmentRequest
@@ -20,16 +21,16 @@ class OrganizationAppointmentsRepository(
     private val api: OrganizationAppointmentsApi,
     private val moshi: Moshi,
 ) {
-    suspend fun list(organizationId: String, branchId: String, from: String, to: String): ApiResult<List<AppointmentDto>> =
+    suspend fun list(organizationId: String, branchId: String, from: String, to: String): ApiResult<List<BusinessAppointmentDto>> =
         safeApiCall(moshi) { api.list(organizationId, branchId, from, to) }
 
-    suspend fun get(organizationId: String, branchId: String, appointmentId: String): ApiResult<AppointmentDto> =
+    suspend fun get(organizationId: String, branchId: String, appointmentId: String): ApiResult<BusinessAppointmentDto> =
         safeApiCall(moshi) { api.get(organizationId, branchId, appointmentId) }
 
-    suspend fun create(organizationId: String, branchId: String, request: CreateStaffAppointmentRequest): ApiResult<AppointmentDto> =
+    suspend fun create(organizationId: String, branchId: String, request: CreateStaffAppointmentRequest): ApiResult<BusinessAppointmentDto> =
         safeApiCall(moshi) { api.create(organizationId, branchId, request) }
 
-    suspend fun cancel(organizationId: String, branchId: String, appointmentId: String, reason: String?): ApiResult<AppointmentDto> =
+    suspend fun cancel(organizationId: String, branchId: String, appointmentId: String, reason: String?): ApiResult<BusinessAppointmentDto> =
         safeApiCall(moshi) { api.cancel(organizationId, branchId, appointmentId, CancelAppointmentRequest(reason)) }
 
     suspend fun reschedule(
@@ -38,10 +39,10 @@ class OrganizationAppointmentsRepository(
         appointmentId: String,
         startAt: String,
         staffProfileId: String?,
-    ): ApiResult<AppointmentDto> =
+    ): ApiResult<BusinessAppointmentDto> =
         safeApiCall(moshi) { api.reschedule(organizationId, branchId, appointmentId, RescheduleAppointmentRequest(startAt, staffProfileId)) }
 
-    suspend fun noShow(organizationId: String, branchId: String, appointmentId: String): ApiResult<AppointmentDto> =
+    suspend fun noShow(organizationId: String, branchId: String, appointmentId: String): ApiResult<BusinessAppointmentDto> =
         safeApiCall(moshi) { api.noShow(organizationId, branchId, appointmentId) }
 
     /** Repeated check-in of the same already-linked appointment must

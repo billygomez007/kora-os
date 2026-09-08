@@ -79,6 +79,45 @@ data class AppointmentDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class BusinessCustomerDto(
+    val name: String,
+    val phone: String? = null,
+    val email: String? = null,
+    val notes: String? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class BusinessAppointmentDto(
+    val id: String,
+    val reference: String,
+    val organizationId: String,
+    val branchId: String,
+    val status: String,
+    val source: String,
+    val customerProfileId: String?,
+    val customerRecordId: String,
+    val assignedStaffProfileId: String,
+    val startAt: String,
+    val endAt: String,
+    val occupiedStartAt: String,
+    val occupiedEndAt: String,
+    val branchTimeZone: String,
+    val currency: String,
+    val totalPriceMinor: Long,
+    val cancelledAt: String?,
+    val cancelledReason: String?,
+    val noShowMarkedAt: String?,
+    val version: Int,
+    val createdAt: String,
+    val updatedAt: String,
+    val items: List<AppointmentItemDto>,
+    val businessName: String = "",
+    val businessSlug: String? = null,
+    val providerDisplayName: String? = null,
+    val customer: BusinessCustomerDto,
+)
+
+@JsonClass(generateAdapter = true)
 data class AppointmentItemDto(
     val serviceId: String,
     val serviceName: String,

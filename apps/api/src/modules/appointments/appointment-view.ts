@@ -13,9 +13,21 @@ export const APPOINTMENT_VIEW_INCLUDE = {
   items: true,
   organization: { include: { publicProfile: true } },
   assignedStaffProfile: { include: { membership: { include: { user: true } } } },
+  customerRecord: true,
 } satisfies Prisma.AppointmentInclude;
 
 type AppointmentWithRelations = Prisma.AppointmentGetPayload<{ include: typeof APPOINTMENT_VIEW_INCLUDE }>;
+
+export interface BusinessCustomerView {
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+}
+
+export interface BusinessAppointmentView extends AppointmentView {
+  customer: BusinessCustomerView;
+}
 
 export interface AppointmentItemView {
   serviceId: string;
@@ -117,3 +129,26 @@ export function toAppointmentView(appointment: AppointmentWithRelations): Appoin
     providerDisplayName: appointment.assignedStaffProfile.membership.user.displayName ?? null,
   };
 }
+
+/**
+ * Business/provider appointment representation.
+ *
+ * Customer contact information comes only from the organization's own
+ * CustomerRecord. It is intentionally added only by organization-scoped
+ * appointment queries and is not returned by customer `me/appointments`
+ * endpoints.
+ */
+export function toBusinessAppointmentView(
+  appointment: AppointmentWithRelations,
+): BusinessAppointmentView {
+  return {
+    ...toAppointmentView(appointment),
+    customer: {
+      name: appointment.customerRecord.name,
+      phone: appointment.customerRecord.phoneE164,
+      email: appointment.customerRecord.emailNormalized,
+      notes: appointment.customerRecord.notes,
+    },
+  };
+}
+

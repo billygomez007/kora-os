@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.realtegic.kora.core.data.OrganizationAppointmentsRepository
 import com.realtegic.kora.core.designsystem.ScreenState
-import com.realtegic.kora.core.model.AppointmentDto
+import com.realtegic.kora.core.model.BusinessAppointmentDto
 import com.realtegic.kora.core.model.QueueEntryDto
 import com.realtegic.kora.core.network.ApiResult
 import com.realtegic.kora.core.network.DomainError
@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 data class AppointmentDetailUiState(
-    val appointment: ScreenState<AppointmentDto> = ScreenState.Loading,
+    val appointment: ScreenState<BusinessAppointmentDto> = ScreenState.Loading,
     val isMutating: Boolean = false,
     val actionError: DomainError? = null,
     val showCancelConfirm: Boolean = false,

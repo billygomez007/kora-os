@@ -1,5 +1,6 @@
 package com.realtegic.kora.core.network
 
+import com.realtegic.kora.core.model.BusinessAppointmentDto
 import com.realtegic.kora.core.model.AcceptInvitationResponseDto
 import com.realtegic.kora.core.model.ApiSuccessEnvelope
 import com.realtegic.kora.core.model.AssignQueueStaffRequest
@@ -286,21 +287,21 @@ interface OrganizationAppointmentsApi {
         @Query("to") to: String,
         @Query("cursor") cursor: String? = null,
         @Query("limit") limit: Int? = null,
-    ): Response<ApiSuccessEnvelope<List<AppointmentDto>>>
+    ): Response<ApiSuccessEnvelope<List<BusinessAppointmentDto>>>
 
     @GET("organizations/{organizationId}/branches/{branchId}/appointments/{appointmentId}")
     suspend fun get(
         @Path("organizationId") organizationId: String,
         @Path("branchId") branchId: String,
         @Path("appointmentId") appointmentId: String,
-    ): Response<ApiSuccessEnvelope<AppointmentDto>>
+    ): Response<ApiSuccessEnvelope<BusinessAppointmentDto>>
 
     @POST("organizations/{organizationId}/branches/{branchId}/appointments")
     suspend fun create(
         @Path("organizationId") organizationId: String,
         @Path("branchId") branchId: String,
         @Body body: CreateStaffAppointmentRequest,
-    ): Response<ApiSuccessEnvelope<AppointmentDto>>
+    ): Response<ApiSuccessEnvelope<BusinessAppointmentDto>>
 
     @POST("organizations/{organizationId}/branches/{branchId}/appointments/{appointmentId}/cancel")
     suspend fun cancel(
@@ -308,7 +309,7 @@ interface OrganizationAppointmentsApi {
         @Path("branchId") branchId: String,
         @Path("appointmentId") appointmentId: String,
         @Body body: CancelAppointmentRequest,
-    ): Response<ApiSuccessEnvelope<AppointmentDto>>
+    ): Response<ApiSuccessEnvelope<BusinessAppointmentDto>>
 
     @POST("organizations/{organizationId}/branches/{branchId}/appointments/{appointmentId}/reschedule")
     suspend fun reschedule(
@@ -316,14 +317,14 @@ interface OrganizationAppointmentsApi {
         @Path("branchId") branchId: String,
         @Path("appointmentId") appointmentId: String,
         @Body body: RescheduleAppointmentRequest,
-    ): Response<ApiSuccessEnvelope<AppointmentDto>>
+    ): Response<ApiSuccessEnvelope<BusinessAppointmentDto>>
 
     @POST("organizations/{organizationId}/branches/{branchId}/appointments/{appointmentId}/no-show")
     suspend fun noShow(
         @Path("organizationId") organizationId: String,
         @Path("branchId") branchId: String,
         @Path("appointmentId") appointmentId: String,
-    ): Response<ApiSuccessEnvelope<AppointmentDto>>
+    ): Response<ApiSuccessEnvelope<BusinessAppointmentDto>>
 
     @POST("organizations/{organizationId}/appointments/{appointmentId}/check-in")
     suspend fun checkIn(

@@ -92,7 +92,7 @@ export class ProviderWorkdayService {
     const serviceSessions = await this.prisma.serviceSession.findMany({
       where: {
         organizationId: params.organizationId,
-        staffProfileId: staffProfile.id,
+        assignedStaffProfileId: staffProfile.id,
         OR: [
           {
             startedAt: {

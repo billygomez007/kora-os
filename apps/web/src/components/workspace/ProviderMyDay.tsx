@@ -24,11 +24,25 @@ interface WorkdayAppointment {
   currency: string;
   totalPriceMinor: number;
   customer: {
-    id: string;
+    id?: string;
     name: string;
-    phoneE164: string | null;
+    phoneE164?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    notes?: string | null;
   };
-  services: WorkdayService[];
+  services?: WorkdayService[];
+  items?: Array<{
+    serviceId: string;
+    serviceNameSnapshot?: string;
+    name?: string;
+    durationMinutesSnapshot?: number;
+    durationMinutes?: number;
+    priceMinorSnapshot?: number;
+    priceMinor?: number;
+    currencySnapshot?: string;
+    currency?: string;
+  }>;
 }
 
 interface WorkdayQueueEntry {
@@ -105,6 +119,30 @@ function formatTime(value: string, timeZone: string) {
   }
 }
 
+function appointmentServiceNames(
+  appointment: WorkdayAppointment,
+) {
+  const fromServices =
+    appointment.services
+      ?.map((service) => service.name)
+      .filter(Boolean) ?? [];
+
+  if (fromServices.length > 0) {
+    return fromServices.join(", ");
+  }
+
+  const fromItems =
+    appointment.items
+      ?.map(
+        (item) =>
+          item.serviceNameSnapshot ||
+          item.name,
+      )
+      .filter(Boolean) ?? [];
+
+  return fromItems.join(", ") || "Service";
+}
+
 function queueCustomer(entry: WorkdayQueueEntry) {
   return (
     entry.customerName ||
@@ -140,6 +178,7 @@ export default function ProviderMyDay({
   workspace: ActiveWorkspace;
 }) {
   const [workday, setWorkday] = useState<Workday | null>(null);
+  const [upcomingAppointments, setUpcomingAppointments] = useState<WorkdayAppointment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -158,11 +197,45 @@ export default function ProviderMyDay({
       setError("");
 
       try {
-        const data = await koraData<Workday>(
-          `/organizations/${workspace.organizationId}/me/workday?date=${encodeURIComponent(date)}`,
-        );
+        const now = new Date();
+        const upcomingTo = new Date(now);
+        upcomingTo.setDate(upcomingTo.getDate() + 75);
+
+        const appointmentQuery = new URLSearchParams({
+          from: now.toISOString(),
+          to: upcomingTo.toISOString(),
+          limit: "20",
+        });
+
+        const [data, appointmentEnvelope] = await Promise.all([
+          koraData<Workday>(
+            `/organizations/${workspace.organizationId}/me/workday?date=${encodeURIComponent(date)}`,
+          ),
+          koraData<WorkdayAppointment[]>(
+            `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/appointments?${appointmentQuery.toString()}`,
+          ),
+        ]);
 
         setWorkday(data);
+
+        const todayIds = new Set(
+          data.appointments.map((appointment) => appointment.id),
+        );
+
+        setUpcomingAppointments(
+          (appointmentEnvelope ?? [])
+            .filter(
+              (appointment) =>
+                appointment.status === "CONFIRMED" &&
+                !todayIds.has(appointment.id),
+            )
+            .sort(
+              (a, b) =>
+                new Date(a.startAt).getTime() -
+                new Date(b.startAt).getTime(),
+            )
+            .slice(0, 5),
+        );
       } catch (reason) {
         setError(
           reason instanceof Error
@@ -174,7 +247,7 @@ export default function ProviderMyDay({
         setRefreshing(false);
       }
     },
-    [date, workspace.organizationId],
+    [date, workspace.organizationId, workspace.branchId],
   );
 
   useEffect(() => {
@@ -319,9 +392,67 @@ export default function ProviderMyDay({
 
                       <div className="dashboard-appointment-main">
                         <strong>
-                          {appointment.services
-                            .map((service) => service.name)
-                            .join(", ")}
+                          {appointmentServiceNames(appointment)}
+                        </strong>
+                        <span>
+                          {appointment.customer.name} ·{" "}
+                          {appointment.reference}
+                        </span>
+                      </div>
+
+                      <em className="provider-status-pill">
+                        {appointment.status
+                          .replaceAll("_", " ")
+                          .toLowerCase()}
+                      </em>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="workspace-panel appointments-panel">
+              <div className="workspace-panel-head">
+                <div>
+                  <span>COMING UP</span>
+                  <h2>Upcoming appointments</h2>
+                </div>
+                <Link href="/app/appointments">
+                  View all →
+                </Link>
+              </div>
+
+              {upcomingAppointments.length === 0 ? (
+                <div className="workspace-empty-small">
+                  You have no upcoming confirmed appointments.
+                </div>
+              ) : (
+                <div className="dashboard-appointment-list">
+                  {upcomingAppointments.map((appointment) => (
+                    <Link
+                      key={appointment.id}
+                      href={`/app/appointments?id=${appointment.id}`}
+                      className="dashboard-appointment-row"
+                    >
+                      <div className="dashboard-appointment-time">
+                        <strong>
+                          {new Intl.DateTimeFormat("en-GH", {
+                            timeZone: workspace.timeZone,
+                            month: "short",
+                            day: "numeric",
+                          }).format(new Date(appointment.startAt))}
+                        </strong>
+                        <span>
+                          {formatTime(
+                            appointment.startAt,
+                            workspace.timeZone,
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="dashboard-appointment-main">
+                        <strong>
+                          {appointmentServiceNames(appointment)}
                         </strong>
                         <span>
                           {appointment.customer.name} ·{" "}

@@ -9140,3 +9140,79 @@ footer {
     grid-template-columns: 1fr;
   }
 }
+
+/* Workspace account and sign-out controls */
+.workspace-signout-button {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 14px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px;
+  background: rgba(255,255,255,.045);
+  color: #d9e2e7;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.workspace-signout-button:hover {
+  background: rgba(255,255,255,.09);
+  border-color: rgba(255,255,255,.2);
+  color: #fff;
+}
+
+.workspace-signout-button:disabled {
+  opacity: .55;
+  cursor: wait;
+}
+
+.workspace-mobile-nav-links {
+  display: grid;
+}
+
+.workspace-mobile-account {
+  margin-top: auto;
+  padding: 18px;
+  border-top: 1px solid rgba(255,255,255,.08);
+}
+
+.workspace-mobile-account .workspace-user {
+  color: #fff;
+}
+
+.workspace-mobile-account .workspace-user span {
+  color: #82959f;
+}
+
+@media (min-width: 701px) and (max-width: 1050px) {
+  .workspace-sidebar-footer {
+    display: block;
+    padding: 10px;
+  }
+
+  .workspace-sidebar-footer .workspace-user {
+    justify-content: center;
+  }
+
+  .workspace-sidebar-footer .workspace-user > div:last-child {
+    display: none;
+  }
+
+  .workspace-sidebar-footer .workspace-signout-button {
+    padding: 8px 4px;
+    font-size: 9px;
+  }
+}
+
+@media (max-width: 700px) {
+  .workspace-mobile-nav {
+    display: flex;
+    flex-direction: column;
+  }
+}

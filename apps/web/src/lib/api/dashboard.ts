@@ -69,6 +69,12 @@ export interface Appointment {
   source: string;
   customerProfileId: string | null;
   customerRecordId: string;
+  customer?: {
+    name: string;
+    phone: string | null;
+    email: string | null;
+    notes: string | null;
+  };
   assignedStaffProfileId: string;
   startAt: string;
   endAt: string;

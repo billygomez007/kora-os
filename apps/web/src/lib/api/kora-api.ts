@@ -249,3 +249,20 @@ export async function koraEnvelope<T>(
 ): Promise<ApiEnvelope<T>> {
   return koraApi<ApiEnvelope<T>>(path, init);
 }
+
+export async function logoutKoraSession(): Promise<void> {
+  const session = getKoraSession();
+
+  try {
+    if (session?.accessToken) {
+      await authenticatedFetch(
+        "/auth/logout",
+        { method: "POST" },
+        session.accessToken,
+      );
+    }
+  } finally {
+    clearKoraSession();
+  }
+}
+

@@ -18,6 +18,29 @@ const MAX_LIST_RANGE_DAYS = 92;
 export class AppointmentQueriesService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async resolveStaffProfileForMembership(
+    organizationId: string,
+    membershipId: string,
+  ): Promise<{ id: string }> {
+    const staffProfile = await this.prisma.staffProfile.findFirst({
+      where: {
+        organizationId,
+        membershipId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!staffProfile) {
+      throw new NotFoundException(
+        'Staff profile not found for this membership',
+      );
+    }
+
+    return staffProfile;
+  }
+
   async listForCustomer(
     customerProfileId: string,
     options: { cursor?: string; limit?: number },
@@ -58,7 +81,13 @@ export class AppointmentQueriesService {
   async listForOrganizationBranch(
     organizationId: string,
     branchId: string,
-    options: { from: string; to: string; cursor?: string; limit?: number },
+    options: {
+      from: string;
+      to: string;
+      cursor?: string;
+      limit?: number;
+      assignedStaffProfileId?: string;
+    },
   ): Promise<PaginatedPayload<BusinessAppointmentView>> {
     const from = new Date(options.from);
     const to = new Date(options.to);
@@ -77,6 +106,9 @@ export class AppointmentQueriesService {
       where: {
         organizationId,
         branchId,
+        ...(options.assignedStaffProfileId
+          ? { assignedStaffProfileId: options.assignedStaffProfileId }
+          : {}),
         startAt: { gte: from, lte: to },
         ...(cursorId ? { id: { gt: cursorId } } : {}),
       },
@@ -97,9 +129,17 @@ export class AppointmentQueriesService {
     organizationId: string,
     branchId: string,
     appointmentId: string,
+    assignedStaffProfileId?: string,
   ): Promise<BusinessAppointmentView> {
     const appointment = await this.prisma.appointment.findFirst({
-      where: { id: appointmentId, organizationId, branchId },
+      where: {
+        id: appointmentId,
+        organizationId,
+        branchId,
+        ...(assignedStaffProfileId
+          ? { assignedStaffProfileId }
+          : {}),
+      },
       include: APPOINTMENT_VIEW_INCLUDE,
     });
     if (!appointment) {

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { getKoraSession } from "@/lib/auth/session";
+import { logoutKoraSession } from "@/lib/api/kora-api";
 import {
   resolveActiveWorkspace,
   type ActiveWorkspace,
@@ -195,6 +196,7 @@ export default function WorkspaceShell({
 
   const [accessResolved, setAccessResolved] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -239,6 +241,18 @@ export default function WorkspaceShell({
   const pageAllowed =
     !accessResolved ||
     routeIsAllowed(pathname, identity.permissionCodes);
+
+  async function handleSignOut() {
+    if (signingOut) return;
+
+    setSigningOut(true);
+
+    try {
+      await logoutKoraSession();
+    } finally {
+      window.location.replace("/login");
+    }
+  }
 
   function renderNavItem(item: NavItem, mobile = false) {
     const active =
@@ -300,6 +314,15 @@ export default function WorkspaceShell({
               <span>{identity.email || "Kora account"}</span>
             </div>
           </div>
+
+          <button
+            type="button"
+            className="workspace-signout-button"
+            onClick={() => void handleSignOut()}
+            disabled={signingOut}
+          >
+            {signingOut ? "Signing out…" : "Sign out"}
+          </button>
         </div>
       </aside>
 
@@ -386,9 +409,33 @@ export default function WorkspaceShell({
               </button>
             </div>
 
-            {visibleNavItems.map((item) =>
-              renderNavItem(item, true),
-            )}
+            <div className="workspace-mobile-nav-links">
+              {visibleNavItems.map((item) =>
+                renderNavItem(item, true),
+              )}
+            </div>
+
+            <div className="workspace-mobile-account">
+              <div className="workspace-user">
+                <div className="workspace-avatar">
+                  {identity.email?.slice(0, 1).toUpperCase() || "K"}
+                </div>
+
+                <div>
+                  <strong>{identity.roleLabel}</strong>
+                  <span>{identity.email || "Kora account"}</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="workspace-signout-button"
+                onClick={() => void handleSignOut()}
+                disabled={signingOut}
+              >
+                {signingOut ? "Signing out…" : "Sign out"}
+              </button>
+            </div>
           </nav>
         </div>
       ) : null}

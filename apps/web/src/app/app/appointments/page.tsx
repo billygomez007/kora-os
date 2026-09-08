@@ -108,6 +108,7 @@ export default function AppointmentsPage() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [canManageAppointments, setCanManageAppointments] = useState(false);
 
   const [filter, setFilter] = useState<AppointmentFilter>("ALL");
 
@@ -133,6 +134,10 @@ export default function AppointmentsPage() {
     try {
       const workspace = await resolveActiveWorkspace();
 
+      setCanManageAppointments(
+        workspace.permissionCodes.includes("appointments.manage"),
+      );
+
       const from = new Date();
       from.setDate(from.getDate() - 15);
       from.setHours(0, 0, 0, 0);
@@ -147,54 +152,65 @@ export default function AppointmentsPage() {
         limit: "100",
       });
 
-      const [
-        appointmentEnvelope,
-        organizationServices,
-        branchServiceData,
-        staffData,
-      ] = await Promise.all([
-        koraEnvelope<Appointment[]>(
-          `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/appointments?${query.toString()}`,
-        ),
-        koraData<Service[]>(
-          `/organizations/${workspace.organizationId}/services`,
-        ),
-        koraData<BranchService[]>(
-          `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/services`,
-        ),
-        koraData<StaffMember[]>(
-          `/organizations/${workspace.organizationId}/staff`,
-        ),
-      ]);
+      const canManage =
+        workspace.permissionCodes.includes("appointments.manage");
 
-      const activeBranchServices = branchServiceData.filter(
-        (item) => item.isEnabled !== false,
-      );
-
-      const assignmentEntries = await Promise.all(
-        activeBranchServices.map(async (branchService) => {
-          const assignments = await koraData<StaffAssignment[]>(
-            `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/services/${branchService.serviceId}/staff`,
-          );
-
-          return [
-            branchService.serviceId,
-            assignments.filter((assignment) => assignment.isBookable !== false),
-          ] as const;
-        }),
+      const appointmentEnvelope = await koraEnvelope<Appointment[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/appointments?${query.toString()}`,
       );
 
       setAppointments(appointmentEnvelope.data ?? []);
-      setServices(
-        organizationServices.filter(
-          (service) => !service.archivedAt,
-        ),
-      );
-      setBranchServices(activeBranchServices);
-      setStaff(staffData);
-      setServiceAssignments(
-        Object.fromEntries(assignmentEntries),
-      );
+
+      if (canManage) {
+        const [
+          organizationServices,
+          branchServiceData,
+          staffData,
+        ] = await Promise.all([
+          koraData<Service[]>(
+            `/organizations/${workspace.organizationId}/services`,
+          ),
+          koraData<BranchService[]>(
+            `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/services`,
+          ),
+          koraData<StaffMember[]>(
+            `/organizations/${workspace.organizationId}/staff`,
+          ),
+        ]);
+
+        const activeBranchServices = branchServiceData.filter(
+          (item) => item.isEnabled !== false,
+        );
+
+        const assignmentEntries = await Promise.all(
+          activeBranchServices.map(async (branchService) => {
+            const assignments = await koraData<StaffAssignment[]>(
+              `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/services/${branchService.serviceId}/staff`,
+            );
+
+            return [
+              branchService.serviceId,
+              assignments.filter(
+                (assignment) => assignment.isBookable !== false,
+              ),
+            ] as const;
+          }),
+        );
+
+        setServices(
+          organizationServices.filter(
+            (service) => !service.archivedAt,
+          ),
+        );
+        setBranchServices(activeBranchServices);
+        setStaff(staffData);
+        setServiceAssignments(Object.fromEntries(assignmentEntries));
+      } else {
+        setServices([]);
+        setBranchServices([]);
+        setStaff([]);
+        setServiceAssignments({});
+      }
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -324,6 +340,11 @@ export default function AppointmentsPage() {
 
   async function createAppointment(event: FormEvent) {
     event.preventDefault();
+
+    if (!canManageAppointments) {
+      setError("You do not have permission to create appointments.");
+      return;
+    }
 
     if (!customerName.trim()) {
       setError("Enter the customer's name.");
@@ -523,13 +544,15 @@ export default function AppointmentsPage() {
     <WorkspaceShell
       title="Appointments"
       actions={
-        <button
-          type="button"
-          className="workspace-primary-button"
-          onClick={() => setShowCreate(true)}
-        >
-          + New appointment
-        </button>
+        canManageAppointments ? (
+          <button
+            type="button"
+            className="workspace-primary-button"
+            onClick={() => setShowCreate(true)}
+          >
+            + New appointment
+          </button>
+        ) : undefined
       }
     >
       <section className="workspace-feature-heading appointments-heading">
@@ -624,12 +647,14 @@ export default function AppointmentsPage() {
               Create your first appointment when a customer
               calls, walks in or books with your team.
             </p>
-            <button
-              type="button"
-              onClick={() => setShowCreate(true)}
-            >
-              Create appointment
-            </button>
+            {canManageAppointments && (
+              <button
+                type="button"
+                onClick={() => setShowCreate(true)}
+              >
+                Create appointment
+              </button>
+            )}
           </div>
         ) : (
           <div className="appointments-table-wrap">
@@ -700,7 +725,7 @@ export default function AppointmentsPage() {
                     openAppointment(appointment)
                   }
                 >
-                  Manage
+                  {canManageAppointments ? "Manage" : "View"}
                 </button>
               </div>
             ))}
@@ -708,7 +733,7 @@ export default function AppointmentsPage() {
         )}
       </section>
 
-      {showCreate && (
+      {showCreate && canManageAppointments && (
         <div className="services-drawer-backdrop">
           <aside className="services-drawer appointment-drawer">
             <div className="services-drawer-head">
@@ -999,6 +1024,77 @@ export default function AppointmentsPage() {
               </section>
 
               <section className="appointment-manage-section">
+                <small>CUSTOMER</small>
+
+                <div className="appointment-manage-service">
+                  <strong>
+                    {selectedAppointment.customer?.name || "Customer"}
+                  </strong>
+                  <span>
+                    {selectedAppointment.customer?.phone ||
+                      "No phone number provided"}
+                  </span>
+                </div>
+
+                {selectedAppointment.customer?.phone && (
+                  <a
+                    href={`tel:${selectedAppointment.customer.phone}`}
+                    className="workspace-primary-button"
+                  >
+                    Call customer
+                  </a>
+                )}
+
+                {selectedAppointment.customer?.email && (
+                  <div className="appointment-manage-service">
+                    <strong>Email</strong>
+                    <span>{selectedAppointment.customer.email}</span>
+                  </div>
+                )}
+
+                {selectedAppointment.customer?.notes && (
+                  <div className="appointment-manage-service">
+                    <strong>Customer notes</strong>
+                    <span>{selectedAppointment.customer.notes}</span>
+                  </div>
+                )}
+              </section>
+
+              <section className="appointment-manage-section">
+                <small>BOOKING DETAILS</small>
+
+                <div className="appointment-manage-service">
+                  <strong>Provider</strong>
+                  <span>
+                    {selectedAppointment.providerDisplayName ||
+                      "Assigned provider"}
+                  </span>
+                </div>
+
+                <div className="appointment-manage-service">
+                  <strong>Duration</strong>
+                  <span>
+                    {selectedAppointment.items.reduce(
+                      (total, item) => total + item.durationMinutes,
+                      0,
+                    )} min
+                  </span>
+                </div>
+
+                <div className="appointment-manage-service">
+                  <strong>Reference</strong>
+                  <span>{selectedAppointment.reference}</span>
+                </div>
+
+                <div className="appointment-manage-service">
+                  <strong>Source</strong>
+                  <span>
+                    {selectedAppointment.source.replaceAll("_", " ")}
+                  </span>
+                </div>
+              </section>
+
+              <section className="appointment-manage-section">
                 <small>SERVICES</small>
                 {selectedAppointment.items.map((item) => (
                   <div
@@ -1017,8 +1113,8 @@ export default function AppointmentsPage() {
                 ))}
               </section>
 
-              {selectedAppointment.status ===
-                "CONFIRMED" && (
+              {selectedAppointment.status === "CONFIRMED" &&
+                canManageAppointments && (
                 <>
                   <section className="appointment-manage-section">
                     <small>RESCHEDULE</small>

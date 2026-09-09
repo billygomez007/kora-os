@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { assertMembershipHasBranchAccess } from '../../common/authorization/assert-branch-access.util.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
 import { PrismaService } from '../../database/prisma.service.js';
@@ -6,11 +11,17 @@ import { QueueEntryStatus } from '../../generated/prisma/client.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { AvailabilityEngineService } from '../availability/availability-engine.service.js';
-import { queueEntryViewInclude, toQueueEntryView, type QueueEntryView } from './queue-entry-view.js';
+import {
+  queueEntryViewInclude,
+  toQueueEntryView,
+  type QueueEntryView,
+} from './queue-entry-view.js';
 import { assertQueueTransitionAllowed } from './queue-transition.util.js';
 import { bumpQueueRevision } from './queue-ticket.util.js';
 
-type QueueEntryWithServices = Prisma.QueueEntryGetPayload<{ include: { services: true } }>;
+type QueueEntryWithServices = Prisma.QueueEntryGetPayload<{
+  include: { services: true };
+}>;
 
 /** No `:branchId` route param exists for any of these commands (docs
  * task suggested surface: `/organizations/:organizationId/queue-
@@ -26,7 +37,11 @@ export class QueueCommandsService {
     private readonly auditService: AuditService,
   ) {}
 
-  async call(tenant: TenantContext, requestId: string, queueEntryId: string): Promise<QueueEntryView> {
+  async call(
+    tenant: TenantContext,
+    requestId: string,
+    queueEntryId: string,
+  ): Promise<QueueEntryView> {
     const entry = await this.loadOwnedEntry(tenant, queueEntryId);
     return this.transition(tenant, requestId, entry, QueueEntryStatus.CALLED, {
       action: 'queue.entry.called',
@@ -34,7 +49,11 @@ export class QueueCommandsService {
     });
   }
 
-  async returnToWaiting(tenant: TenantContext, requestId: string, queueEntryId: string): Promise<QueueEntryView> {
+  async returnToWaiting(
+    tenant: TenantContext,
+    requestId: string,
+    queueEntryId: string,
+  ): Promise<QueueEntryView> {
     const entry = await this.loadOwnedEntry(tenant, queueEntryId);
     return this.transition(tenant, requestId, entry, QueueEntryStatus.WAITING, {
       action: 'queue.entry.returned_to_waiting',
@@ -49,14 +68,24 @@ export class QueueCommandsService {
     reason: string | undefined,
   ): Promise<QueueEntryView> {
     const entry = await this.loadOwnedEntry(tenant, queueEntryId);
-    return this.transition(tenant, requestId, entry, QueueEntryStatus.CANCELLED, {
-      action: 'queue.entry.cancelled',
-      data: { cancelledAt: new Date() },
-      reason,
-    });
+    return this.transition(
+      tenant,
+      requestId,
+      entry,
+      QueueEntryStatus.CANCELLED,
+      {
+        action: 'queue.entry.cancelled',
+        data: { cancelledAt: new Date() },
+        reason,
+      },
+    );
   }
 
-  async noShow(tenant: TenantContext, requestId: string, queueEntryId: string): Promise<QueueEntryView> {
+  async noShow(
+    tenant: TenantContext,
+    requestId: string,
+    queueEntryId: string,
+  ): Promise<QueueEntryView> {
     const entry = await this.loadOwnedEntry(tenant, queueEntryId);
     return this.transition(tenant, requestId, entry, QueueEntryStatus.NO_SHOW, {
       action: 'queue.entry.no_show',
@@ -71,10 +100,14 @@ export class QueueCommandsService {
     staffProfileId: string,
   ): Promise<QueueEntryView> {
     const entry = await this.loadOwnedEntry(tenant, queueEntryId);
-    if (entry.status !== QueueEntryStatus.WAITING && entry.status !== QueueEntryStatus.CALLED) {
+    if (
+      entry.status !== QueueEntryStatus.WAITING &&
+      entry.status !== QueueEntryStatus.CALLED
+    ) {
       throw new ConflictException({
         code: 'QUEUE_ENTRY_INVALID_TRANSITION',
-        message: 'A provider can only be assigned while the queue entry is waiting or called.',
+        message:
+          'A provider can only be assigned while the queue entry is waiting or called.',
       });
     }
 
@@ -86,19 +119,29 @@ export class QueueCommandsService {
       staffProfileId,
     );
     if (eligible.length === 0) {
-      throw new BadRequestException('The selected staff member cannot perform the requested services at this branch');
+      throw new BadRequestException(
+        'The selected staff member cannot perform the requested services at this branch',
+      );
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.queueEntry.updateMany({
         where: { id: queueEntryId, version: entry.version },
-        data: { assignedStaffProfileId: staffProfileId, version: { increment: 1 } },
+        data: {
+          assignedStaffProfileId: staffProfileId,
+          version: { increment: 1 },
+        },
       });
       if (result.count === 0) {
-        throw new ConflictException('This queue entry was already updated by someone else');
+        throw new ConflictException(
+          'This queue entry was already updated by someone else',
+        );
       }
       await bumpQueueRevision(tx, entry.branchQueueDayId);
-      return tx.queueEntry.findUniqueOrThrow({ where: { id: queueEntryId }, include: queueEntryViewInclude });
+      return tx.queueEntry.findUniqueOrThrow({
+        where: { id: queueEntryId },
+        include: queueEntryViewInclude,
+      });
     });
 
     await this.auditService.record({
@@ -118,9 +161,34 @@ export class QueueCommandsService {
     return toQueueEntryView(updated);
   }
 
-  async getOne(tenant: TenantContext, queueEntryId: string): Promise<QueueEntryView> {
+  async getOne(
+    tenant: TenantContext,
+    queueEntryId: string,
+  ): Promise<QueueEntryView> {
+    const canManageQueue =
+      tenant.isOwner || tenant.permissionCodes.has('queue.manage');
+    const ownStaffProfile = canManageQueue
+      ? null
+      : await this.prisma.staffProfile.findUnique({
+          where: {
+            organizationId_membershipId: {
+              organizationId: tenant.organizationId,
+              membershipId: tenant.membershipId,
+            },
+          },
+          select: { id: true },
+        });
+    if (!canManageQueue && !ownStaffProfile) {
+      throw new NotFoundException('Queue entry not found');
+    }
     const entry = await this.prisma.queueEntry.findFirst({
-      where: { id: queueEntryId, organizationId: tenant.organizationId },
+      where: {
+        id: queueEntryId,
+        organizationId: tenant.organizationId,
+        ...(!canManageQueue
+          ? { assignedStaffProfileId: ownStaffProfile!.id }
+          : {}),
+      },
       include: queueEntryViewInclude,
     });
     if (!entry) {
@@ -130,7 +198,10 @@ export class QueueCommandsService {
     return toQueueEntryView(entry);
   }
 
-  private async loadOwnedEntry(tenant: TenantContext, queueEntryId: string): Promise<QueueEntryWithServices> {
+  private async loadOwnedEntry(
+    tenant: TenantContext,
+    queueEntryId: string,
+  ): Promise<QueueEntryWithServices> {
     const entry = await this.prisma.queueEntry.findFirst({
       where: { id: queueEntryId, organizationId: tenant.organizationId },
       include: { services: true },
@@ -147,7 +218,11 @@ export class QueueCommandsService {
     requestId: string,
     entry: QueueEntryWithServices,
     newStatus: QueueEntryStatus,
-    options: { action: string; data: Prisma.QueueEntryUpdateInput; reason?: string },
+    options: {
+      action: string;
+      data: Prisma.QueueEntryUpdateInput;
+      reason?: string;
+    },
   ): Promise<QueueEntryView> {
     assertQueueTransitionAllowed(entry.status, newStatus);
 
@@ -157,7 +232,9 @@ export class QueueCommandsService {
         data: { ...options.data, status: newStatus, version: { increment: 1 } },
       });
       if (result.count === 0) {
-        throw new ConflictException('This queue entry was already updated by someone else');
+        throw new ConflictException(
+          'This queue entry was already updated by someone else',
+        );
       }
       await tx.queueEntryStatusHistory.create({
         data: {
@@ -171,7 +248,10 @@ export class QueueCommandsService {
         },
       });
       await bumpQueueRevision(tx, entry.branchQueueDayId);
-      return tx.queueEntry.findUniqueOrThrow({ where: { id: entry.id }, include: queueEntryViewInclude });
+      return tx.queueEntry.findUniqueOrThrow({
+        where: { id: entry.id },
+        include: queueEntryViewInclude,
+      });
     });
 
     await this.auditService.record({

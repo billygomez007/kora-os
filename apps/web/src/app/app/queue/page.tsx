@@ -223,35 +223,70 @@ export default function QueuePage() {
   const [assignStaffId, setAssignStaffId] =
     useState("");
 
+  const canManageQueue = Boolean(
+    workspace &&
+      (workspace.roleCodes.includes("owner") ||
+        workspace.permissionCodes.includes("queue.manage")),
+  );
+  const canStartService = Boolean(
+    workspace &&
+      [
+        "service_sessions.start",
+        "service_sessions.perform",
+        "service_sessions.manage",
+      ].some((permission) =>
+        workspace.permissionCodes.includes(permission),
+      ),
+  );
+  const canCompleteService = Boolean(
+    workspace &&
+      [
+        "service_sessions.perform",
+        "service_sessions.manage",
+      ].some((permission) =>
+        workspace.permissionCodes.includes(permission),
+      ),
+  );
+
   const load = useCallback(async () => {
     setError("");
 
     try {
       const active = await resolveActiveWorkspace();
 
-      const [
-        queueData,
-        customerData,
-        serviceData,
-        branchServiceData,
-        staffData,
-      ] = await Promise.all([
-        koraData<QueueView>(
-          `/organizations/${active.organizationId}/branches/${active.branchId}/queue`,
-        ),
-        koraData<Customer[]>(
-          `/organizations/${active.organizationId}/customers`,
-        ),
-        koraData<Service[]>(
-          `/organizations/${active.organizationId}/services`,
-        ),
-        koraData<BranchService[]>(
-          `/organizations/${active.organizationId}/branches/${active.branchId}/services`,
-        ),
-        koraData<StaffMember[]>(
-          `/organizations/${active.organizationId}/staff`,
-        ),
+      const managesQueue =
+        active.roleCodes.includes("owner") ||
+        active.permissionCodes.includes("queue.manage");
+      const queuePromise = koraData<QueueView>(
+        `/organizations/${active.organizationId}/branches/${active.branchId}/queue`,
+      );
+      const managementDataPromise = managesQueue
+        ? Promise.all([
+            koraData<Customer[]>(
+              `/organizations/${active.organizationId}/customers`,
+            ),
+            koraData<Service[]>(
+              `/organizations/${active.organizationId}/services`,
+            ),
+            koraData<BranchService[]>(
+              `/organizations/${active.organizationId}/branches/${active.branchId}/services`,
+            ),
+            koraData<StaffMember[]>(
+              `/organizations/${active.organizationId}/staff`,
+            ),
+          ])
+        : Promise.resolve<[Customer[], Service[], BranchService[], StaffMember[]]>([
+            [],
+            [],
+            [],
+            [],
+          ]);
+      const [queueData, managementData] = await Promise.all([
+        queuePromise,
+        managementDataPromise,
       ]);
+      const [customerData, serviceData, branchServiceData, staffData] =
+        managementData;
 
       const enabledServiceIds = new Set(
         branchServiceData
@@ -279,7 +314,16 @@ export default function QueuePage() {
         ),
       );
 
-      try {
+      if (
+        active.permissionCodes.includes("service_sessions.read") &&
+        active.permissionCodes.some((permission) =>
+          [
+            "service_sessions.perform",
+            "service_sessions.manage",
+          ].includes(permission),
+        )
+      ) {
+        try {
         const sessionQuery = new URLSearchParams({
           branchId: active.branchId,
           status: "IN_PROGRESS",
@@ -292,9 +336,10 @@ export default function QueuePage() {
           );
 
         setServiceSessions(sessionEnvelope.data ?? []);
-      } catch {
-        // Queue remains usable for roles that can operate the queue
-        // but do not have service_sessions.read permission.
+        } catch {
+          setServiceSessions([]);
+        }
+      } else {
         setServiceSessions([]);
       }
 
@@ -387,7 +432,7 @@ export default function QueuePage() {
   async function createWalkIn(event: FormEvent) {
     event.preventDefault();
 
-    if (!workspace || selectedServiceIds.length === 0) {
+    if (!canManageQueue || !workspace || selectedServiceIds.length === 0) {
       return;
     }
 
@@ -478,7 +523,7 @@ export default function QueuePage() {
       | "return-to-waiting"
       | "no-show",
   ) {
-    if (!workspace) return;
+    if (!canManageQueue || !workspace) return;
 
     setWorkingId(entry.id);
     setError("");
@@ -514,6 +559,7 @@ export default function QueuePage() {
 
   async function assignProvider() {
     if (
+      !canManageQueue ||
       !workspace ||
       !selectedEntry ||
       !assignStaffId
@@ -551,7 +597,7 @@ export default function QueuePage() {
   }
 
   async function startService(entry: QueueEntry) {
-    if (!workspace) return;
+    if (!canStartService || !workspace) return;
 
     if (!entry.assignedStaffProfileId) {
       setError(
@@ -597,7 +643,7 @@ export default function QueuePage() {
   }
 
   async function completeService(entry: QueueEntry) {
-    if (!workspace) return;
+    if (!canCompleteService || !workspace) return;
 
     const session =
       activeSessionByQueueEntry.get(entry.id);
@@ -643,7 +689,7 @@ export default function QueuePage() {
   }
 
   async function cancelEntry(entry: QueueEntry) {
-    if (!workspace) return;
+    if (!canManageQueue || !workspace) return;
 
     const reason =
       window.prompt(
@@ -697,16 +743,18 @@ export default function QueuePage() {
             Refresh
           </button>
 
-          <button
-            type="button"
-            className="workspace-primary-button"
-            onClick={() => {
-              resetWalkInForm();
-              setShowWalkIn(true);
-            }}
-          >
-            + Add walk-in
-          </button>
+          {canManageQueue ? (
+            <button
+              type="button"
+              className="workspace-primary-button"
+              onClick={() => {
+                resetWalkInForm();
+                setShowWalkIn(true);
+              }}
+            >
+              + Add walk-in
+            </button>
+          ) : null}
         </>
       }
     >
@@ -928,12 +976,14 @@ export default function QueuePage() {
               appointment to start today&apos;s queue.
             </p>
 
-            <button
-              className="queue-primary"
-              onClick={() => setShowWalkIn(true)}
-            >
-              ＋ Add walk-in
-            </button>
+            {canManageQueue ? (
+              <button
+                className="queue-primary"
+                onClick={() => setShowWalkIn(true)}
+              >
+                ＋ Add walk-in
+              </button>
+            ) : null}
           </div>
         ) : (
           <div className="queue-list">
@@ -1008,7 +1058,7 @@ export default function QueuePage() {
                     event.stopPropagation()
                   }
                 >
-                  {entry.status === "WAITING" ? (
+                  {canManageQueue && entry.status === "WAITING" ? (
                     <button
                       disabled={
                         workingId === entry.id
@@ -1024,7 +1074,7 @@ export default function QueuePage() {
                     </button>
                   ) : null}
 
-                  {entry.status === "CALLED" ? (
+                  {canManageQueue && entry.status === "CALLED" ? (
                     <button
                       disabled={
                         workingId === entry.id
@@ -1040,7 +1090,7 @@ export default function QueuePage() {
                     </button>
                   ) : null}
 
-                  {["WAITING", "CALLED"].includes(
+                  {canStartService && ["WAITING", "CALLED"].includes(
                     entry.status,
                   ) ? (
                     <button
@@ -1061,7 +1111,7 @@ export default function QueuePage() {
                     </button>
                   ) : null}
 
-                  {entry.status === "IN_SERVICE" ? (
+                  {canCompleteService && entry.status === "IN_SERVICE" ? (
                     <button
                       disabled={
                         workingId === entry.id ||
@@ -1099,7 +1149,7 @@ export default function QueuePage() {
         )}
       </section>
 
-      {showWalkIn ? (
+      {canManageQueue && showWalkIn ? (
         <div className="queue-overlay">
           <section className="queue-modal">
             <div className="queue-modal-head">
@@ -1376,7 +1426,7 @@ export default function QueuePage() {
                 ASSIGNED PROVIDER
               </span>
 
-              <select
+              {canManageQueue ? <select
                 value={assignStaffId}
                 disabled={
                   !["WAITING", "CALLED"].includes(
@@ -1403,9 +1453,9 @@ export default function QueuePage() {
                       "Kora team member"}
                   </option>
                 ))}
-              </select>
+              </select> : <strong>Assigned provider</strong>}
 
-              {["WAITING", "CALLED"].includes(
+              {canManageQueue && ["WAITING", "CALLED"].includes(
                 selectedEntry.status,
               ) && !selectedEntry.assignedStaffProfileId ? (
                 <p className="queue-action-help">
@@ -1413,7 +1463,7 @@ export default function QueuePage() {
                 </p>
               ) : null}
 
-              {["WAITING", "CALLED"].includes(
+              {canManageQueue && ["WAITING", "CALLED"].includes(
                 selectedEntry.status,
               ) ? (
                 <button
@@ -1448,7 +1498,7 @@ export default function QueuePage() {
               </span>
 
               <div className="queue-command-grid">
-                {selectedEntry.status ===
+                {canManageQueue && selectedEntry.status ===
                 "WAITING" ? (
                   <button
                     onClick={() =>
@@ -1462,7 +1512,7 @@ export default function QueuePage() {
                   </button>
                 ) : null}
 
-                {selectedEntry.status ===
+                {canManageQueue && selectedEntry.status ===
                 "CALLED" ? (
                   <button
                     onClick={() =>
@@ -1476,7 +1526,7 @@ export default function QueuePage() {
                   </button>
                 ) : null}
 
-                {["WAITING", "CALLED"].includes(
+                {canStartService && ["WAITING", "CALLED"].includes(
                   selectedEntry.status,
                 ) ? (
                   <button
@@ -1498,7 +1548,7 @@ export default function QueuePage() {
                   </button>
                 ) : null}
 
-                {selectedEntry.status === "IN_SERVICE" ? (
+                {canCompleteService && selectedEntry.status === "IN_SERVICE" ? (
                   <button
                     className="primary-command"
                     disabled={
@@ -1520,7 +1570,7 @@ export default function QueuePage() {
                   </button>
                 ) : null}
 
-                {["WAITING", "CALLED"].includes(
+                {canManageQueue && ["WAITING", "CALLED"].includes(
                   selectedEntry.status,
                 ) ? (
                   <button
@@ -1535,7 +1585,7 @@ export default function QueuePage() {
                   </button>
                 ) : null}
 
-                {["WAITING", "CALLED"].includes(
+                {canManageQueue && ["WAITING", "CALLED"].includes(
                   selectedEntry.status,
                 ) ? (
                   <button

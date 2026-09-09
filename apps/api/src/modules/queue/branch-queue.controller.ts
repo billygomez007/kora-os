@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { CurrentTenant } from '../../common/authorization/decorators/current-tenant.decorator.js';
 import { RequireBranchParam } from '../../common/authorization/decorators/require-branch-param.decorator.js';
 import { RequirePermissions } from '../../common/authorization/decorators/require-permissions.decorator.js';
@@ -26,7 +36,7 @@ export class BranchQueueController {
     @Param('branchId') branchId: string,
     @Query() query: ListQueueQueryDto,
   ) {
-    return this.queriesService.listForBranch(tenant.organizationId, branchId, {
+    return this.queriesService.listForBranch(tenant, branchId, {
       businessDate: query.businessDate,
       status: query.status,
       assignedStaffProfileId: query.assignedStaffProfileId,

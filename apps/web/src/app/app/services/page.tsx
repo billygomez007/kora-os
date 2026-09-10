@@ -104,6 +104,7 @@ export default function ServicesPage() {
 
     try {
       const workspace = await resolveActiveWorkspace();
+      const canReadStaff = workspace.permissionCodes.includes("staff.read");
 
       const [
         organizationServices,
@@ -116,9 +117,11 @@ export default function ServicesPage() {
         koraData<BranchService[]>(
           `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/services`,
         ),
-        koraData<StaffMember[]>(
-          `/organizations/${workspace.organizationId}/staff`,
-        ),
+        canReadStaff
+          ? koraData<StaffMember[]>(
+              `/organizations/${workspace.organizationId}/staff`,
+            )
+          : Promise.resolve([] as StaffMember[]),
       ]);
 
       const activeServices = organizationServices.filter(

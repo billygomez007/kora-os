@@ -3,7 +3,7 @@ import {
   getKoraSession,
   saveKoraSession,
   type KoraSession,
-} from "@/lib/auth/session";
+} from "../auth/session.ts";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_KORA_API_URL?.replace(/\/$/, "") ||
@@ -265,4 +265,3 @@ export async function logoutKoraSession(): Promise<void> {
     clearKoraSession();
   }
 }
-

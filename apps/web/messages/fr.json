@@ -1,0 +1,212 @@
+{
+  "Common": {
+    "language": "Langue",
+    "english": "Anglais",
+    "french": "Français",
+    "backHome": "← Retour à l’accueil",
+    "getStarted": "Commencer",
+    "signIn": "Se connecter"
+  },
+  "Metadata": {
+    "title": "Kora OS | Gérez votre activité avec élégance",
+    "description": "Équipes, clients, rendez-vous, services, produits, paiements et performances réunis dans une plateforme puissante pour les entreprises modernes."
+  },
+  "Home": {
+    "kicker": "LA PLATEFORME DES ENTREPRISES MODERNES",
+    "title": "Gérez toute votre activité",
+    "titleAccent": "avec Kora.",
+    "value": "Réservations. Équipe. Clients. Paiements. Croissance.",
+    "body": "Gérez votre équipe, vos clients, vos rendez-vous, vos clients sans réservation, vos services, vos produits, vos paiements et vos performances, le tout avec Kora.",
+    "primaryCta": "Commencer avec Kora",
+    "secondaryCta": "Découvrir Kora",
+    "featureTitle": "Tout ce dont votre entreprise a besoin pour avancer.",
+    "finalKicker": "VOTRE ACTIVITÉ, GÉRÉE AVEC ÉLÉGANCE.",
+    "finalTitle": "Faites grandir votre entreprise avec Kora.",
+    "finalBody": "Un système unique pour votre équipe, vos clients et toutes les opérations qui font avancer votre entreprise.",
+    "talk": "Échanger avec notre équipe",
+    "footerBody": "La plateforme connectée des entreprises modernes et des clients qu’elles accompagnent.",
+    "product": "Produit",
+    "company": "Entreprise",
+    "support": "Assistance",
+    "about": "À propos",
+    "mission": "Notre mission",
+    "careers": "Carrières",
+    "contact": "Contact",
+    "help": "Centre d’aide",
+    "guides": "Guides",
+    "contactSupport": "Contacter l’assistance",
+    "privacy": "Politique de confidentialité",
+    "businessTypes": {"salons":"SALONS","barbershops":"BARBIERS","spas":"SPAS","beautyStudios":"INSTITUTS DE BEAUTÉ","wellness":"ÉTABLISSEMENTS DE BIEN-ÊTRE","more":"ET BIEN PLUS"},
+    "mockup": {
+      "dashboard": {
+        "branch":"Agence principale d’Accra","overview":"Vue d’ensemble","appointments":"Rendez-vous","queue":"File d’attente","customers":"Clients","staff":"Équipe","payments":"Paiements","reports":"Rapports","settings":"Paramètres","greeting":"Bonjour Ama","todaySummary":"Voici ce qui se passe aujourd’hui.","todayAppointments":"Rendez-vous du jour","viewAll":"Tout voir","liveQueue":"File d’attente en direct","viewQueue":"Voir la file","todayRevenue":"Chiffre d’affaires du jour","viewReports":"Voir les rapports","activeStaff":"Équipe en activité","viewStaff":"Voir l’équipe","upcomingAppointments":"Prochains rendez-vous","hairTreatment":"Soin capillaire","beardTrim":"Taille de barbe","gelManicure":"Manucure au gel","massage":"Massage","inService":"En cours","waiting":"En attente"
+      },
+      "phone": {
+        "titleLineOne":"Trouvez et réservez","titleLineTwo":"les meilleurs professionnels","search":"Rechercher un salon, un spa et plus encore...","hair":"Coiffure","barber":"Barbier","spa":"Spa","nails":"Ongles","facial":"Visage","massage":"Massage","wellness":"Bien-être","more":"Plus","promoLineOne":"Rayonnez.","promoLineTwo":"Sentez-vous bien.","bookNow":"Réserver"
+      }
+    },
+    "featureCards": {
+      "smartBookings":{"title":"Réservations intelligentes","body":"Réservations en ligne et sur place,\nréunies au même endroit."},
+      "liveQueue":{"title":"File d’attente en direct","body":"Fluidifiez l’accueil et\nsatisfaites vos clients."},
+      "staffCommissions":{"title":"Équipe et commissions","body":"Gérez votre équipe et\nsuivez ses performances."},
+      "paymentsReports":{"title":"Paiements et rapports","body":"Des paiements sécurisés et\ndes analyses claires."}
+    },
+    "fullFeatures": {
+      "kicker":"UNE PLATEFORME. UNE MAÎTRISE AU QUOTIDIEN.","title":"Tout est connecté. Rien ne vous ralentit.","body":"Kora réunit en un seul espace vos équipes, vos clients, vos services, vos produits, vos paiements et vos opérations quotidiennes.","explore":"Découvrir la fonctionnalité",
+      "items": {
+        "appointments":{"title":"Rendez-vous","body":"Permettez à vos clients de réserver en ligne et offrez à votre équipe un planning clair."},
+        "walkIns":{"title":"Accueil sans rendez-vous et file d’attente","body":"Gérez en temps réel les arrivées spontanées, l’attente et les prestations en cours."},
+        "staffManagement":{"title":"Gestion des équipes","body":"Organisez vos équipes, disponibilités, agences, plannings et performances."},
+        "serviceCatalogue":{"title":"Catalogue de services","body":"Maîtrisez les prestations, durées, tarifs, disponibilités et offres de chaque agence."},
+        "customerManagement":{"title":"Gestion de la clientèle","body":"Centralisez les profils clients, l’historique des prestations et les interactions."},
+        "transactions":{"title":"Transactions","body":"Réunissez encaissements, reçus, paiements et activité quotidienne dans un même espace."},
+        "commissions":{"title":"Commissions","body":"Suivez avec précision les revenus de l’équipe et les commissions de l’entreprise."},
+        "reports":{"title":"Rapports et analyses","body":"Comprenez votre chiffre d’affaires, la demande, les flux clients et les performances de l’entreprise."}
+      }
+    },
+    "businessMarket": {
+      "people":{"beauty":"BEAUTÉ","wellness":"BIEN-ÊTRE","people":"DES MÉTIERS","thrive":"QUI S’ÉPANOUISSENT ICI"},
+      "business":{"titleLineOne":"Pensé pour les entreprises","titleLineTwo":"qui ne s’arrêtent jamais.","manageBranches":"Gérez chacune de vos agences","realTime":"Suivez votre activité en temps réel","customerExperience":"Offrez une expérience fluide à vos clients"},
+      "marketplace":{"title":"Découvrez. Réservez. Profitez.","body":"Trouvez et réservez d’excellents professionnels près de chez vous.","all":"Tout","salonAccra":"Salon • Accra","barbershopAccra":"Barbier • Accra","spaAccra":"Spa • Accra","viewAvailability":"Voir les disponibilités"}
+    },
+    "industries": {
+      "kicker":"CONÇU POUR LES ENTREPRISES DE SERVICES","title":"UN SYSTÈME D’EXPLOITATION. DE NOMBREUX MÉTIERS.","body":"Kora est pensé pour les entreprises qui prennent soin de leurs clients chaque jour, qu’elles opèrent depuis un seul établissement ou plusieurs.","itemBody":"Gérez vos réservations, votre clientèle, vos équipes, vos services et vos opérations quotidiennes avec Kora.",
+      "items":{"barbershops":"Barbiers","hairSalons":"Salons de coiffure","beautyStudios":"Instituts de beauté","spas":"Spas","nailStudios":"Bars à ongles","wellness":"Bien-être","massageStudios":"Centres de massage","grooming":"Soins et esthétique"}
+    },
+    "operations": {"kicker":"OPÉRATIONS EN TEMPS RÉEL","title":"Gardez une vue claire sur toute votre activité.","body":"À l’accueil, chez vous ou à la tête de plusieurs établissements, Kora vous donne une vision précise des rendez-vous, files d’attente, équipes et performances.","liveBranch":"Activité des agences en direct","staffAvailability":"Disponibilité des équipes","appointmentStatus":"Statut des rendez-vous","queueVisibility":"Visibilité sur les files d’attente","serviceCompletion":"Prestations terminées","businessPerformance":"Performances de l’entreprise"},
+    "customerJourney": {"kicker":"POUR LES CLIENTS","title":"Les meilleurs services doivent être faciles à trouver.","body":"Kora aide les clients à trouver des professionnels de confiance, à comprendre leurs offres et à réserver le bon service sans complication.","discoverTitle":"Découvrez les professionnels à proximité","discoverBody":"Recherchez par service, catégorie, lieu et disponibilité.","chooseTitle":"Choisissez en toute confiance","chooseBody":"Consultez les services, les informations de l’entreprise et les créneaux disponibles.","bookTitle":"Réservez en quelques instants","bookBody":"Choisissez directement dans Kora le service et l’horaire qui vous conviennent.","explore":"Explorer la marketplace Kora"},
+    "insights": {"kicker":"PILOTAGE DE L’ACTIVITÉ","title":"Transformez votre activité quotidienne en meilleures décisions.","body":"Kora transforme vos opérations quotidiennes en indicateurs utiles pour comprendre le chiffre d’affaires, l’activité des équipes, la demande et les habitudes des clients.","revenuePerformance":"Évolution du chiffre d’affaires","lastSevenDays":"7 derniers jours","days":{"mon":"Lun","tue":"Mar","wed":"Mer","thu":"Jeu","fri":"Ven","sat":"Sam","sun":"Dim"}},
+    "pricing": {
+      "kicker":"DES TARIFS QUI ÉVOLUENT AVEC VOUS","title":"Commencez simplement. Évoluez à votre rythme.","body":"Les offres Kora évoluent avec votre entreprise, d’un établissement unique à un réseau de plusieurs agences.",
+      "starter":{"name":"STARTER","title":"Pour les petites équipes","body":"Les outils essentiels pour les réservations, les équipes et la relation client.","cta":"Découvrir Starter"},
+      "growth":{"name":"GROWTH","title":"Pour les entreprises en croissance","body":"Davantage d’automatisation, de visibilité et de maîtrise pour votre équipe.","cta":"Choisir Growth"},
+      "pro":{"name":"PRO","title":"Pour les réseaux multi-sites","body":"Gestion avancée, rapports détaillés et contrôles renforcés.","cta":"Découvrir Pro"}
+    },
+    "security": {"kicker":"CONÇU POUR LA CONFIANCE","title":"Des fondations professionnelles dès le premier jour.","body":"Kora repose sur une authentification sécurisée, l’isolation des organisations, des autorisations maîtrisées et un historique opérationnel fiable.","passwordlessTitle":"Accès sans mot de passe","passwordlessBody":"Authentification sécurisée par code à usage unique envoyé par e-mail.","isolationTitle":"Isolation des organisations","isolationBody":"Les données restent strictement rattachées à la bonne organisation.","rolesTitle":"Contrôles selon les rôles","rolesBody":"Les autorisations déterminent précisément les accès de chaque membre de l’équipe.","historyTitle":"Historique opérationnel","historyBody":"Les actions importantes de l’entreprise sont consignées de façon claire et fiable."},
+    "cta": {"title":"Prêt à gérer votre activité en toute confiance ?","button":"Commencer avec Kora OS","noteLineOne":"Des entreprises mieux gérées.","noteLineTwo":"Un avenir plus prometteur."},
+    "footer": {"developedBy":"Développé par Realtegic Tech Solutions.","builtFor":"Pensé pour celles et ceux qui font vivre les communautés."}
+  },
+  "Marketplace": {
+    "marketplace": "Marketplace",
+    "home": "Accueil",
+    "explore": "Explorer",
+    "favorites": "Favoris",
+    "customer": "Client",
+    "kicker": "DÉCOUVRIR • RÉSERVER • PROFITER",
+    "hello": "Bonjour, {name}.",
+    "question": "De quoi avez-vous besoin aujourd’hui ?",
+    "body": "Découvrez des entreprises locales de confiance, réservez des services et achetez des produits sur Kora.",
+    "searchPlaceholder": "Rechercher une entreprise, un service ou un produit",
+    "searchLabel": "Rechercher des entreprises",
+    "search": "Rechercher",
+    "searching": "Recherche…",
+    "showingAround": "Entreprises affichées autour de {location}"
+  },
+  "MarketingHeader": {
+    "features": "Fonctionnalités",
+    "businesses": "Pour les entreprises",
+    "customers": "Pour les clients",
+    "pricing": "Tarifs",
+    "resources": "Ressources",
+    "openMenu": "Ouvrir le menu de navigation",
+    "closeMenu": "Fermer le menu de navigation",
+    "siteNavigation": "Navigation du site"
+  },
+  "Workspace": {
+    "workspace": "Espace de travail",
+    "overview": "Vue d’ensemble",
+    "appointments": "Rendez-vous",
+    "queue": "File d’attente",
+    "customers": "Clients",
+    "staff": "Équipe",
+    "services": "Services",
+    "products": "Produits et stocks",
+    "storefront": "QR et vitrine",
+    "payments": "Paiements",
+    "transactions": "Transactions",
+    "reports": "Rapports",
+    "settings": "Paramètres",
+    "account": "Compte Kora",
+    "signOut": "Se déconnecter",
+    "signingOut": "Déconnexion…",
+    "openMenu": "Ouvrir le menu de l’espace de travail",
+    "closeMenu": "Fermer le menu de l’espace de travail",
+    "checkingAccess": "Vérification de vos accès…",
+    "restrictedKicker": "ACCÈS RESTREINT",
+    "restrictedTitle": "Votre rôle ne permet pas d’accéder à cet espace.",
+    "restrictedBody": "Vos accès Kora dépendent des autorisations attribuées à votre rôle dans cette entreprise.",
+    "returnOverview": "Retour à la vue d’ensemble"
+  },
+  "Auth": {
+    "welcomeBack": "BON RETOUR PARMI NOUS",
+    "getStarted": "COMMENCEZ AVEC KORA",
+    "signInTitle": "Connectez-vous à votre espace Kora.",
+    "businessTitle": "Gérez votre activité avec Kora.",
+    "customerTitle": "Vos prochaines réservations commencent ici.",
+    "signInBody": "Saisissez votre adresse e-mail et nous vous enverrons un code de vérification sécurisé. Aucun mot de passe requis.",
+    "businessBody": "Créez votre compte Kora avec votre adresse e-mail. Nous vous enverrons un code sécurisé pour continuer.",
+    "customerBody": "Créez votre compte Kora avec votre adresse e-mail. Nous vous enverrons un code sécurisé pour accéder à la marketplace.",
+    "email": "Adresse e-mail",
+    "emailPlaceholder": "vous@entreprise.com",
+    "invalidEmail": "Saisissez une adresse e-mail valide.",
+    "apiUnavailable": "L’authentification web de Kora n’est pas connectée à l’API.",
+    "networkError": "Kora ne parvient pas à joindre l’API. Vérifiez votre connexion puis réessayez.",
+    "unexpected": "Kora a reçu une réponse inattendue. Veuillez réessayer.",
+    "sending": "Envoi du code…",
+    "continueEmail": "Continuer avec l’e-mail",
+    "chooseDifferent": "← Choisir une autre expérience Kora",
+    "newToKora": "Vous découvrez Kora ?",
+    "createAccount": "Créer un compte",
+    "alreadyUse": "Vous utilisez déjà Kora ?",
+    "signIn": "Se connecter",
+    "secure": "Authentification sécurisée sans mot de passe"
+  },
+  "CompanyPages": {
+    "about": {
+      "meta":{"title":"Kora OS | À propos de Kora","description":"Découvrez comment Kora relie les équipes, les clients, les produits, les services, les paiements et les opérations quotidiennes des entreprises modernes."},
+      "eyebrow":"À PROPOS DE KORA","headline":"Pensé pour simplifier la gestion d’une entreprise.","intro":"Kora est une plateforme de gestion qui réunit en un seul espace connecté les activités essentielles du quotidien d’une entreprise.",
+      "storyEyebrow":"POURQUOI KORA EXISTE","storyTitle":"Une façon plus claire de gérer le quotidien.",
+      "operations":"Des équipes et des clients aux rendez-vous, à l’accueil sans réservation, aux services, aux produits, aux paiements et aux performances, Kora aide les dirigeants et leurs équipes à rester organisés, à gagner en efficacité et à comprendre ce qui se passe dans leur entreprise.",
+      "fragmentation":"De nombreuses entreprises dépendent encore d’un mélange de cahiers, de feuilles de calcul, d’applications de messagerie, de relevés de paiement séparés et d’outils déconnectés. Kora rassemble ces activités pour offrir une gestion plus claire et de meilleures décisions.",
+      "serviceBusinesses":"Pour les entreprises qui accueillent leurs clients sur rendez-vous ou sans réservation, Kora propose des outils pour les réservations, les files d’attente, les plannings des équipes, la prestation de services et la gestion de la clientèle.",
+      "productBusinesses":"Pour les entreprises qui vendent des produits, Kora est conçu pour réunir progressivement les produits, les transactions, les clients et les performances dans la même expérience connectée.",
+      "marketplace":"Kora crée aussi un lien entre les entreprises et leurs clients. Grâce à la Marketplace Kora, les clients peuvent découvrir des entreprises, explorer leurs offres et interagir avec elles dans une expérience numérique plus simple.",
+      "scale":"Qu’une entreprise opère depuis un seul établissement ou gère un réseau d’agences en croissance, Kora est conçu pour lui apporter davantage de visibilité et de maîtrise.",
+      "connected":{"eyebrow":"UNE ENTREPRISE CONNECTÉE","title":"L’essentiel fonctionne ensemble.","body":"Visualisez clairement tous les éléments qui font avancer votre entreprise.","items":{"staff":"Équipe","customers":"Clients","services":"Services","products":"Produits","appointments":"Rendez-vous","walkIns":"Accueil sans rendez-vous","payments":"Paiements","performance":"Performances"}},
+      "closing":{"lineOne":"Une entreprise.","lineTwo":"Une plateforme connectée."},"attribution":"Kora est développé par Realtegic Tech Solutions."
+    },
+    "mission": {
+      "meta":{"title":"Kora OS | Notre mission","description":"La mission de Kora est de rendre les opérations quotidiennes plus simples à gérer, à développer et à comprendre grâce à une plateforme connectée."},
+      "eyebrow":"NOTRE MISSION","headline":"Rendre l’entreprise plus simple à gérer, à développer et à comprendre.","intro":"Notre mission est d’offrir aux entreprises une façon plus simple de gérer leurs équipes, leurs clients, leurs produits, leurs services, leurs paiements et toutes les activités qui les font avancer.",
+      "beliefEyebrow":"NOTRE CONVICTION","beliefTitle":"L’entreprise doit fonctionner comme un tout.","belief":"Nous pensons que les dirigeants ne devraient pas avoir besoin de plusieurs systèmes déconnectés pour comprendre ce qui se passe dans leur entreprise.","narrative":"Kora rassemble les opérations essentielles afin que les dirigeants et leurs équipes consacrent moins de temps aux processus fragmentés et davantage à leurs clients et à la croissance de leur entreprise.",
+      "principles":{"eyebrow":"NOTRE FAÇON DE CONSTRUIRE","title":"Quatre principes guident notre travail.","items":{"simplify":{"title":"SIMPLIFIER LES OPÉRATIONS","body":"Réunir les activités quotidiennes dans une plateforme connectée."},"visibility":{"title":"CRÉER DE LA VISIBILITÉ","body":"Aider les dirigeants à suivre leurs équipes, leurs clients, leurs établissements et leurs performances."},"connections":{"title":"RENFORCER LES LIENS AVEC LES CLIENTS","body":"Permettre aux clients de découvrir une entreprise, de réserver, d’acheter et d’interagir plus facilement avec elle."},"growth":{"title":"ACCOMPAGNER LA CROISSANCE","body":"Offrir une plateforme capable d’évoluer d’un établissement unique à plusieurs agences et à des opérations de plus grande ampleur."}}},
+      "vision":{"eyebrow":"NOTRE VISION À LONG TERME","title":"Là où nous allons.","body":"Notre ambition à long terme est de faire de Kora la plateforme sur laquelle les entreprises s’appuient chaque jour pour gérer leurs opérations et rester proches de leurs clients."}
+    },
+    "careers": {
+      "meta":{"title":"Kora OS | Carrières","description":"Découvrez les valeurs de l’équipe qui construit Kora et rejoignez notre réseau de talents pour de futures opportunités."},
+      "eyebrow":"CARRIÈRES","headline":"Aidez-nous à mieux repenser la gestion d’entreprise.","intro":"Kora repose sur une idée simple : gérer une entreprise ne devrait pas être inutilement compliqué.",
+      "workEyebrow":"NOTRE TRAVAIL","workTitle":"Construire pour des entreprises bien réelles.","platform":"Nous créons une plateforme qui rapproche les entreprises, les équipes et les clients, tout en simplifiant le travail quotidien derrière leur réussite.","people":"Construire Kora demande des personnes qui aiment résoudre des problèmes concrets, créer d’excellentes expériences client et développer des produits sur lesquels les entreprises peuvent compter.",
+      "values":{"eyebrow":"NOTRE FAÇON DE TRAVAILLER","title":"Les qualités qui nous tiennent à cœur.","items":{"curious":{"title":"CURIEUX","body":"Nous posons des questions, explorons de meilleures approches et continuons d’apprendre."},"responsible":{"title":"RESPONSABLES","body":"Nous assumons pleinement notre travail et les expériences que nous créons."},"collaborative":{"title":"COLLABORATIFS","body":"Les meilleurs produits naissent lorsque des perspectives différentes travaillent ensemble."},"practical":{"title":"PRAGMATIQUES","body":"Nous nous concentrons sur des problèmes réels rencontrés par de vraies entreprises."}}},
+      "openings":{"eyebrow":"POSTES OUVERTS","title":"Aucun poste à pourvoir pour le moment.","body":"Nous n’avons pas toujours de poste publié, mais nous souhaitons rester en contact avec des personnes exceptionnelles qui pensent pouvoir contribuer à la mission de Kora.","cta":"Rejoindre notre réseau de talents"},
+      "attribution":"Kora est développé par Realtegic Tech Solutions. Les modalités d’emploi de l’équipe Kora peuvent être gérées au sein de l’organisation Realtegic."
+    },
+    "contact": {
+      "meta":{"title":"Kora OS | Contact","description":"Contactez Kora au sujet de votre entreprise, de votre compte, d’un partenariat, des médias, des carrières ou de toute autre question."},
+      "eyebrow":"CONTACTER KORA","headline":"Échangeons.","intro":"Que vous souhaitiez utiliser Kora pour votre entreprise, obtenir de l’aide avec votre compte, envisager un partenariat ou simplement poser une question, nous serons heureux de vous lire.",
+      "formEyebrow":"ENVOYER UNE DEMANDE","formTitle":"Dites-nous comment nous pouvons vous aider.",
+      "details":{"label":"Coordonnées de Kora","eyebrow":"COORDONNÉES","general":"Demandes générales","information":"Informations","phone":"Téléphone","locationLabel":"Lieu","location":"Accra, Ghana","website":"Site web"},
+      "form":{"name":"Nom *","email":"E-mail professionnel *","phone":"Téléphone (facultatif)","businessName":"Nom de l’entreprise (facultatif)","country":"Pays *","type":"Type de demande *","selectType":"Sélectionnez un type de demande","message":"Message *","submit":"Vérifier la demande","required":"Ce champ est obligatoire.","invalidEmail":"Saisissez une adresse e-mail professionnelle valide.","unavailable":"L’envoi en ligne n’est pas encore disponible. Vos informations n’ont été ni envoyées ni enregistrées.","footnote":"Les champs obligatoires sont indiqués par un astérisque. Kora ne conserve pas ce formulaire tant qu’un service d’envoi sécurisé n’est pas connecté.","types":{"business":"Kora pour les entreprises","support":"Assistance client","partnerships":"Partenariats","media":"Médias et presse","careers":"Carrières","general":"Demandes générales"}},
+      "paths":{"eyebrow":"COMMENT NOUS POUVONS VOUS AIDER","title":"Commençons par la bonne conversation.","items":{"business":{"title":"POUR LES ENTREPRISES","body":"Vous souhaitez réunir vos opérations avec Kora ? Présentez-nous votre entreprise et notre équipe vous aidera à comprendre comment Kora peut répondre à vos besoins."},"partnerships":{"title":"POUR LES PARTENARIATS","body":"Nous sommes ouverts aux partenariats qui aident les entreprises à mieux fonctionner, effectuer leurs transactions et servir leurs clients."},"support":{"title":"POUR L’ASSISTANCE","body":"Vous utilisez déjà Kora ? Contactez notre équipe d’assistance pour obtenir de l’aide avec votre compte ou votre espace Kora."}}}
+    }
+  },
+  "Utility": {
+    "features": {"kicker":"FONCTIONNALITÉS KORA","title":"Tout ce dont votre entreprise de services a besoin.","body":"Rendez-vous, accueil sans réservation, files d’attente en direct, équipes, catalogue de services, clients, transactions, commissions et rapports sont réunis dans Kora.","cta":"Découvrir les fonctionnalités"},
+    "pricing": {"kicker":"TARIFS KORA","title":"Des offres qui évoluent avec votre entreprise.","body":"Les formules Starter, Growth et Pro accompagnent aussi bien les petites équipes que les entreprises présentes sur plusieurs sites.","cta":"Nous contacter au sujet des tarifs"},
+    "about": {"kicker":"À PROPOS DE KORA","title":"Un meilleur système d’exploitation pour les entreprises de services.","body":"Kora OS est une plateforme Realtegic qui réunit les opérations, les équipes, les clients et la découverte de services au sein d’un même système.","mission":"Notre mission","missionBody":"Aider les entreprises de services à gagner en clarté, tout en simplifiant la découverte et la réservation de prestations de qualité pour leurs clients."},
+    "contact": {"kicker":"CONTACTER KORA","title":"Échangez avec l’équipe Kora.","body":"Contactez-nous pour parler de votre intégration, d’un partenariat, de l’assistance, de la marketplace ou de l’utilisation de Kora dans votre entreprise de services.","cta":"Écrire à Kora"},
+    "careers": {"kicker":"CARRIÈRES","title":"Construisez avec nous l’avenir des entreprises de services.","body":"Les prochaines opportunités chez Kora seront publiées ici à mesure que notre équipe grandit.","cta":"Nous contacter au sujet des carrières"},
+    "resources": {"kicker":"RESSOURCES","title":"Tirez le meilleur parti de Kora.","body":"Vous trouverez ici des guides, des supports d’intégration, des conseils pratiques et des ressources produit.","cta":"Découvrir les fonctionnalités de Kora"},
+    "help": {"kicker":"AIDE KORA","title":"Comment pouvons-nous vous aider ?","body":"Notre centre d’aide couvre l’accès au compte, l’intégration des entreprises, les réservations, les équipes, les files d’attente, les clients, les abonnements et la marketplace.","cta":"Contacter l’assistance"},
+    "privacy": {"kicker":"CONFIDENTIALITÉ","title":"Confidentialité Kora OS","body":"Cette page présentera les informations officielles de Kora relatives à la confidentialité sur koraafric.com et la plateforme Kora.","cta":"Retourner sur Kora"}
+  }
+}

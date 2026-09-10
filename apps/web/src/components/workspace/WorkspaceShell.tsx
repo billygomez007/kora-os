@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { getKoraSession } from "@/lib/auth/session";
 import { logoutKoraSession } from "@/lib/api/kora-api";
@@ -10,103 +11,14 @@ import {
   resolveActiveWorkspace,
   type ActiveWorkspace,
 } from "@/lib/api/dashboard";
-
-interface NavItem {
-  label: string;
-  icon: string;
-  href: string;
-  anyPermissions?: string[];
-}
-
-const navItems: NavItem[] = [
-  {
-    label: "Overview",
-    icon: "▣",
-    href: "/app",
-  },
-  {
-    label: "Appointments",
-    icon: "▧",
-    href: "/app/appointments",
-    anyPermissions: ["appointments.read", "appointments.manage"],
-  },
-  {
-    label: "Queue",
-    icon: "◌",
-    href: "/app/queue",
-    anyPermissions: ["queue.read", "queue.manage"],
-  },
-  {
-    label: "Customers",
-    icon: "◉",
-    href: "/app/customers",
-    anyPermissions: ["customers.read", "customers.manage"],
-  },
-  {
-    label: "Staff",
-    icon: "♙",
-    href: "/app/staff",
-    anyPermissions: ["staff.read", "staff.manage", "staff.invite"],
-  },
-  {
-    label: "Services",
-    icon: "▤",
-    href: "/app/services",
-    anyPermissions: ["services.read", "services.manage"],
-  },
-  {
-    label: "Products & Inventory",
-    icon: "▦",
-    href: "/app/products",
-    anyPermissions: [
-      "products.read",
-      "products.manage",
-      "inventory.read",
-      "inventory.manage",
-    ],
-  },
-  {
-    label: "QR & Storefront",
-    icon: "⌗",
-    href: "/app/qr",
-    anyPermissions: ["business_profile.manage"],
-  },
-  {
-    label: "Payments",
-    icon: "▥",
-    href: "/app/payments",
-    anyPermissions: [
-      "payments.read",
-      "payments.record",
-      "payments.resolve",
-      "payments.void",
-      "payments.refund",
-    ],
-  },
-  {
-    label: "Reports",
-    icon: "◫",
-    href: "/app/reports",
-    anyPermissions: [
-      "reports.read",
-      "reports.basic",
-      "reports.advanced",
-    ],
-  },
-  {
-    label: "Settings",
-    icon: "⚙",
-    href: "/app/settings",
-    anyPermissions: [
-      "organization.update",
-      "branches.manage",
-      "availability.manage",
-      "roles.manage",
-      "subscriptions.manage",
-      "business_profile.manage",
-    ],
-  },
-];
+import LanguageSwitcher from "@/components/i18n/LanguageSwitcher";
+import { stripLocale } from "@/i18n/routing";
+import {
+  hasAnyWorkspacePermission,
+  visibleWorkspaceNavItems,
+  workspaceNavItems,
+  type WorkspaceNavItem,
+} from "./workspace-navigation";
 
 interface WorkspaceIdentity {
   businessName: string;
@@ -114,17 +26,6 @@ interface WorkspaceIdentity {
   email: string | null;
   roleLabel: string;
   permissionCodes: string[];
-}
-
-function hasAnyPermission(
-  permissionCodes: readonly string[],
-  required: readonly string[] | undefined,
-): boolean {
-  if (!required?.length) return true;
-
-  const granted = new Set(permissionCodes);
-
-  return required.some((permission) => granted.has(permission));
 }
 
 function roleLabel(workspace: ActiveWorkspace): string {
@@ -156,7 +57,7 @@ function routeIsAllowed(
 ): boolean {
   if (pathname === "/app") return true;
 
-  const route = navItems
+  const route = workspaceNavItems
     .filter((item) => item.href !== "/app")
     .sort((a, b) => b.href.length - a.href.length)
     .find(
@@ -169,7 +70,7 @@ function routeIsAllowed(
     return true;
   }
 
-  return hasAnyPermission(
+  return hasAnyWorkspacePermission(
     permissionCodes,
     route.anyPermissions,
   );
@@ -185,6 +86,8 @@ export default function WorkspaceShell({
   actions?: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const routePathname = stripLocale(pathname);
+  const t = useTranslations("Workspace");
 
   const [identity, setIdentity] = useState<WorkspaceIdentity>({
     businessName: "Your Kora Business",
@@ -195,6 +98,7 @@ export default function WorkspaceShell({
   });
 
   const [accessResolved, setAccessResolved] = useState(false);
+  const [workspaceContextError, setWorkspaceContextError] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
@@ -204,6 +108,7 @@ export default function WorkspaceShell({
 
       void resolveActiveWorkspace()
         .then((workspace) => {
+          setWorkspaceContextError(false);
           setIdentity({
             businessName: workspace.organizationName,
             branchName: workspace.branchName,
@@ -214,7 +119,11 @@ export default function WorkspaceShell({
 
           setAccessResolved(true);
         })
-        .catch(() => {
+        .catch((reason) => {
+          setWorkspaceContextError(true);
+          if (process.env.NODE_ENV === "development") {
+            console.warn("[Kora workspace] context resolution failed", reason);
+          }
           setIdentity((current) => ({
             ...current,
             email: session?.user?.email ?? null,
@@ -229,18 +138,13 @@ export default function WorkspaceShell({
 
   const visibleNavItems = useMemo(
     () =>
-      navItems.filter((item) =>
-        hasAnyPermission(
-          identity.permissionCodes,
-          item.anyPermissions,
-        ),
-      ),
+      visibleWorkspaceNavItems(identity.permissionCodes),
     [identity.permissionCodes],
   );
 
   const pageAllowed =
     !accessResolved ||
-    routeIsAllowed(pathname, identity.permissionCodes);
+    routeIsAllowed(routePathname, identity.permissionCodes);
 
   async function handleSignOut() {
     if (signingOut) return;
@@ -254,15 +158,15 @@ export default function WorkspaceShell({
     }
   }
 
-  function renderNavItem(item: NavItem, mobile = false) {
+  function renderNavItem(item: WorkspaceNavItem, mobile = false) {
     const active =
       item.href === "/app"
-        ? pathname === "/app"
-        : pathname.startsWith(item.href);
+        ? routePathname === "/app"
+        : routePathname.startsWith(item.href);
 
     return (
       <Link
-        key={item.label}
+        key={item.labelKey}
         href={item.href}
         className={active ? "active" : ""}
         onClick={
@@ -272,7 +176,7 @@ export default function WorkspaceShell({
         }
       >
         <span>{item.icon}</span>
-        {item.label}
+        {t(item.labelKey)}
       </Link>
     );
   }
@@ -292,18 +196,23 @@ export default function WorkspaceShell({
         </div>
 
         <div className="workspace-business">
-          <small>WORKSPACE</small>
+          <small>{t("workspace").toUpperCase()}</small>
           <strong>{identity.businessName}</strong>
           <span>{identity.branchName}</span>
         </div>
 
         <nav className="workspace-nav">
-          {visibleNavItems.map((item) =>
-            renderNavItem(item),
+          {workspaceContextError ? (
+            <p className="workspace-nav-error">
+              Workspace access unavailable. Sign in again.
+            </p>
+          ) : (
+            visibleNavItems.map((item) => renderNavItem(item))
           )}
         </nav>
 
         <div className="workspace-sidebar-footer">
+          <LanguageSwitcher compact />
           <div className="workspace-user">
             <div className="workspace-avatar">
               {identity.email?.slice(0, 1).toUpperCase() || "K"}
@@ -311,7 +220,7 @@ export default function WorkspaceShell({
 
             <div>
               <strong>{identity.roleLabel}</strong>
-              <span>{identity.email || "Kora account"}</span>
+              <span>{identity.email || t("account")}</span>
             </div>
           </div>
 
@@ -321,7 +230,7 @@ export default function WorkspaceShell({
             onClick={() => void handleSignOut()}
             disabled={signingOut}
           >
-            {signingOut ? "Signing out…" : "Sign out"}
+            {signingOut ? t("signingOut") : t("signOut")}
           </button>
         </div>
       </aside>
@@ -335,8 +244,8 @@ export default function WorkspaceShell({
             aria-controls="workspace-mobile-nav"
             aria-label={
               mobileNavOpen
-                ? "Close workspace menu"
-                : "Open workspace menu"
+                ? t("closeMenu")
+                : t("openMenu")
             }
             onClick={() =>
               setMobileNavOpen((current) => !current)
@@ -348,7 +257,7 @@ export default function WorkspaceShell({
           </button>
 
           <div className="workspace-topbar-title">
-            <span>Kora workspace</span>
+            <span>Kora {t("workspace").toLowerCase()}</span>
             <strong>{title}</strong>
           </div>
 
@@ -362,24 +271,21 @@ export default function WorkspaceShell({
         <div className="workspace-content">
           {!accessResolved ? (
             <div className="workspace-access-loading">
-              Checking workspace access…
+              {t("checkingAccess")}
             </div>
           ) : pageAllowed ? (
             children
           ) : (
             <section className="workspace-access-denied">
-              <span>ACCESS RESTRICTED</span>
-              <h1>This area is not available for your role.</h1>
-              <p>
-                Your Kora access is based on the permissions
-                assigned to your role in this business.
-              </p>
+              <span>{t("restrictedKicker")}</span>
+              <h1>{t("restrictedTitle")}</h1>
+              <p>{t("restrictedBody")}</p>
 
               <Link
                 href="/app"
                 className="workspace-primary-button"
               >
-                Return to overview
+                {t("returnOverview")}
               </Link>
             </section>
           )}
@@ -402,7 +308,7 @@ export default function WorkspaceShell({
 
               <button
                 type="button"
-                aria-label="Close workspace menu"
+                aria-label={t("closeMenu")}
                 onClick={() => setMobileNavOpen(false)}
               >
                 ×
@@ -416,6 +322,7 @@ export default function WorkspaceShell({
             </div>
 
             <div className="workspace-mobile-account">
+              <LanguageSwitcher compact />
               <div className="workspace-user">
                 <div className="workspace-avatar">
                   {identity.email?.slice(0, 1).toUpperCase() || "K"}
@@ -423,7 +330,7 @@ export default function WorkspaceShell({
 
                 <div>
                   <strong>{identity.roleLabel}</strong>
-                  <span>{identity.email || "Kora account"}</span>
+                  <span>{identity.email || t("account")}</span>
                 </div>
               </div>
 
@@ -433,7 +340,7 @@ export default function WorkspaceShell({
                 onClick={() => void handleSignOut()}
                 disabled={signingOut}
               >
-                {signingOut ? "Signing out…" : "Sign out"}
+                {signingOut ? t("signingOut") : t("signOut")}
               </button>
             </div>
           </nav>

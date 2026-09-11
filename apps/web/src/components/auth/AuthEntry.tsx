@@ -1,11 +1,12 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
+import { createSingleFlightGuard } from "@/lib/utils/single-flight";
 
 type AuthMode = "signin" | "signup";
 type SignupJourney = "business" | "customer";
@@ -54,10 +55,16 @@ export default function AuthEntry({
   }
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [message, setMessage] = useState("");
+  const requestGuard = useRef(createSingleFlightGuard());
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (requestGuard.current.isInFlight) return;
+    await requestGuard.current.run(() => submitOtpRequest());
+  }
+
+  async function submitOtpRequest() {
     const normalizedEmail =
       email.trim().toLowerCase() || invitedEmailFromUrl();
     const invitationToken = invitationTokenFromUrl();

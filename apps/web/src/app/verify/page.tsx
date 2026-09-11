@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useState } from "react";
+import { FormEvent, Suspense, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -10,6 +10,9 @@ import {
   type KoraSession,
 } from "@/lib/auth/session";
 import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
+import { resolveWorkspaceEntry } from "@/lib/workspace/entry";
+import { workspaceEntryRedirectPath } from "@/lib/workspace/routing";
+import { createSingleFlightGuard } from "@/lib/utils/single-flight";
 
 function VerifyContent() {
   const router = useRouter();
@@ -28,10 +31,16 @@ function VerifyContent() {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [message, setMessage] = useState("");
+  const verifyGuard = useRef(createSingleFlightGuard());
 
   async function handleVerify(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (verifyGuard.current.isInFlight) return;
+    await verifyGuard.current.run(() => submitVerify());
+  }
+
+  async function submitVerify() {
     if (!challengeId) {
       setStatus("error");
       setMessage(t("verificationExpired"));
@@ -110,7 +119,12 @@ function VerifyContent() {
       return;
     }
 
-    router.replace(localize("/app"));
+    // An ordinary sign-in must not assume every account has a business
+    // workspace to land in — resolve what this account actually is
+    // before deciding where "signed in" should go (docs task Part B1).
+    const entry = await resolveWorkspaceEntry();
+    const redirectPath = workspaceEntryRedirectPath(entry.state);
+    router.replace(localize(redirectPath ?? "/app"));
   }
 
   if (!email || !challengeId) {

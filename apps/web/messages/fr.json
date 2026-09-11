@@ -160,7 +160,10 @@
     "restrictedKicker": "ACCÈS RESTREINT",
     "restrictedTitle": "Votre rôle ne permet pas d’accéder à cet espace.",
     "restrictedBody": "Vos accès Kora dépendent des autorisations attribuées à votre rôle dans cette entreprise.",
-    "returnOverview": "Retour à la vue d’ensemble"
+    "returnOverview": "Retour à la vue d’ensemble",
+    "accessCheckFailed": "Kora n'a pas pu vérifier l'accès à votre espace de travail. C'est généralement temporaire.",
+    "retryAccessCheck": "Réessayer",
+    "openSuperAdmin": "Ouvrir Super Admin"
   },
   "Reports": {
     "accessRestricted": "L’accès aux rapports est restreint",
@@ -243,6 +246,20 @@
     "manageBookings": "Gérer mes réservations",
     "continueCustomer": "Continuer comme client",
     "journeyFootnote": "Une identité Kora sécurisée. Les expériences entreprise et client restent liées au même compte."
+  },
+  "AccessStatus": {
+    "kicker": "ACCÈS AU COMPTE",
+    "inactiveTitle": "Ce compte n'a plus accès à un espace de travail.",
+    "inactiveBody": "Votre adhésion à chaque entreprise Kora à laquelle vous apparteniez a été suspendue ou supprimée. Contactez le propriétaire de cette entreprise si vous pensez qu'il s'agit d'une erreur.",
+    "blockedTitle": "L'abonnement de cette entreprise nécessite une action.",
+    "blockedBody": "Kora n'a pas pu ouvrir cet espace de travail car son abonnement est bloqué. Connectez-vous en tant que propriétaire pour vérifier la facturation, ou contactez le propriétaire de l'entreprise.",
+    "errorTitle": "Kora n'a pas pu vérifier votre espace de travail pour le moment.",
+    "errorBody": "Cela ressemble à un problème temporaire de notre côté, pas à un problème avec votre compte. Veuillez réessayer.",
+    "genericTitle": "Kora n'a pas pu ouvrir votre espace de travail.",
+    "genericBody": "Une erreur inattendue s'est produite lors de la vérification de l'accès à votre compte.",
+    "retry": "Réessayer",
+    "signOut": "Se déconnecter",
+    "signingOut": "Déconnexion…"
   },
   "CompanyPages": {
     "about": {

@@ -2,15 +2,17 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useTranslations } from "next-intl";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter, usePathname } from "next/navigation";
+import { useLocale, useTranslations } from "next-intl";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getKoraSession } from "@/lib/auth/session";
 import { logoutKoraSession } from "@/lib/api/kora-api";
 import {
   resolveActiveWorkspace,
   type ActiveWorkspace,
 } from "@/lib/api/dashboard";
+import { resolveWorkspaceEntry } from "@/lib/workspace/entry";
+import { workspaceEntryRedirectPath } from "@/lib/workspace/routing";
 import LanguageSwitcher from "@/components/i18n/LanguageSwitcher";
 import { stripLocale } from "@/i18n/routing";
 import {
@@ -85,6 +87,9 @@ export default function WorkspaceShell({
   children: React.ReactNode;
   actions?: React.ReactNode;
 }) {
+  const router = useRouter();
+  const locale = useLocale();
+  const localize = useCallback((path: string) => `/${locale}${path}`, [locale]);
   const pathname = usePathname();
   const routePathname = stripLocale(pathname);
   const t = useTranslations("Workspace");
@@ -99,42 +104,73 @@ export default function WorkspaceShell({
 
   const [accessResolved, setAccessResolved] = useState(false);
   const [workspaceContextError, setWorkspaceContextError] = useState(false);
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const session = getKoraSession();
+  // The one place `/app/*` decides whether this account belongs here at
+  // all (docs task Part B1) — shared with the post-OTP-verify redirect
+  // via `resolveWorkspaceEntry`/`workspaceEntryRedirectPath`, so a
+  // bookmarked or stale `/app` URL is classified exactly the same way a
+  // fresh sign-in is, instead of always rendering the dashboard shell
+  // and only discovering there's nothing to show once inside it.
+  const checkAccess = useCallback(() => {
+    setAccessResolved(false);
+    setWorkspaceContextError(false);
 
-      void resolveActiveWorkspace()
-        .then((workspace) => {
-          setWorkspaceContextError(false);
-          setIdentity({
-            businessName: workspace.organizationName,
-            branchName: workspace.branchName,
-            email: session?.user?.email ?? null,
-            roleLabel: roleLabel(workspace),
-            permissionCodes: workspace.permissionCodes,
-          });
+    void resolveWorkspaceEntry()
+      .then((entry) => {
+        const redirectPath = workspaceEntryRedirectPath(entry.state);
+        if (redirectPath) {
+          router.replace(localize(redirectPath));
+          return;
+        }
 
-          setAccessResolved(true);
-        })
-        .catch((reason) => {
+        setIsPlatformAdmin(entry.isPlatformAdmin);
+
+        if (entry.state === "api_error") {
+          // Retryable operational failure, never "no workspace" — the
+          // account may well have one (docs task Part B2).
           setWorkspaceContextError(true);
-          if (process.env.NODE_ENV === "development") {
-            console.warn("[Kora workspace] context resolution failed", reason);
-          }
-          setIdentity((current) => ({
-            ...current,
-            email: session?.user?.email ?? null,
-          }));
-
           setAccessResolved(true);
-        });
-    }, 0);
+          return;
+        }
 
+        const session = getKoraSession();
+
+        void resolveActiveWorkspace()
+          .then((workspace) => {
+            setIdentity({
+              businessName: workspace.organizationName,
+              branchName: workspace.branchName,
+              email: session?.user?.email ?? null,
+              roleLabel: roleLabel(workspace),
+              permissionCodes: workspace.permissionCodes,
+            });
+            setAccessResolved(true);
+          })
+          .catch((reason) => {
+            setWorkspaceContextError(true);
+            if (process.env.NODE_ENV === "development") {
+              console.warn("[Kora workspace] context resolution failed", reason);
+            }
+            setIdentity((current) => ({
+              ...current,
+              email: session?.user?.email ?? null,
+            }));
+            setAccessResolved(true);
+          });
+      })
+      .catch(() => {
+        setWorkspaceContextError(true);
+        setAccessResolved(true);
+      });
+  }, [localize, router]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(checkAccess, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [checkAccess]);
 
   const visibleNavItems = useMemo(
     () =>
@@ -203,9 +239,12 @@ export default function WorkspaceShell({
 
         <nav className="workspace-nav">
           {workspaceContextError ? (
-            <p className="workspace-nav-error">
-              Workspace access unavailable. Sign in again.
-            </p>
+            <div className="workspace-nav-error">
+              <p>{t("accessCheckFailed")}</p>
+              <button type="button" onClick={checkAccess}>
+                {t("retryAccessCheck")}
+              </button>
+            </div>
           ) : (
             visibleNavItems.map((item) => renderNavItem(item))
           )}
@@ -223,6 +262,15 @@ export default function WorkspaceShell({
               <span>{identity.email || t("account")}</span>
             </div>
           </div>
+
+          {isPlatformAdmin && (
+            <Link
+              href={localize("/super-admin")}
+              className="workspace-signout-button"
+            >
+              {t("openSuperAdmin")}
+            </Link>
+          )}
 
           <button
             type="button"

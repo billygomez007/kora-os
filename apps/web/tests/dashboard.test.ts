@@ -3,7 +3,9 @@ import { test, beforeEach } from "node:test";
 import {
   dashboardCapabilities,
   loadDashboardData,
+  NoBranchAccessError,
   resolveActiveWorkspace,
+  WorkspaceNotFoundError,
   type ActiveWorkspace,
 } from "../src/lib/api/dashboard.ts";
 
@@ -187,4 +189,88 @@ test("A missing session remains a core workspace failure", async () => {
     () => resolveActiveWorkspace(),
     /Your Kora session is missing/,
   );
+});
+
+test("zero organizations resolves as WorkspaceNotFoundError, a typed signal rather than a generic Error", async () => {
+  globalThis.fetch = async (input) => {
+    paths.push(String(input));
+    return Response.json({ data: [] });
+  };
+
+  await assert.rejects(() => resolveActiveWorkspace(), WorkspaceNotFoundError);
+});
+
+test("a branch-restricted staff member never defaults to a branch outside their assignment", async () => {
+  const stored: Record<string, string> = {};
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) =>
+        key === "kora.auth.session"
+          ? JSON.stringify({ accessToken: "test-token" })
+          : (stored[key] ?? null),
+      setItem: (key: string, value: string) => {
+        stored[key] = value;
+      },
+    },
+  });
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    paths.push(url);
+
+    if (url.includes("/me/workspaces")) {
+      return Response.json({
+        data: {
+          organizations: [
+            {
+              organizationId: "org-a",
+              branches: [{ branchId: "branch-assigned", name: "Assigned branch" }],
+            },
+          ],
+        },
+      });
+    }
+
+    if (url.includes("/branches")) {
+      return Response.json({
+        data: [
+          { id: "branch-org-wide", organizationId: "org-a", name: "Org-wide branch", code: "OW", countryCode: "GH", timeZone: "Africa/Accra", currency: "GHS", status: "ACTIVE" },
+          { id: "branch-assigned", organizationId: "org-a", name: "Assigned branch", code: "AS", countryCode: "GH", timeZone: "Africa/Accra", currency: "GHS", status: "ACTIVE" },
+        ],
+      });
+    }
+
+    return Response.json({
+      data: [{ id: "org-a", name: "Business", slug: "business", status: "ACTIVE", membershipId: "membership-a", roleCodes: ["receptionist"], roleNames: ["Receptionist"], permissionCodes: [] }],
+    });
+  };
+
+  const workspace = await resolveActiveWorkspace();
+  assert.equal(workspace.branchId, "branch-assigned");
+});
+
+test("an active membership with no authorized branch is a distinct, explicit failure", async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    paths.push(url);
+
+    if (url.includes("/me/workspaces")) {
+      return Response.json({ data: { organizations: [{ organizationId: "org-a", branches: [] }] } });
+    }
+
+    if (url.includes("/branches")) {
+      return Response.json({
+        data: [
+          { id: "branch-org-wide", organizationId: "org-a", name: "Org-wide branch", code: "OW", countryCode: "GH", timeZone: "Africa/Accra", currency: "GHS", status: "ACTIVE" },
+        ],
+      });
+    }
+
+    return Response.json({
+      data: [{ id: "org-a", name: "Business", slug: "business", status: "ACTIVE", membershipId: "membership-a", roleCodes: ["receptionist"], roleNames: ["Receptionist"], permissionCodes: [] }],
+    });
+  };
+
+  await assert.rejects(() => resolveActiveWorkspace(), NoBranchAccessError);
 });

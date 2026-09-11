@@ -160,7 +160,10 @@
     "restrictedKicker": "ACCESS RESTRICTED",
     "restrictedTitle": "This area is not available for your role.",
     "restrictedBody": "Your Kora access is based on the permissions assigned to your role in this business.",
-    "returnOverview": "Return to overview"
+    "returnOverview": "Return to overview",
+    "accessCheckFailed": "Kora could not verify your workspace access. This is usually temporary.",
+    "retryAccessCheck": "Try again",
+    "openSuperAdmin": "Open Super Admin"
   },
   "Reports": {
     "accessRestricted": "Reports access is restricted",
@@ -243,6 +246,20 @@
     "manageBookings": "Manage bookings",
     "continueCustomer": "Continue as a customer",
     "journeyFootnote": "One secure Kora identity. Business and customer experiences stay connected to the same account."
+  },
+  "AccessStatus": {
+    "kicker": "ACCOUNT ACCESS",
+    "inactiveTitle": "This account no longer has workspace access.",
+    "inactiveBody": "Your membership on every Kora business you previously belonged to has been suspended or removed. Contact that business's owner if you believe this is a mistake.",
+    "blockedTitle": "This business's subscription needs attention.",
+    "blockedBody": "Kora could not open this business workspace because its subscription is blocked. Sign in as an owner to review billing, or contact your business owner.",
+    "errorTitle": "Kora could not verify your workspace right now.",
+    "errorBody": "This looks like a temporary problem on our side, not an issue with your account. Please try again.",
+    "genericTitle": "Kora could not open your workspace.",
+    "genericBody": "Something unexpected happened while checking your account access.",
+    "retry": "Try again",
+    "signOut": "Sign out",
+    "signingOut": "Signing out…"
   },
   "CompanyPages": {
     "about": {

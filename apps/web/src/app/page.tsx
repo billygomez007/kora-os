@@ -151,6 +151,7 @@ const fullFeatures = [
 
 export default async function Home() {
   const t = await getTranslations("Home");
+  const pricing = await getTranslations("HomePricing");
   return (
     <main>
       <section className="hero">
@@ -454,31 +455,34 @@ export default async function Home() {
       <section className="pricing-preview" id="pricing">
         <div className="shell">
           <div className="section-heading light-heading">
-            <span>{t("pricing.kicker")}</span>
-            <h2>{t("pricing.title")}</h2>
-            <p>{t("pricing.body")}</p>
+            <span>{pricing("kicker")}</span>
+            <h2>{pricing("title")}</h2>
+            <p>{pricing("body")}</p>
           </div>
 
           <div className="pricing-grid">
             <article>
-              <span>{t("pricing.starter.name")}</span>
-              <h3>{t("pricing.starter.title")}</h3>
-              <p>{t("pricing.starter.body")}</p>
-              <a href="/pricing" className="outline-dark-btn">{t("pricing.starter.cta")}</a>
+              <span>{pricing("starter.name")}</span>
+              <h3>{pricing("starter.title")}</h3>
+              <p>{pricing("starter.body")}</p>
+              <strong>{pricing("starter.price")}</strong>
+              <a href="/pricing" className="outline-dark-btn">{pricing("starter.cta")}</a>
             </article>
 
             <article className="featured-plan">
-              <span>{t("pricing.growth.name")}</span>
-              <h3>{t("pricing.growth.title")}</h3>
-              <p>{t("pricing.growth.body")}</p>
-              <a href="/pricing" className="gold-btn">{t("pricing.growth.cta")}</a>
+              <span>{pricing("business.name")}</span>
+              <h3>{pricing("business.title")}</h3>
+              <p>{pricing("business.body")}</p>
+              <strong>{pricing("business.price")}</strong>
+              <a href="/pricing" className="gold-btn">{pricing("business.cta")}</a>
             </article>
 
             <article>
-              <span>{t("pricing.pro.name")}</span>
-              <h3>{t("pricing.pro.title")}</h3>
-              <p>{t("pricing.pro.body")}</p>
-              <a href="/pricing" className="outline-dark-btn">{t("pricing.pro.cta")}</a>
+              <span>{pricing("pro.name")}</span>
+              <h3>{pricing("pro.title")}</h3>
+              <p>{pricing("pro.body")}</p>
+              <strong>{pricing("pro.price")}</strong>
+              <a href="/pricing" className="outline-dark-btn">{pricing("pro.cta")}</a>
             </article>
           </div>
         </div>

@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import { koraData } from "@/lib/api/kora-api";
 
 interface CustomerProfile {
@@ -47,13 +48,16 @@ function initials(name: string) {
     .join("");
 }
 
-function errorMessage(error: unknown) {
+function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message
     ? error.message
-    : "Kora could not load the marketplace. Please try again.";
+    : fallback;
 }
 
 export default function MarketplacePage() {
+  const t = useTranslations("Marketplace");
+  const locale = useLocale();
+  const localize = (path: string) => `/${locale}${path}`;
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
@@ -99,7 +103,7 @@ export default function MarketplacePage() {
         );
         setFavorites(Array.isArray(favoriteRows) ? favoriteRows : []);
       } catch (error) {
-        if (!cancelled) setMessage(errorMessage(error));
+        if (!cancelled) setMessage(errorMessage(error, t("loadError")));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -110,7 +114,7 @@ export default function MarketplacePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
   async function loadBusinesses(text: string, category: string) {
     setSearching(true);
@@ -148,7 +152,7 @@ export default function MarketplacePage() {
             : [],
       );
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage(errorMessage(error, t("loadError")));
     } finally {
       setSearching(false);
     }
@@ -183,7 +187,7 @@ export default function MarketplacePage() {
           : [business, ...current],
       );
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage(errorMessage(error, t("favoriteError")));
     }
   }
 
@@ -193,7 +197,7 @@ export default function MarketplacePage() {
   return (
     <main className="marketplace-app">
       <header className="marketplace-header">
-        <Link href="/marketplace" className="marketplace-brand">
+        <Link href={localize("/marketplace")} className="marketplace-brand">
           <Image
             src="/brand/kora-app-icon.png"
             alt="Kora"
@@ -203,37 +207,37 @@ export default function MarketplacePage() {
           />
           <div>
             <strong>Kora</strong>
-            <span>Marketplace</span>
+            <span>{t("marketplace")}</span>
           </div>
         </Link>
 
-        <nav className="marketplace-desktop-nav" aria-label="Customer navigation">
-          <Link className="is-active" href="/marketplace">Home</Link>
-          <a href="#explore">Explore</a>
-          <a href="#favorites">Favourites</a>
+        <nav className="marketplace-desktop-nav" aria-label={t("customer")}>
+          <Link className="is-active" href={localize("/marketplace")}>{t("home")}</Link>
+          <a href="#explore">{t("explore")}</a>
+          <a href="#favorites">{t("favorites")}</a>
         </nav>
 
         <div className="marketplace-profile-chip">
           <div className="marketplace-avatar">
-            {initials(profile?.displayName || "Kora Customer") || "K"}
+            {initials(profile?.displayName || t("customer")) || "K"}
           </div>
           <div>
-            <span>Customer</span>
-            <strong>{profile?.displayName || "My Kora"}</strong>
+            <span>{t("customer")}</span>
+            <strong>{profile?.displayName || t("myKora")}</strong>
           </div>
         </div>
       </header>
 
       <section className="marketplace-hero">
         <div className="marketplace-hero-copy">
-          <span className="marketplace-kicker">DISCOVER • BOOK • GO</span>
+          <span className="marketplace-kicker">{t("kicker")}</span>
           <h1>
-            Hello, {firstName}.
+            {t("hello", { name: firstName })}
             <br />
-            <em>What do you need today?</em>
+            <em>{t("question")}</em>
           </h1>
           <p>
-            Discover trusted local businesses, book services and shop products on Kora.
+            {t("body")}
           </p>
 
           <form className="marketplace-search" onSubmit={handleSearch}>
@@ -241,21 +245,20 @@ export default function MarketplacePage() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search businesses, services or products"
-              aria-label="Search businesses"
+              placeholder={t("searchPlaceholder")}
+              aria-label={t("searchLabel")}
             />
             <button type="submit" disabled={searching}>
-              {searching ? "Searching…" : "Search"}
+              {searching ? t("searching") : t("search")}
             </button>
           </form>
 
           {(profile?.area || profile?.city) && (
             <div className="marketplace-location">
               <span>⌖</span>
-              Showing businesses around{" "}
-              <strong>
-                {[profile.area, profile.city].filter(Boolean).join(", ")}
-              </strong>
+              {t("showingAround", {
+                location: [profile.area, profile.city].filter(Boolean).join(", "),
+              })}
             </div>
           )}
         </div>
@@ -267,12 +270,12 @@ export default function MarketplacePage() {
             <span>K</span>
           </div>
           <div className="marketplace-float-card marketplace-float-one">
-            <span>BOOK</span>
-            <strong>Your time</strong>
+            <span>{t("bookLabel")}</span>
+            <strong>{t("bookTitle")}</strong>
           </div>
           <div className="marketplace-float-card marketplace-float-two">
-            <span>DISCOVER</span>
-            <strong>Great services</strong>
+            <span>{t("discoverLabel")}</span>
+            <strong>{t("discoverTitle")}</strong>
           </div>
         </div>
       </section>
@@ -280,8 +283,8 @@ export default function MarketplacePage() {
       <section className="marketplace-content" id="explore">
         <div className="marketplace-section-heading">
           <div>
-            <span>EXPLORE KORA</span>
-            <h2>Browse by category</h2>
+            <span>{t("exploreKicker")}</span>
+            <h2>{t("browseCategories")}</h2>
           </div>
           {activeCategory && (
             <button
@@ -289,7 +292,7 @@ export default function MarketplacePage() {
               className="marketplace-text-button"
               onClick={() => void chooseCategory("")}
             >
-              Clear filter
+              {t("clearFilter")}
             </button>
           )}
         </div>
@@ -320,32 +323,31 @@ export default function MarketplacePage() {
 
         <div className="marketplace-section-heading marketplace-business-heading">
           <div>
-            <span>AVAILABLE ON KORA</span>
+            <span>{t("availableKicker")}</span>
             <h2>
               {activeQuery
-                ? `Results for “${activeQuery}”`
+                ? t("resultsFor", { query: activeQuery })
                 : activeCategory
-                  ? "Businesses in this category"
-                  : "Discover businesses"}
+                  ? t("categoryBusinesses")
+                  : t("discoverBusinesses")}
             </h2>
           </div>
           <span className="marketplace-result-count">
-            {businesses.length} {businesses.length === 1 ? "business" : "businesses"}
+            {businesses.length} {businesses.length === 1 ? t("business") : t("businesses")}
           </span>
         </div>
 
         {loading ? (
           <div className="marketplace-state">
             <div className="marketplace-loader" />
-            <strong>Finding great businesses…</strong>
+            <strong>{t("loadingBusinesses")}</strong>
           </div>
         ) : businesses.length === 0 ? (
           <div className="marketplace-state">
             <span className="marketplace-state-icon">⌕</span>
-            <h3>No businesses found yet</h3>
+            <h3>{t("noBusinesses")}</h3>
             <p>
-              Try another search or category. Businesses appear here once their
-              Kora profile is published.
+              {t("noBusinessesBody")}
             </p>
             {(activeQuery || activeCategory) && (
               <button
@@ -358,7 +360,7 @@ export default function MarketplacePage() {
                   void loadBusinesses("", "");
                 }}
               >
-                Show all businesses
+                {t("showAll")}
               </button>
             )}
           </div>
@@ -391,8 +393,8 @@ export default function MarketplacePage() {
                       }
                       aria-label={
                         favorited
-                          ? `Remove ${business.displayName} from favourites`
-                          : `Add ${business.displayName} to favourites`
+                          ? t("removeFavorite", { name: business.displayName })
+                          : t("addFavorite", { name: business.displayName })
                       }
                       onClick={() => void toggleFavorite(business)}
                     >
@@ -415,7 +417,7 @@ export default function MarketplacePage() {
                     <div className="marketplace-business-title">
                       <h3>{business.displayName}</h3>
                       {business.verificationStatus === "VERIFIED" && (
-                        <span title="Verified business">✓</span>
+                        <span title={t("verified")}>✓</span>
                       )}
                     </div>
 
@@ -427,14 +429,14 @@ export default function MarketplacePage() {
 
                     <p>
                       {business.description ||
-                        "Explore this business on Kora and discover available services and products."}
+                        t("businessFallback")}
                     </p>
 
                     <Link
                       className="marketplace-view-business"
                       href={`/marketplace/${encodeURIComponent(business.slug)}`}
                     >
-                      Visit storefront <span>→</span>
+                      {t("visitStorefront")} <span>→</span>
                     </Link>
                   </div>
                 </article>
@@ -447,8 +449,8 @@ export default function MarketplacePage() {
           <section className="marketplace-favorites-section" id="favorites">
             <div className="marketplace-section-heading">
               <div>
-                <span>SAVED FOR YOU</span>
-                <h2>Your favourites</h2>
+                <span>{t("savedKicker")}</span>
+                <h2>{t("yourFavorites")}</h2>
               </div>
             </div>
 
@@ -467,7 +469,7 @@ export default function MarketplacePage() {
                     )}
                   </div>
                   <strong>{business.displayName}</strong>
-                  <small>{business.categories[0] || "Kora business"}</small>
+                  <small>{business.categories[0] || t("koraBusiness")}</small>
                 </Link>
               ))}
             </div>
@@ -475,22 +477,22 @@ export default function MarketplacePage() {
         )}
       </section>
 
-      <nav className="marketplace-mobile-nav" aria-label="Mobile customer navigation">
-        <Link className="is-active" href="/marketplace">
+      <nav className="marketplace-mobile-nav" aria-label={t("mobileNavigation")}>
+        <Link className="is-active" href={localize("/marketplace")}>
           <span>⌂</span>
-          Home
+          {t("home")}
         </Link>
         <a href="#explore">
           <span>⌕</span>
-          Explore
+          {t("explore")}
         </a>
         <a href="#favorites">
           <span>♡</span>
-          Saved
+          {t("saved")}
         </a>
-        <Link href="/customer-onboarding">
+        <Link href={localize("/customer-onboarding")}>
           <span>○</span>
-          Profile
+          {t("profile")}
         </Link>
       </nav>
     </main>

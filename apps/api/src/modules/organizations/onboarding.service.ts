@@ -119,6 +119,18 @@ export class OnboardingService {
           );
         }
 
+        // Onboarding creates exactly one primary branch. Keep this write
+        // behind the same server-side plan limit helper used by future branch
+        // creation flows; Starter's one-branch entitlement is therefore never
+        // bypassed by a malformed or custom plan record.
+        await this.entitlementsService.assertWithinLimit(
+          plan.id,
+          'branches.max',
+          0,
+          1,
+          tx,
+        );
+
         const ownerRole = await tx.role.findFirst({
           where: { organizationId: null, code: OWNER_SYSTEM_ROLE_CODE },
         });

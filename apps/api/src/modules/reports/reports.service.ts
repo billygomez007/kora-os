@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { assertMembershipHasBranchAccess } from '../../common/authorization/assert-branch-access.util.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
 import { PrismaService } from '../../database/prisma.service.js';
+import { EntitlementsService } from '../subscriptions/entitlements.service.js';
 import {
   CashLedgerEntryType,
   PaymentRecordStatus,
@@ -60,7 +61,10 @@ interface ReportScope {
  */
 @Injectable()
 export class ReportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly entitlementsService: EntitlementsService,
+  ) {}
 
   async overview(tenant: TenantContext, query: ReportQuery) {
     const range = parseReportDateRange(query.from, query.to);
@@ -426,6 +430,13 @@ export class ReportsService {
     tenant: TenantContext,
     query: ReportQuery & { cursor?: string; limit?: number },
   ) {
+    // RBAC (`reports.read`) is enforced by ReportsController. Plan access is
+    // deliberately separate: cash reconciliation is a Pro/Enterprise
+    // entitlement and must not be unlocked by a permission alone.
+    await this.entitlementsService.requireForOrganization(
+      tenant.organizationId,
+      'cash.reconciliation',
+    );
     const range = parseReportDateRange(query.from, query.to);
     const scope = await this.resolveScope(
       tenant,

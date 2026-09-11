@@ -18,6 +18,11 @@ import {
   koraApi,
   koraData,
 } from "@/lib/api/kora-api";
+import {
+  staffCapabilities,
+  staffRequestPlan,
+  type StaffRequestKind,
+} from "@/lib/workspace/staff-capabilities";
 
 interface AssignableRole {
   id: string;
@@ -159,6 +164,18 @@ export default function StaffPage() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  // Capabilities derived from the active workspace's permissionCodes.
+  // Never inferred from role names or from data shape (e.g. staffProfileId
+  // presence) -- only from the explicit permission codes the API resolved
+  // for this membership, mirroring the backend's own authorization model.
+  const [canReadStaff, setCanReadStaff] = useState(false);
+  const [canInviteStaff, setCanInviteStaff] = useState(false);
+  const [canReadAvailability, setCanReadAvailability] = useState(false);
+  const [canManageAvailability, setCanManageAvailability] = useState(false);
+  const [canReadServices, setCanReadServices] = useState(false);
+  const [canManageServices, setCanManageServices] = useState(false);
+
   const [availabilityRules, setAvailabilityRules] =
     useState<StaffAvailabilityRule[]>([]);
   const [availabilityLoading, setAvailabilityLoading] =
@@ -181,79 +198,113 @@ export default function StaffPage() {
     try {
       const workspace = await resolveActiveWorkspace();
 
-      const results = await Promise.allSettled([
-        koraData<StaffMember[]>(
-          `/organizations/${workspace.organizationId}/staff`,
-        ),
+      const capabilities = staffCapabilities(workspace.permissionCodes);
+      const {
+        canReadStaff: nextCanReadStaff,
+        canInviteStaff: nextCanInviteStaff,
+        canReadAvailability: nextCanReadAvailability,
+        canManageAvailability: nextCanManageAvailability,
+        canReadServices: nextCanReadServices,
+        canManageServices: nextCanManageServices,
+      } = capabilities;
 
-        koraData<AssignableRole[]>(
-          `/organizations/${workspace.organizationId}/staff-invitations/assignable-roles`,
-        ),
-
-        koraData<Branch[]>(
-          `/organizations/${workspace.organizationId}/branches`,
-        ),
-
-        koraData<StaffInvitation[]>(
-          `/organizations/${workspace.organizationId}/staff-invitations`,
-        ),
-      ]);
-
-      const [
-        staffResult,
-        roleResult,
-        branchResult,
-        invitationResult,
-      ] = results;
-
-      if (staffResult.status === "fulfilled") {
-        setStaff(staffResult.value ?? []);
-      } else {
-        console.error(
-          "Kora staff directory request failed:",
-          staffResult.reason,
-        );
-      }
-
-      if (roleResult.status === "fulfilled") {
-        setRoles(roleResult.value ?? []);
-      } else {
-        console.error(
-          "Kora assignable roles request failed:",
-          roleResult.reason,
-        );
-      }
-
-      if (branchResult.status === "fulfilled") {
-        setBranches(branchResult.value ?? []);
-      } else {
-        console.error(
-          "Kora branch request failed:",
-          branchResult.reason,
-        );
-      }
-
-      if (invitationResult.status === "fulfilled") {
-        setInvitations(invitationResult.value ?? []);
-      } else {
-        console.error(
-          "Kora staff invitation request failed:",
-          invitationResult.reason,
-        );
-      }
+      setCanReadStaff(nextCanReadStaff);
+      setCanInviteStaff(nextCanInviteStaff);
+      setCanReadAvailability(nextCanReadAvailability);
+      setCanManageAvailability(nextCanManageAvailability);
+      setCanReadServices(nextCanReadServices);
+      setCanManageServices(nextCanManageServices);
 
       setInviteBranchId((current) =>
         current || workspace.branchId,
       );
 
-      const failures = results.filter(
-        (result) => result.status === "rejected",
-      ).length;
+      // Only request what this membership's permissionCodes actually
+      // authorize. Skipped requests are not failures and must not add to
+      // the "could not be loaded" count below -- only a real failure of
+      // an authorized request should surface as an error.
+      const requestPlan = staffRequestPlan(capabilities);
+      const authorizedRequests: Array<{
+        kind: StaffRequestKind;
+        label: string;
+        run: () => Promise<void>;
+      }> = [];
 
-      if (failures > 0) {
+      if (requestPlan.includes("directory")) {
+        authorizedRequests.push({
+          kind: "directory",
+          label: "staff directory",
+          run: async () => {
+            const data = await koraData<StaffMember[]>(
+              `/organizations/${workspace.organizationId}/staff`,
+            );
+            setStaff(data ?? []);
+          },
+        });
+
+        authorizedRequests.push({
+          kind: "invitations",
+          label: "staff invitations",
+          run: async () => {
+            const data = await koraData<StaffInvitation[]>(
+              `/organizations/${workspace.organizationId}/staff-invitations`,
+            );
+            setInvitations(data ?? []);
+          },
+        });
+      } else {
+        setStaff([]);
+        setInvitations([]);
+      }
+
+      if (requestPlan.includes("assignable-roles")) {
+        authorizedRequests.push({
+          kind: "assignable-roles",
+          label: "assignable roles",
+          run: async () => {
+            const data = await koraData<AssignableRole[]>(
+              `/organizations/${workspace.organizationId}/staff-invitations/assignable-roles`,
+            );
+            setRoles(data ?? []);
+          },
+        });
+
+        // Branches are only needed to populate the invite form's branch
+        // picker, which only an inviter can open.
+        authorizedRequests.push({
+          kind: "branches",
+          label: "branches",
+          run: async () => {
+            const data = await koraData<Branch[]>(
+              `/organizations/${workspace.organizationId}/branches`,
+            );
+            setBranches(data ?? []);
+          },
+        });
+      } else {
+        setRoles([]);
+        setBranches([]);
+      }
+
+      const results = await Promise.allSettled(
+        authorizedRequests.map((request) => request.run()),
+      );
+
+      let failureCount = 0;
+      results.forEach((result, index) => {
+        if (result.status === "rejected") {
+          failureCount += 1;
+          console.error(
+            `Kora ${authorizedRequests[index].label} request failed:`,
+            result.reason,
+          );
+        }
+      });
+
+      if (failureCount > 0) {
         setError(
-          `${failures} staff workspace request${
-            failures === 1 ? "" : "s"
+          `${failureCount} staff workspace request${
+            failureCount === 1 ? "" : "s"
           } could not be loaded. Available information is still shown.`,
         );
       }
@@ -316,8 +367,14 @@ export default function StaffPage() {
     [invitations],
   );
 
+  // Whether the staff detail drawer offers any actual management action
+  // for the current user. Drives the row button wording (Manage vs View)
+  // -- never derived from whether a StaffMember happens to have a
+  // staffProfileId.
+  const canManageStaffDetail = canManageAvailability || canManageServices;
+
   async function loadStaffAvailability(member: StaffMember) {
-    if (!member.staffProfileId) {
+    if (!member.staffProfileId || !canReadAvailability) {
       setAvailabilityRules([]);
       return;
     }
@@ -394,7 +451,7 @@ export default function StaffPage() {
   }
 
   async function applyBusinessHoursToStaff() {
-    if (!selectedMember?.staffProfileId) return;
+    if (!selectedMember?.staffProfileId || !canManageAvailability) return;
 
     setWorking(true);
     setError("");
@@ -446,7 +503,7 @@ export default function StaffPage() {
   }
 
   async function saveCustomAvailability() {
-    if (!selectedMember?.staffProfileId) return;
+    if (!selectedMember?.staffProfileId || !canManageAvailability) return;
 
     if (!availabilityRules.length) {
       setError("Choose at least one working day.");
@@ -489,8 +546,21 @@ export default function StaffPage() {
     }
   }
 
+  function openInviteDrawer() {
+    if (!canInviteStaff) return;
+
+    setError("");
+    setNotice("");
+    setShowInvite(true);
+  }
+
   async function inviteStaff(event: FormEvent) {
     event.preventDefault();
+
+    if (!canInviteStaff) {
+      setError("You do not have permission to invite staff.");
+      return;
+    }
 
     if (!inviteEmail.trim() && !invitePhone.trim()) {
       setError(
@@ -561,6 +631,11 @@ export default function StaffPage() {
   }
 
   async function revokeInvitation(invitationId: string) {
+    if (!canInviteStaff) {
+      setError("You do not have permission to revoke invitations.");
+      return;
+    }
+
     setWorking(true);
     setError("");
     setNotice("");
@@ -592,17 +667,15 @@ export default function StaffPage() {
     <WorkspaceShell
       title="Staff"
       actions={
-        <button
-          type="button"
-          className="workspace-primary-button"
-          onClick={() => {
-            setError("");
-            setNotice("");
-            setShowInvite(true);
-          }}
-        >
-          + Invite staff
-        </button>
+        canInviteStaff ? (
+          <button
+            type="button"
+            className="workspace-primary-button"
+            onClick={openInviteDrawer}
+          >
+            + Invite staff
+          </button>
+        ) : undefined
       }
     >
       <section className="workspace-feature-heading">
@@ -628,33 +701,35 @@ export default function StaffPage() {
         </div>
       )}
 
-      <section className="staff-metrics">
-        <article>
-          <span>TEAM MEMBERS</span>
-          <strong>{staff.length}</strong>
-          <small>Total members</small>
-        </article>
+      {canReadStaff && (
+        <section className="staff-metrics">
+          <article>
+            <span>TEAM MEMBERS</span>
+            <strong>{staff.length}</strong>
+            <small>Total members</small>
+          </article>
 
-        <article>
-          <span>ACTIVE</span>
-          <strong>{activeStaff}</strong>
-          <small>Active members</small>
-        </article>
+          <article>
+            <span>ACTIVE</span>
+            <strong>{activeStaff}</strong>
+            <small>Active members</small>
+          </article>
 
-        <article>
-          <span>PROVIDERS</span>
-          <strong>{providers}</strong>
-          <small>Operational staff profiles</small>
-        </article>
+          <article>
+            <span>PROVIDERS</span>
+            <strong>{providers}</strong>
+            <small>Operational staff profiles</small>
+          </article>
 
-        <article>
-          <span>PENDING INVITES</span>
-          <strong>
-            {pendingInvitations.length}
-          </strong>
-          <small>Awaiting acceptance</small>
-        </article>
-      </section>
+          <article>
+            <span>PENDING INVITES</span>
+            <strong>
+              {pendingInvitations.length}
+            </strong>
+            <small>Awaiting acceptance</small>
+          </article>
+        </section>
+      )}
 
       <section className="workspace-feature-card">
         <div className="workspace-feature-card-head">
@@ -675,6 +750,10 @@ export default function StaffPage() {
           <div className="workspace-feature-empty">
             Loading your team…
           </div>
+        ) : !canReadStaff ? (
+          <div className="workspace-feature-empty">
+            You do not have permission to view the staff directory.
+          </div>
         ) : staff.length === 0 ? (
           <div className="staff-empty">
             <div>＋</div>
@@ -684,12 +763,14 @@ export default function StaffPage() {
               receive appointments and manage daily work.
             </p>
 
-            <button
-              type="button"
-              onClick={() => setShowInvite(true)}
-            >
-              Invite staff
-            </button>
+            {canInviteStaff && (
+              <button
+                type="button"
+                onClick={openInviteDrawer}
+              >
+                Invite staff
+              </button>
+            )}
           </div>
         ) : (
           <div className="staff-table-wrap">
@@ -778,7 +859,7 @@ export default function StaffPage() {
                     void loadStaffAvailability(member);
                   }}
                 >
-                  Manage
+                  {canManageStaffDetail ? "Manage" : "View"}
                 </button>
               </div>
             ))}
@@ -786,6 +867,7 @@ export default function StaffPage() {
         )}
       </section>
 
+      {canReadStaff && (
       <section className="workspace-feature-card staff-invitations-card">
         <div className="workspace-feature-card-head">
           <div>
@@ -861,8 +943,8 @@ export default function StaffPage() {
                     {invitation.status}
                   </span>
 
-                  {invitation.status ===
-                  "PENDING" ? (
+                  {invitation.status === "PENDING" &&
+                  canInviteStaff ? (
                     <button
                       type="button"
                       className="staff-revoke-button"
@@ -884,8 +966,9 @@ export default function StaffPage() {
           </div>
         )}
       </section>
+      )}
 
-      {showInvite && (
+      {showInvite && canInviteStaff && (
         <div className="services-drawer-backdrop">
           <aside className="services-drawer staff-drawer">
             <div className="services-drawer-head">
@@ -1157,7 +1240,7 @@ export default function StaffPage() {
                   </p>
                 )}
 
-                {selectedMember.staffProfileId && (
+                {selectedMember.staffProfileId && canManageServices && (
                   <Link
                     href="/app/services"
                     className="staff-service-link"
@@ -1165,6 +1248,15 @@ export default function StaffPage() {
                     Manage service assignments →
                   </Link>
                 )}
+
+                {selectedMember.staffProfileId &&
+                  !canManageServices &&
+                  canReadServices && (
+                    <p className="staff-hours-note">
+                      Ask an owner or manager to update service
+                      assignments.
+                    </p>
+                  )}
               </section>
 
               <section className="staff-working-hours">
@@ -1175,7 +1267,12 @@ export default function StaffPage() {
                     Working hours become available after this team member has
                     an active staff profile.
                   </p>
-                ) : (
+                ) : !canReadAvailability ? (
+                  <p>
+                    You do not have permission to view this team member&apos;s
+                    working hours.
+                  </p>
+                ) : canManageAvailability ? (
                   <>
                     <div className="staff-hours-mode">
                       <button
@@ -1270,6 +1367,35 @@ export default function StaffPage() {
                       </p>
                     )}
                   </>
+                ) : availabilityLoading ? (
+                  <p>Loading working hours…</p>
+                ) : availabilityMode === "custom" ? (
+                  <div className="staff-hours-list">
+                    {WORKING_DAYS.map((day, dayOfWeek) => {
+                      const item = availabilityByDay().get(dayOfWeek);
+
+                      return (
+                        <div className="staff-hours-row" key={day}>
+                          <div className="staff-hours-day">
+                            <strong>{day}</strong>
+                          </div>
+
+                          {item ? (
+                            <span>
+                              {item.startLocalTime} – {item.endLocalTime}
+                            </span>
+                          ) : (
+                            <span className="hoursClosed">Unavailable</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="staff-hours-note">
+                    This team member follows the current branch business
+                    hours.
+                  </p>
                 )}
               </section>
             </div>

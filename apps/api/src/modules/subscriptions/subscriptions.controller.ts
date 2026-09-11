@@ -9,6 +9,12 @@ export class SubscriptionsController {
   constructor(private readonly subscriptionDetailService: SubscriptionDetailService) {}
 
   @RequirePermissions('subscriptions.read')
+  @Get('plans')
+  async plans() {
+    return this.subscriptionDetailService.getPublicCatalog();
+  }
+
+  @RequirePermissions('subscriptions.read')
   @Get()
   async get(@Param('organizationId') organizationId: string) {
     return this.subscriptionDetailService.getForOrganization(organizationId);

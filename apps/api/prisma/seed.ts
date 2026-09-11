@@ -4,12 +4,13 @@
  * Seeds only platform-level reference data that every environment needs to
  * function: the permission vocabulary, the default (system) organization
  * roles and their permission grants, the entitlement vocabulary, and the
- * Starter / Growth / Business / Enterprise plan shells with their
+ * Starter / Growth / Business / Pro / Enterprise plan records with their
  * entitlement values. No organization, membership, or other tenant data is
  * created here — see the internal onboarding service (Phase 5) for that.
  *
- * No commercial price is invented: `PlanPrice.amountMinor` stays `null`
- * until product pricing is approved.
+ * Approved public prices are stored in PlanPrice in GHS minor units. Growth
+ * remains a legacy/internal plan for historical subscriptions and is not part
+ * of the public pricing catalogue.
  *
  * Safe to run repeatedly — every write is an upsert keyed on a stable
  * natural code, so re-running converges to the same state instead of
@@ -19,10 +20,20 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import {
   BillingInterval,
-  EntitlementValueType,
   PlanLifecycleStatus,
+  Prisma,
   PrismaClient,
 } from '../src/generated/prisma/client.js';
+import { PLATFORM_PERMISSIONS, PLATFORM_ROLES, seedPlatformAuthorization } from '../src/common/platform/platform-bootstrap.js';
+import {
+  PUBLIC_PLAN_CODES,
+  PUBLIC_PLAN_PRICING,
+  annualAmountMinorFromMonthly,
+} from '../src/modules/subscriptions/pricing.js';
+import {
+  ENTITLEMENT_DEFINITIONS,
+  PLAN_DEFINITIONS,
+} from '../src/modules/subscriptions/plan-entitlements.js';
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -312,102 +323,6 @@ const SYSTEM_ROLES: ReadonlyArray<{
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Entitlement vocabulary (docs/DATA_MODEL.md section 4, docs/API_SPEC.md section 12)
-// ---------------------------------------------------------------------------
-
-const ENTITLEMENT_DEFINITIONS: ReadonlyArray<{
-  code: string;
-  name: string;
-  valueType: EntitlementValueType;
-  description: string;
-}> = [
-  {
-    code: 'branches.max',
-    name: 'Maximum branches',
-    valueType: EntitlementValueType.INTEGER,
-    description: 'Maximum number of active branches the organization may operate.',
-  },
-  {
-    code: 'staff.max',
-    name: 'Maximum staff',
-    valueType: EntitlementValueType.INTEGER,
-    description: 'Maximum number of active staff memberships the organization may maintain.',
-  },
-  {
-    code: 'reports.advanced',
-    name: 'Advanced reporting',
-    valueType: EntitlementValueType.BOOLEAN,
-    description: 'Grants access to advanced reporting beyond basic daily reports.',
-  },
-  {
-    code: 'integrations.whatsapp',
-    name: 'WhatsApp integration',
-    valueType: EntitlementValueType.BOOLEAN,
-    description: 'Enables the WhatsApp notification delivery channel.',
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Plan shells (docs/PRODUCT_REQUIREMENTS.md, docs/DATA_MODEL.md section 4)
-//
-// Codes and relative tiering only — no commercial price is decided yet.
-// Enterprise limits use a high sentinel value pending a final "unlimited"
-// design decision; see docs in the plan-entitlement resolution service.
-// ---------------------------------------------------------------------------
-
-const PLANS: ReadonlyArray<{
-  code: string;
-  name: string;
-  description: string;
-  entitlements: Record<string, boolean | number>;
-}> = [
-  {
-    code: 'starter',
-    name: 'Starter',
-    description: 'A single branch getting started with Kora.',
-    entitlements: {
-      'branches.max': 1,
-      'staff.max': 5,
-      'reports.advanced': false,
-      'integrations.whatsapp': false,
-    },
-  },
-  {
-    code: 'growth',
-    name: 'Growth',
-    description: 'A growing business operating a handful of branches.',
-    entitlements: {
-      'branches.max': 3,
-      'staff.max': 20,
-      'reports.advanced': true,
-      'integrations.whatsapp': false,
-    },
-  },
-  {
-    code: 'business',
-    name: 'Business',
-    description: 'A multi-branch business with advanced reporting and WhatsApp delivery.',
-    entitlements: {
-      'branches.max': 10,
-      'staff.max': 75,
-      'reports.advanced': true,
-      'integrations.whatsapp': true,
-    },
-  },
-  {
-    code: 'enterprise',
-    name: 'Enterprise',
-    description: 'A large multi-branch operator with the highest configured limits.',
-    entitlements: {
-      'branches.max': 100,
-      'staff.max': 1000,
-      'reports.advanced': true,
-      'integrations.whatsapp': true,
-    },
-  },
-];
-
 async function seedPermissions(): Promise<void> {
   for (const permission of PERMISSIONS) {
     await prisma.permission.upsert({
@@ -474,7 +389,7 @@ async function seedEntitlementDefinitions(): Promise<void> {
 }
 
 async function seedPlans(): Promise<void> {
-  for (const plan of PLANS) {
+  for (const plan of PLAN_DEFINITIONS) {
     const record = await prisma.subscriptionPlan.upsert({
       where: { code: plan.code },
       update: {
@@ -495,32 +410,95 @@ async function seedPlans(): Promise<void> {
         where: { code: entitlementCode },
       });
 
+      const storedValue = value === null ? Prisma.JsonNull : value;
       await prisma.planEntitlement.upsert({
         where: {
           planId_entitlementId: { planId: record.id, entitlementId: entitlement.id },
         },
-        update: { value },
-        create: { planId: record.id, entitlementId: entitlement.id, value },
+        update: { value: storedValue },
+        create: { planId: record.id, entitlementId: entitlement.id, value: storedValue },
       });
     }
 
-    // Establish the data-driven currency/billing-period shape for each plan
-    // without inventing a commercial price (docs/ROADMAP.md Phase 2 exit
-    // gate; Phase 3 instructions: "Do not invent final commercial prices").
-    const existingPrice = await prisma.planPrice.findFirst({
-      where: { planId: record.id, currency: 'GHS', billingInterval: BillingInterval.MONTH },
-    });
-    if (!existingPrice) {
-      await prisma.planPrice.create({
-        data: {
+    const publicPricing = PUBLIC_PLAN_CODES.includes(
+      plan.code as (typeof PUBLIC_PLAN_CODES)[number],
+    )
+      ? PUBLIC_PLAN_PRICING[plan.code as (typeof PUBLIC_PLAN_CODES)[number]]
+      : null;
+
+    if (publicPricing) {
+      const prices = [
+        {
+          billingInterval: BillingInterval.MONTH,
+          amountMinor: publicPricing.monthlyAmountMinor,
+        },
+        {
+          billingInterval: BillingInterval.YEAR,
+          amountMinor: publicPricing.annualAmountMinor,
+        },
+      ];
+
+      for (const price of prices) {
+        const existingPrice = await prisma.planPrice.findFirst({
+          where: {
+            planId: record.id,
+            currency: 'GHS',
+            billingInterval: price.billingInterval,
+          },
+        });
+
+        if (existingPrice) {
+          await prisma.planPrice.update({
+            where: { id: existingPrice.id },
+            data: {
+              amountMinor: price.amountMinor,
+              countryCode: 'GH',
+              status: PlanLifecycleStatus.ACTIVE,
+            },
+          });
+        } else {
+          await prisma.planPrice.create({
+            data: {
+              planId: record.id,
+              currency: 'GHS',
+              amountMinor: price.amountMinor,
+              billingInterval: price.billingInterval,
+              countryCode: 'GH',
+              status: PlanLifecycleStatus.ACTIVE,
+            },
+          });
+        }
+      }
+
+      if (
+        publicPricing.monthlyAmountMinor !== null &&
+        publicPricing.annualAmountMinor !==
+          annualAmountMinorFromMonthly(publicPricing.monthlyAmountMinor)
+      ) {
+        throw new Error(`Annual price for ${plan.code} does not match the 10% rule`);
+      }
+    } else {
+      // Growth remains untouched apart from the existing seed convergence. Do
+      // not create or rewrite a public price for this legacy plan.
+      const legacyPrice = await prisma.planPrice.findFirst({
+        where: {
           planId: record.id,
           currency: 'GHS',
-          amountMinor: null,
           billingInterval: BillingInterval.MONTH,
-          countryCode: 'GH',
-          status: PlanLifecycleStatus.DRAFT,
         },
       });
+      if (!legacyPrice) {
+        await prisma.planPrice.create({
+          data: {
+            planId: record.id,
+            currency: 'GHS',
+            amountMinor: null,
+            billingInterval: BillingInterval.MONTH,
+            countryCode: 'GH',
+            status: PlanLifecycleStatus.DRAFT,
+          },
+        });
+      }
     }
   }
 }
@@ -552,6 +530,7 @@ async function seedBusinessCategories(): Promise<void> {
 
 async function main(): Promise<void> {
   await seedPermissions();
+  await seedPlatformAuthorization(prisma);
   await seedSystemRoles();
   await seedEntitlementDefinitions();
   await seedPlans();

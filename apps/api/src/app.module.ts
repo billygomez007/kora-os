@@ -27,6 +27,7 @@ import { HealthModule } from './modules/health/health.module.js';
 import { MarketplaceOrdersModule } from './modules/marketplace-orders/marketplace-orders.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { PlatformModule } from './modules/platform/platform.module.js';
 import { ProductsModule } from './modules/products/products.module.js';
 import { QueueModule } from './modules/queue/queue.module.js';
 import { QrModule } from './modules/qr/qr.module.js';
@@ -95,6 +96,7 @@ import { ProviderWorkdayModule } from './modules/provider-workday/provider-workd
     TransactionsModule,
     CashModule,
     PaymentsModule,
+    PlatformModule,
     CorrectionsModule,
     ReportsModule,
     AuthModule,

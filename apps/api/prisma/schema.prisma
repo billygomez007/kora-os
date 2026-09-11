@@ -294,12 +294,14 @@ model User {
   createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organizationsCreated Organization[]           @relation("OrganizationCreatedBy")
-  memberships          OrganizationMembership[]
-  auditEventsAsActor   AuditEvent[]             @relation("AuditEventActorUser")
-  authIdentities       AuthIdentity[]
-  sessions             Session[]
-  customerProfile      CustomerProfile?
+  organizationsCreated       Organization[]           @relation("OrganizationCreatedBy")
+  memberships                OrganizationMembership[]
+  auditEventsAsActor         AuditEvent[]             @relation("AuditEventActorUser")
+  authIdentities             AuthIdentity[]
+  sessions                   Session[]
+  customerProfile            CustomerProfile?
+  platformRoleAssignments    PlatformRoleAssignment[] @relation("PlatformRoleAssignmentUser")
+  platformAssignmentsGranted PlatformRoleAssignment[] @relation("PlatformRoleAssignmentGrantedBy")
 
   @@map("users")
 }
@@ -784,6 +786,65 @@ model MembershipRole {
   @@map("membership_roles")
 }
 
+/// Platform-level role catalog. These roles are deliberately separate from
+/// organization Role rows: a platform operator is not a business member and
+/// never receives tenant permissions by virtue of this assignment.
+model PlatformRole {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  assignments     PlatformRoleAssignment[]
+  rolePermissions PlatformRolePermission[]
+
+  @@map("platform_roles")
+}
+
+/// Stable platform capability vocabulary, independent from tenant Permission.
+model PlatformPermission {
+  id          String @id @default(uuid()) @db.Uuid
+  code        String @unique
+  description String
+
+  rolePermissions PlatformRolePermission[]
+
+  @@map("platform_permissions")
+}
+
+model PlatformRolePermission {
+  id           String @id @default(uuid()) @db.Uuid
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       PlatformRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission PlatformPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("platform_role_permissions")
+}
+
+/// Persistent, revocable platform authorization. A User only gains platform
+/// access through an active row here; email matching is never authorization.
+model PlatformRoleAssignment {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  roleId          String    @map("role_id") @db.Uuid
+  grantedByUserId String?   @map("granted_by_user_id") @db.Uuid
+  grantedAt       DateTime  @default(now()) @map("granted_at") @db.Timestamptz(6)
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  user      User         @relation("PlatformRoleAssignmentUser", fields: [userId], references: [id], onDelete: Cascade)
+  role      PlatformRole @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  grantedBy User?        @relation("PlatformRoleAssignmentGrantedBy", fields: [grantedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, roleId])
+  @@index([userId, revokedAt])
+  @@map("platform_role_assignments")
+}
+
 // ---------------------------------------------------------------------------
 // Staff and invitations
 // ---------------------------------------------------------------------------
@@ -874,9 +935,9 @@ model StaffInvitation {
 // Subscriptions and entitlements
 // ---------------------------------------------------------------------------
 
-/// Plan catalog entry (Starter, Growth, Business, Enterprise, ...). Codes are
-/// data-driven; commercial names and codes are seeded, prices are not
-/// invented (see PlanPrice).
+/// Plan catalog entry (Starter, Growth, Business, Pro, Enterprise, ...).
+/// Codes and commercial prices are data-driven; Growth remains available for
+/// historical compatibility while the public catalogue uses four plans.
 model SubscriptionPlan {
   id          String              @id @default(uuid()) @db.Uuid
   code        String              @unique
@@ -894,7 +955,7 @@ model SubscriptionPlan {
 }
 
 /// Configurable entitlement vocabulary (e.g. `branches.max`, `staff.max`,
-/// `reports.advanced`). Kept separate from PlanEntitlement so the same
+/// `reporting.advanced`). Kept separate from PlanEntitlement so the same
 /// entitlement code can be reused, described once, and typed consistently
 /// across every plan.
 model EntitlementDefinition {
@@ -911,6 +972,7 @@ model EntitlementDefinition {
 
 /// The value is stored as JSON so it can hold a boolean, integer, or string
 /// payload as declared by the referenced EntitlementDefinition.valueType.
+/// Integer limits may be JSON null for Enterprise contract-defined limits.
 model PlanEntitlement {
   id            String @id @default(uuid()) @db.Uuid
   planId        String @map("plan_id") @db.Uuid
@@ -924,9 +986,9 @@ model PlanEntitlement {
   @@map("plan_entitlements")
 }
 
-/// Currency, billing period, and price are all data-driven per plan. No
-/// commercial price is invented here — `amountMinor` stays null until
-/// product pricing is approved (see the Phase 3 seed script).
+/// Currency, billing period, and price are all data-driven per plan. Monetary
+/// values are stored as minor units; Enterprise may remain null because it is
+/// custom-priced.
 model PlanPrice {
   id              String              @id @default(uuid()) @db.Uuid
   planId          String              @map("plan_id") @db.Uuid

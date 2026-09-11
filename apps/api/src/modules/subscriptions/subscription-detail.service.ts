@@ -1,7 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { MembershipStatus, SubscriptionAccessMode, SubscriptionStatus } from '../../generated/prisma/client.js';
+import {
+  MembershipStatus,
+  PlanLifecycleStatus,
+  SubscriptionAccessMode,
+  SubscriptionStatus,
+} from '../../generated/prisma/client.js';
 import { EntitlementsService, ResolvedEntitlements } from './entitlements.service.js';
+import { PUBLIC_PLAN_CODES } from './pricing.js';
 import { SubscriptionAccessService } from './subscription-access.service.js';
 
 export interface SubscriptionUsage {
@@ -20,6 +26,20 @@ export interface SubscriptionDetailView {
   currentPeriodEndsAt: Date | null;
   entitlements: ResolvedEntitlements;
   usage: SubscriptionUsage;
+}
+
+export interface SubscriptionCatalogPrice {
+  billingInterval: 'MONTH' | 'YEAR';
+  amountMinor: number | null;
+  currency: string;
+}
+
+export interface SubscriptionCatalogPlan {
+  planCode: string;
+  planName: string;
+  description: string | null;
+  prices: SubscriptionCatalogPrice[];
+  entitlements: ResolvedEntitlements;
 }
 
 /**
@@ -77,5 +97,43 @@ export class SubscriptionDetailService {
         staffMax: typeof staffMax === 'number' ? staffMax : null,
       },
     };
+  }
+
+  async getPublicCatalog(): Promise<SubscriptionCatalogPlan[]> {
+    const plans = await this.prisma.subscriptionPlan.findMany({
+      where: {
+        code: { in: [...PUBLIC_PLAN_CODES] },
+        status: PlanLifecycleStatus.ACTIVE,
+      },
+      include: {
+        planPrices: {
+          where: { status: PlanLifecycleStatus.ACTIVE },
+          orderBy: { billingInterval: 'asc' },
+          select: {
+            billingInterval: true,
+            amountMinor: true,
+            currency: true,
+          },
+        },
+      },
+    });
+
+    const byCode = new Map(plans.map((plan) => [plan.code, plan]));
+    const catalog: SubscriptionCatalogPlan[] = [];
+
+    for (const code of PUBLIC_PLAN_CODES) {
+      const plan = byCode.get(code);
+      if (!plan) continue;
+
+      catalog.push({
+        planCode: plan.code,
+        planName: plan.name,
+        description: plan.description,
+        prices: plan.planPrices,
+        entitlements: await this.entitlementsService.resolveForPlan(plan.id),
+      });
+    }
+
+    return catalog;
   }
 }

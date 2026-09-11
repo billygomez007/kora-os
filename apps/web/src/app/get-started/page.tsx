@@ -3,11 +3,14 @@
 import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { useLocale, useTranslations } from "next-intl";
 import AuthEntry from "@/components/auth/AuthEntry";
 
 type Journey = "business" | "customer" | null;
 
 export default function GetStartedPage() {
+  const locale = useLocale();
+  const t = useTranslations("Auth");
   const [journey, setJourney] = useState<Journey>(null);
 
   if (journey) {
@@ -20,6 +23,8 @@ export default function GetStartedPage() {
     );
   }
 
+  const localize = (path: string) => `/${locale}${path}`;
+
   return (
     <main className="kora-journey-page">
       <div className="kora-journey-glow kora-journey-glow-one" />
@@ -27,7 +32,7 @@ export default function GetStartedPage() {
 
       <div className="kora-journey-shell">
         <header className="kora-journey-topbar">
-          <Link href="/" className="auth-logo">
+          <Link href={localize("/")} className="auth-logo">
             <Image
               src="/brand/kora-app-icon.png"
               alt="Kora OS"
@@ -39,16 +44,15 @@ export default function GetStartedPage() {
           </Link>
 
           <div className="kora-journey-signin">
-            Already use Kora? <Link href="/login">Sign in</Link>
+            {t("alreadyUse")} <Link href={localize("/login")}>{t("signIn")}</Link>
           </div>
         </header>
 
         <section className="kora-journey-heading">
-          <span>GET STARTED WITH KORA</span>
-          <h1>How would you like to use Kora?</h1>
+          <span>{t("getStarted")}</span>
+          <h1>{t("journeyTitle")}</h1>
           <p>
-            Choose the experience that fits you. You can use the same Kora
-            account for both in the future.
+            {t("journeyBody")}
           </p>
         </section>
 
@@ -60,26 +64,23 @@ export default function GetStartedPage() {
           >
             <div className="kora-journey-card-top">
               <span className="kora-journey-number">01</span>
-              <span className="kora-journey-badge">FOR BUSINESS</span>
+              <span className="kora-journey-badge">{t("forBusiness")}</span>
             </div>
 
             <div>
-              <h2>Run my business</h2>
-              <p>
-                Manage appointments, staff, customers, payments, products,
-                inventory and performance from one Kora workspace.
-              </p>
+              <h2>{t("runBusiness")}</h2>
+              <p>{t("runBusinessBody")}</p>
             </div>
 
             <div className="kora-journey-features">
-              <span>Appointments & queue</span>
-              <span>Staff & customers</span>
-              <span>Payments & receipts</span>
-              <span>Products & inventory</span>
+              <span>{t("appointmentsQueue")}</span>
+              <span>{t("staffCustomers")}</span>
+              <span>{t("paymentsReceipts")}</span>
+              <span>{t("productsInventory")}</span>
             </div>
 
             <div className="kora-journey-action">
-              Continue as a business <span>→</span>
+              {t("continueBusiness")} <span>→</span>
             </div>
           </button>
 
@@ -90,33 +91,29 @@ export default function GetStartedPage() {
           >
             <div className="kora-journey-card-top">
               <span className="kora-journey-number">02</span>
-              <span className="kora-journey-badge">FOR CUSTOMERS</span>
+              <span className="kora-journey-badge">{t("forCustomers")}</span>
             </div>
 
             <div>
-              <h2>Book with businesses</h2>
-              <p>
-                Discover businesses using Kora, book services, join queues and
-                keep your appointments in one place.
-              </p>
+              <h2>{t("bookWithBusinesses")}</h2>
+              <p>{t("bookWithBusinessesBody")}</p>
             </div>
 
             <div className="kora-journey-features">
-              <span>Discover businesses</span>
-              <span>Book appointments</span>
-              <span>Join queues</span>
-              <span>Manage bookings</span>
+              <span>{t("discoverBusinesses")}</span>
+              <span>{t("bookAppointments")}</span>
+              <span>{t("joinQueues")}</span>
+              <span>{t("manageBookings")}</span>
             </div>
 
             <div className="kora-journey-action">
-              Continue as a customer <span>→</span>
+              {t("continueCustomer")} <span>→</span>
             </div>
           </button>
         </section>
 
         <p className="kora-journey-footnote">
-          One secure Kora identity. Business and customer experiences stay
-          connected to the same account.
+          {t("journeyFootnote")}
         </p>
       </div>
     </main>

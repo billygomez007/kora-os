@@ -24,6 +24,7 @@ export interface KoraEnvironment extends Record<string, unknown> {
   OTP_RESEND_COOLDOWN_SECONDS: number;
   OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: number;
   OTP_MAX_REQUESTS_PER_IP_PER_HOUR: number;
+  CLOUDFLARE_TRUSTED_PROXY_CIDRS?: string;
   EMAIL_DELIVERY_MODE?: 'smtp';
   SMTP_HOST?: string;
   SMTP_PORT?: number;
@@ -125,6 +126,9 @@ export function validateEnvironment(
     input.OTP_MAX_REQUESTS_PER_IP_PER_HOUR,
     20,
   );
+  const cloudflareTrustedProxyCidrs = optionalString(
+    input.CLOUDFLARE_TRUSTED_PROXY_CIDRS,
+  );
 
   const {
     emailDeliveryMode,
@@ -153,6 +157,7 @@ export function validateEnvironment(
     OTP_RESEND_COOLDOWN_SECONDS: otpResendCooldownSeconds,
     OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: otpMaxRequestsPerEmailPerHour,
     OTP_MAX_REQUESTS_PER_IP_PER_HOUR: otpMaxRequestsPerIpPerHour,
+    CLOUDFLARE_TRUSTED_PROXY_CIDRS: cloudflareTrustedProxyCidrs,
     EMAIL_DELIVERY_MODE: emailDeliveryMode,
     SMTP_HOST: smtpHost,
     SMTP_PORT: smtpPort,

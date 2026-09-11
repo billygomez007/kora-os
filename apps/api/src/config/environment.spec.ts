@@ -13,6 +13,14 @@ describe('validateEnvironment', () => {
     expect(validateEnvironment({ API_PREFIX: '/v2/' }).API_PREFIX).toBe('/v2');
   });
 
+  it('preserves the explicitly configured Cloudflare proxy CIDRs', () => {
+    expect(
+      validateEnvironment({
+        CLOUDFLARE_TRUSTED_PROXY_CIDRS: '203.0.113.0/24, 2001:db8::/32',
+      }).CLOUDFLARE_TRUSTED_PROXY_CIDRS,
+    ).toBe('203.0.113.0/24, 2001:db8::/32');
+  });
+
   it('rejects an invalid port', () => {
     expect(() => validateEnvironment({ PORT: '70000' })).toThrow(
       'PORT must be an integer between 1 and 65535',

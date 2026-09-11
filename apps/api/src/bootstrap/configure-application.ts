@@ -2,6 +2,10 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { ApiResponseInterceptor } from '../common/http/api-response.interceptor.js';
+import {
+  cloudflareForwardedForMiddleware,
+  createTrustedProxyMatcher,
+} from '../common/network/cloudflare-client-ip.js';
 import { requestIdMiddleware } from '../common/middleware/request-id.middleware.js';
 
 const PRODUCTION_CORS_ORIGINS = [
@@ -24,8 +28,12 @@ export function allowedCorsOrigins(nodeEnv: string | undefined): string[] {
 export function configureApplication(app: INestApplication): void {
   const config = app.get(ConfigService);
   const apiPrefix = config.getOrThrow<string>('API_PREFIX');
+  const trustedCloudflareProxy = createTrustedProxyMatcher(
+    config.get<string>('CLOUDFLARE_TRUSTED_PROXY_CIDRS'),
+  );
 
   app.use(helmet());
+  app.getHttpAdapter().getInstance().set('trust proxy', trustedCloudflareProxy);
 
   app.enableCors({
     origin: allowedCorsOrigins(config.get<string>('NODE_ENV')),
@@ -39,6 +47,7 @@ export function configureApplication(app: INestApplication): void {
     ],
   });
 
+  app.use(cloudflareForwardedForMiddleware(trustedCloudflareProxy));
   app.use(requestIdMiddleware);
   app.setGlobalPrefix(apiPrefix);
   app.useGlobalPipes(

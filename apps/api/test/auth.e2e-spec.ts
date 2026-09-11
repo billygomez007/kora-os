@@ -208,6 +208,26 @@ describe('Passwordless email OTP auth (e2e)', () => {
       expect(meResponse.body.data.email).toBe(signedIn.emailNormalized);
     });
 
+    it('trims surrounding whitespace from a pasted OTP without changing its digits', async () => {
+      const email = uniqueEmail();
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(normalizeEmail(email));
+
+      const verified = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({
+          challengeId: requestResponse.body.data.challengeId,
+          code: `  ${code} `,
+        })
+        .expect(200);
+
+      expect(verified.body.data.accessToken).toEqual(expect.any(String));
+      await trackUser(email);
+    });
+
     it('signs an existing email into the same user rather than creating a second one', async () => {
       const email = uniqueEmail();
       const first = await signInWithEmailOtp(testApp, email);

@@ -126,6 +126,18 @@ describe('validateEnvironment', () => {
     });
   });
 
+  it('trims OTP_PEPPER once during environment validation', () => {
+    const validated = validateEnvironment({
+      OTP_PEPPER: `  ${'c'.repeat(32)}  `,
+    });
+    expect(validated.OTP_PEPPER).toBe('c'.repeat(32));
+  });
+
+  it('accepts opt-in OTP diagnostics without exposing secret values', () => {
+    expect(validateEnvironment({ OTP_DIAGNOSTICS: 'true' }).OTP_DIAGNOSTICS).toBe(true);
+    expect(validateEnvironment({ OTP_DIAGNOSTICS: 'false' }).OTP_DIAGNOSTICS).toBe(false);
+  });
+
   it('rejects a malformed JWT_ACCESS_TTL', () => {
     expect(() =>
       validateEnvironment({ JWT_ACCESS_TTL: 'fifteen minutes' }),

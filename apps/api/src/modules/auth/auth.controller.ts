@@ -6,6 +6,8 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  HttpException,
+  Logger,
   Param,
   Post,
   Req,
@@ -32,6 +34,8 @@ const AUTH_THROTTLE = { default: { limit: 10, ttl: 60_000 } };
 
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly authService: AuthService,
     private readonly emailOtpService: EmailOtpService,
@@ -68,14 +72,43 @@ export class AuthController {
     @Body() dto: VerifyEmailOtpDto,
     @Req() request: RequestWithId,
   ) {
-    const { userId } = await this.emailOtpService.verifyChallenge({
-      challengeId: dto.challengeId,
-      code: dto.code,
-      requestId: request.requestId,
-    });
-    return this.authService.issueSessionForVerifiedUser(
-      userId,
-      buildMetadata(dto.deviceLabel, request),
+    let userId: string;
+    try {
+      ({ userId } = await this.emailOtpService.verifyChallenge({
+        challengeId: dto.challengeId,
+        code: dto.code,
+        requestId: request.requestId,
+      }));
+    } catch (error) {
+      this.logUnexpectedVerifyFailure('challenge_verification', request.requestId, error);
+      throw error;
+    }
+
+    try {
+      return await this.authService.issueSessionForVerifiedUser(
+        userId,
+        buildMetadata(dto.deviceLabel, request),
+      );
+    } catch (error) {
+      this.logUnexpectedVerifyFailure('session_issuance', request.requestId, error);
+      throw error;
+    }
+  }
+
+  private logUnexpectedVerifyFailure(
+    stage: 'challenge_verification' | 'session_issuance',
+    requestId: string,
+    error: unknown,
+  ): void {
+    // Expected invalid/expired codes are already safe 401 responses and do
+    // not need noisy logs. Unexpected failures get only an allowlisted name
+    // and error code; never message text, OTPs, tokens, or secrets.
+    if (error instanceof HttpException && error.getStatus() < 500) return;
+    const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
+    const name = safeDiagnosticToken(error instanceof Error ? error.name : record.name);
+    const code = safeDiagnosticToken(record.code);
+    this.logger.error(
+      `Email OTP verify failed stage=${stage} requestId=${safeDiagnosticToken(requestId)} name=${name} code=${code}`,
     );
   }
 
@@ -148,4 +181,10 @@ function buildMetadata(deviceLabel: string | undefined, request: RequestWithId &
     ipHash: hashIp(request),
     requestId: request.requestId,
   };
+}
+
+function safeDiagnosticToken(value: unknown): string {
+  if (typeof value !== 'string') return 'none';
+  const normalized = value.trim().replace(/\s+/g, '_');
+  return /^[A-Za-z0-9_.-]{1,80}$/.test(normalized) ? normalized : 'redacted';
 }

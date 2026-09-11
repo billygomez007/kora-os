@@ -2,6 +2,7 @@ import {
   computeOtpDigest,
   digestsMatch,
   generateOtpCode,
+  normalizeOtpCode,
 } from './otp-code.util.js';
 
 describe('generateOtpCode', () => {
@@ -21,6 +22,10 @@ describe('generateOtpCode', () => {
     // width.
     const short = String(3).padStart(6, '0');
     expect(short).toBe('000003');
+  });
+
+  it('trims transport whitespace without changing leading zeros', () => {
+    expect(normalizeOtpCode('  000003  ')).toBe('000003');
   });
 
   it('generates different codes across calls (overwhelmingly likely)', () => {

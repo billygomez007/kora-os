@@ -12,6 +12,11 @@ export function generateOtpCode(length: number): string {
   return String(randomInt(0, max)).padStart(length, '0');
 }
 
+/** Trim transport whitespace without converting the OTP through a number. */
+export function normalizeOtpCode(code: string): string {
+  return code.trim();
+}
+
 /**
  * HMAC-SHA256(pepper, challengeId:email:code) — keyed so a database-only
  * leak of `codeDigest` cannot be brute-forced offline without the

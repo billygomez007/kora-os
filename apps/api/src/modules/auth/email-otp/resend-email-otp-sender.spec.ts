@@ -19,7 +19,7 @@ describe('ResendEmailOtpSender', () => {
 
     await sender.send({
       emailNormalized: 'person@example.test',
-      code: '123456',
+      code: '000003',
       expiresAt: new Date(),
       expiryMinutes: 10,
     });
@@ -28,8 +28,8 @@ describe('ResendEmailOtpSender', () => {
     const body = JSON.parse(String(request.body));
     expect(body.from).toBe('Kora OS <login@koraafric.com>');
     expect(body.to).toBe('person@example.test');
-    expect(body.text).toContain('123456');
-    expect(body.html).toContain('123456');
+    expect(body.text).toContain('000003');
+    expect(body.html).toContain('000003');
   });
 
   it('converts Resend failures into the existing safe OTP delivery error', async () => {

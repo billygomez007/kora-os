@@ -1,4 +1,4 @@
-import { ServiceUnavailableException } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OtpChallengeStatus } from '../../../generated/prisma/enums.js';
 import { EmailOtpService } from './email-otp.service.js';
@@ -13,7 +13,7 @@ import { EmailDeliveryUnavailableError } from './unconfigured-email-otp-sender.j
  * coverage in test/auth.e2e-spec.ts against a real database.
  */
 function createServiceWithStubs(
-  options: { existingUserId?: string | null } = {},
+  options: { existingUserId?: string | null; diagnostics?: boolean } = {},
 ) {
   const prismaStub = {
     emailOtpChallenge: {
@@ -39,6 +39,7 @@ function createServiceWithStubs(
     OTP_RESEND_COOLDOWN_SECONDS: 60,
     OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
     OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
+    OTP_DIAGNOSTICS: options.diagnostics ?? false,
   });
   const failingSender = { send: vi.fn().mockRejectedValue(new EmailDeliveryUnavailableError()) };
   const auditService = { record: vi.fn().mockResolvedValue(undefined) };
@@ -88,6 +89,49 @@ describe('EmailOtpService — expiry wording stays tied to configuration', () =>
     expect(sender.send).toHaveBeenCalledWith(
       expect.objectContaining({ expiryMinutes: 17 }),
     );
+  });
+});
+
+describe('EmailOtpService — safe diagnostics', () => {
+  it('never logs the generated OTP or digest when diagnostics are enabled', async () => {
+    const prismaStub = {
+      emailOtpChallenge: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue({}),
+        count: vi.fn().mockResolvedValue(0),
+      },
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const config = new ConfigService({
+      OTP_CODE_LENGTH: 6,
+      OTP_EXPIRY_MINUTES: 10,
+      OTP_MAX_ATTEMPTS: 5,
+      OTP_PEPPER: 'p'.repeat(32),
+      OTP_RESEND_COOLDOWN_SECONDS: 60,
+      OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
+      OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
+      OTP_DIAGNOSTICS: true,
+    });
+    const sender = { send: vi.fn().mockResolvedValue(undefined) };
+    const auditService = { record: vi.fn().mockResolvedValue(undefined) };
+    const loggerWarn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const service = new EmailOtpService(
+      prismaStub as never,
+      config,
+      sender as never,
+      auditService as never,
+    );
+
+    await service.requestChallenge({ email: 'new@example.test', requestId: 'req-safe' });
+
+    const generatedCode = sender.send.mock.calls[0][0].code as string;
+    const logs = loggerWarn.mock.calls.flat().map(String).join('\n');
+    expect(logs).not.toContain(generatedCode);
+    expect(logs).not.toMatch(/[a-f0-9]{64}/i);
+    expect(logs).toContain('hashMatched=unknown');
+    loggerWarn.mockRestore();
   });
 });
 

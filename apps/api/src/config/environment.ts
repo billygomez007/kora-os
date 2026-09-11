@@ -24,6 +24,7 @@ export interface KoraEnvironment extends Record<string, unknown> {
   OTP_RESEND_COOLDOWN_SECONDS: number;
   OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: number;
   OTP_MAX_REQUESTS_PER_IP_PER_HOUR: number;
+  OTP_DIAGNOSTICS?: boolean;
   EMAIL_DELIVERY_MODE?: 'smtp' | 'resend';
   SMTP_HOST?: string;
   SMTP_PORT?: number;
@@ -128,6 +129,7 @@ export function validateEnvironment(
     input.OTP_MAX_REQUESTS_PER_IP_PER_HOUR,
     20,
   );
+  const otpDiagnostics = parseOptionalBoolean(input.OTP_DIAGNOSTICS);
 
   const {
     emailDeliveryMode,
@@ -159,6 +161,7 @@ export function validateEnvironment(
     OTP_RESEND_COOLDOWN_SECONDS: otpResendCooldownSeconds,
     OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: otpMaxRequestsPerEmailPerHour,
     OTP_MAX_REQUESTS_PER_IP_PER_HOUR: otpMaxRequestsPerIpPerHour,
+    OTP_DIAGNOSTICS: otpDiagnostics,
     EMAIL_DELIVERY_MODE: emailDeliveryMode,
     SMTP_HOST: smtpHost,
     SMTP_PORT: smtpPort,
@@ -370,4 +373,12 @@ function parseRequiredBoolean(
   throw new Error(
     `${name} must be "true" or "false" when EMAIL_DELIVERY_MODE=${requiredForMode}`,
   );
+}
+
+function parseOptionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error('OTP_DIAGNOSTICS must be "true" or "false" when set');
 }

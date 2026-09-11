@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   HttpException,
   HttpStatus,
   Inject,
   Injectable,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -22,7 +23,12 @@ import {
   EMAIL_OTP_SENDER,
   type EmailOtpSender,
 } from './email-otp-sender.interface.js';
-import { computeOtpDigest, digestsMatch, generateOtpCode } from './otp-code.util.js';
+import {
+  computeOtpDigest,
+  digestsMatch,
+  generateOtpCode,
+  normalizeOtpCode,
+} from './otp-code.util.js';
 
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const OTP_ERROR_BODY = {
@@ -64,6 +70,8 @@ export interface VerifyOtpResult {
  */
 @Injectable()
 export class EmailOtpService {
+  private readonly logger = new Logger(EmailOtpService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -120,12 +128,33 @@ export class EmailOtpService {
       },
     });
 
+    this.logDiagnostic('request_persisted', {
+      challengeId,
+      status: OtpChallengeStatus.ACTIVE,
+      expired: false,
+      consumed: false,
+      invalidated: false,
+      attempts: 0,
+      hashMatched: 'unknown',
+      pepper,
+    });
+
     const existingUser = await this.prisma.user.findUnique({
       where: { emailNormalized },
     });
 
     try {
       await this.sender.send({ emailNormalized, code, expiresAt, expiryMinutes });
+      this.logDiagnostic('delivery_succeeded', {
+        challengeId,
+        status: OtpChallengeStatus.ACTIVE,
+        expired: false,
+        consumed: false,
+        invalidated: false,
+        attempts: 0,
+        hashMatched: 'unknown',
+        pepper,
+      });
     } catch {
       // An undelivered challenge must not remain usable: the recipient
       // never received the code, so nobody should be able to verify this
@@ -188,14 +217,41 @@ export class EmailOtpService {
       where: { id: input.challengeId },
     });
     if (!challenge) {
+      this.logDiagnostic('verify_rejected', {
+        challengeId: input.challengeId,
+        status: 'MISSING',
+        expired: 'unknown',
+        consumed: 'unknown',
+        invalidated: 'unknown',
+        attempts: 'unknown',
+        hashMatched: 'unknown',
+      });
       throw new UnauthorizedException(OTP_ERROR_BODY);
     }
 
     if (challenge.status !== OtpChallengeStatus.ACTIVE) {
+      this.logDiagnostic('verify_rejected', {
+        challengeId: challenge.id,
+        status: challenge.status,
+        expired: challenge.expiresAt.getTime() <= Date.now(),
+        consumed: challenge.status === OtpChallengeStatus.CONSUMED,
+        invalidated: challenge.status === OtpChallengeStatus.INVALIDATED,
+        attempts: challenge.attemptCount,
+        hashMatched: 'unknown',
+      });
       await this.recordRejection(challenge, input.requestId, statusToReason(challenge.status));
       throw new UnauthorizedException(OTP_ERROR_BODY);
     }
     if (challenge.expiresAt.getTime() <= Date.now()) {
+      this.logDiagnostic('verify_rejected', {
+        challengeId: challenge.id,
+        status: challenge.status,
+        expired: true,
+        consumed: false,
+        invalidated: false,
+        attempts: challenge.attemptCount,
+        hashMatched: 'unknown',
+      });
       await this.recordRejection(challenge, input.requestId, 'expired');
       throw new UnauthorizedException(OTP_ERROR_BODY);
     }
@@ -205,17 +261,27 @@ export class EmailOtpService {
       pepper,
       challengeId: challenge.id,
       emailNormalized: challenge.emailNormalized,
-      code: input.code,
+      code: normalizeOtpCode(input.code),
     });
     const codeIsCorrect = digestsMatch(expectedDigest, challenge.codeDigest);
 
     if (!codeIsCorrect) {
-      const locked = await this.recordFailedAttempt(challenge);
+      const failedAttempt = await this.recordFailedAttempt(challenge);
+      this.logDiagnostic('verify_rejected', {
+        challengeId: challenge.id,
+        status: failedAttempt.locked ? OtpChallengeStatus.LOCKED : challenge.status,
+        expired: false,
+        consumed: false,
+        invalidated: false,
+        attempts: failedAttempt.attempts,
+        hashMatched: false,
+        pepper,
+      });
       await this.recordRejection(
         challenge,
         input.requestId,
         'incorrect_code',
-        locked,
+        failedAttempt.locked,
       );
       throw new UnauthorizedException(OTP_ERROR_BODY);
     }
@@ -228,6 +294,16 @@ export class EmailOtpService {
       // Another request already consumed, invalidated, or locked this
       // challenge between our reads above and this UPDATE.
       await this.recordRejection(challenge, input.requestId, 'lost_race');
+      this.logDiagnostic('verify_rejected', {
+        challengeId: challenge.id,
+        status: challenge.status,
+        expired: false,
+        consumed: true,
+        invalidated: false,
+        attempts: challenge.attemptCount,
+        hashMatched: true,
+        pepper,
+      });
       throw new UnauthorizedException(OTP_ERROR_BODY);
     }
 
@@ -340,7 +416,7 @@ export class EmailOtpService {
   /** Returns whether this attempt caused the challenge to become locked. */
   private async recordFailedAttempt(
     challenge: EmailOtpChallenge,
-  ): Promise<boolean> {
+  ): Promise<{ locked: boolean; attempts: number }> {
     const updated = await this.prisma.emailOtpChallenge.update({
       where: { id: challenge.id },
       data: { attemptCount: { increment: 1 } },
@@ -350,9 +426,37 @@ export class EmailOtpService {
         where: { id: challenge.id, status: OtpChallengeStatus.ACTIVE },
         data: { status: OtpChallengeStatus.LOCKED },
       });
-      return true;
+      return { locked: true, attempts: updated.attemptCount };
     }
-    return false;
+    return { locked: false, attempts: updated.attemptCount };
+  }
+
+  /**
+   * Opt-in production diagnostics. Only challenge metadata is logged; OTPs,
+   * digests, email addresses, tokens, and secret values are never logged.
+   */
+  private logDiagnostic(
+    event: string,
+    input: {
+      challengeId: string;
+      status: string;
+      expired: boolean | 'unknown';
+      consumed: boolean | 'unknown';
+      invalidated: boolean | 'unknown';
+      attempts: number | 'unknown';
+      hashMatched: boolean | 'unknown';
+      pepper?: string;
+    },
+  ): void {
+    const diagnostics = this.config.get<boolean | string>('OTP_DIAGNOSTICS');
+    if (diagnostics !== true && diagnostics !== 'true') return;
+
+    const pepperFingerprint = input.pepper
+      ? createHash('sha256').update(input.pepper).digest('hex').slice(0, 8)
+      : 'unavailable';
+    this.logger.warn(
+      `OTP diagnostic event=${event} challengeId=${safeDiagnosticToken(input.challengeId)} status=${safeDiagnosticToken(input.status)} expired=${formatDiagnosticBoolean(input.expired)} consumed=${formatDiagnosticBoolean(input.consumed)} invalidated=${formatDiagnosticBoolean(input.invalidated)} attempts=${formatDiagnosticAttempts(input.attempts)} hashMatched=${formatDiagnosticBoolean(input.hashMatched)} pepperFingerprint=${pepperFingerprint}`,
+    );
   }
 
   private async recordRejection(
@@ -374,6 +478,21 @@ export class EmailOtpService {
       metadata: { reason, locked },
     });
   }
+}
+
+function formatDiagnosticBoolean(value: boolean | 'unknown'): string {
+  return value === 'unknown' ? 'unknown' : value ? 'yes' : 'no';
+}
+
+function formatDiagnosticAttempts(value: number | 'unknown'): string {
+  return value === 'unknown' || !Number.isInteger(value) || value < 0
+    ? 'unknown'
+    : String(value);
+}
+
+function safeDiagnosticToken(value: string): string {
+  const normalized = value.trim().replace(/\s+/g, '_');
+  return /^[A-Za-z0-9_.-]{1,80}$/.test(normalized) ? normalized : 'redacted';
 }
 
 function statusToReason(status: OtpChallengeStatus): string {

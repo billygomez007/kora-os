@@ -1087,6 +1087,36 @@ with the response:
 - No subscription internals, audit data, staff-private fields, or
   financial figures beyond `accessMode` itself are ever included.
 
+## 32. Access status (post-login routing for the web client)
+
+`GET /v1/me/workspaces` returns an empty `organizations` array both for a
+brand-new account that has never joined a business and for an account
+whose only membership(s) were suspended or removed — the safe workspace
+projection deliberately drops inactive memberships rather than marking
+them non-selectable (section 31), so that array alone cannot tell the two
+apart. `GET /v1/me/access-status` answers only that one narrow question,
+without changing `/me/workspaces`' existing contract (Android already
+depends on its exact shape):
+
+```json
+{
+  "data": { "hasInactiveMembership": false },
+  "meta": { "requestId": "..." }
+}
+```
+
+- `hasInactiveMembership` is `true` only when the user has zero `ACTIVE`
+  memberships and at least one `SUSPENDED` or `REMOVED` one. A user with
+  no membership rows at all — the ordinary new-account state — gets
+  `false`, the same as a user who still has an active membership
+  elsewhere.
+- Read fresh from the database on every call, same as `/me/workspaces`;
+  never cached, never an authorization decision on its own.
+- Used by the web workspace-entry resolver (`apps/web/src/lib/workspace/
+  entry.ts`) to route a signed-in user with no active workspace to
+  business onboarding versus an explicit access-unavailable screen,
+  instead of guessing from an empty array.
+
 This is additive and backward-compatible: `GET /v1/organizations`
 is unchanged, and nothing about organization creation, staff invitation,
 or existing RBAC enforcement changes. Covered by

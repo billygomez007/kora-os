@@ -120,3 +120,68 @@ describe('My workspaces (e2e)', () => {
     expect(orgIds).toEqual([fixture.organizationId, other.organizationId].sort());
   });
 });
+
+describe('My access status (e2e)', () => {
+  let testApp: TestApp;
+  let fixture: BookableFixture;
+
+  beforeEach(async () => {
+    testApp = await createTestApp();
+    fixture = await createBookableFixture(testApp);
+  });
+
+  afterEach(async () => {
+    await cleanupAllBookableFixtures(testApp);
+    await testApp.app.close();
+  });
+
+  function accessStatusUrl(): string {
+    return '/v1/me/access-status';
+  }
+
+  it('rejects an unauthenticated request', async () => {
+    await request(testApp.app.getHttpServer()).get(accessStatusUrl()).expect(401);
+  });
+
+  it('reports no inactive membership for a brand-new account with zero memberships', async () => {
+    const stranger = await signInWithEmailOtp(testApp, `stranger-access-status-${Date.now()}@example.test`);
+    const response = await authed(testApp, stranger.accessToken).get(accessStatusUrl()).expect(200);
+    expect(response.body.data).toEqual({ hasInactiveMembership: false });
+  });
+
+  it('reports no inactive membership for an owner with an active membership', async () => {
+    const response = await authed(testApp, fixture.ownerAccessToken).get(accessStatusUrl()).expect(200);
+    expect(response.body.data).toEqual({ hasInactiveMembership: false });
+  });
+
+  it('reports an inactive membership once the only membership is suspended', async () => {
+    await testApp.prisma.organizationMembership.updateMany({
+      where: { organizationId: fixture.organizationId, userId: fixture.ownerUserId },
+      data: { status: 'SUSPENDED' },
+    });
+    const response = await authed(testApp, fixture.ownerAccessToken).get(accessStatusUrl()).expect(200);
+    expect(response.body.data).toEqual({ hasInactiveMembership: true });
+  });
+
+  it('reports an inactive membership once the only membership is removed', async () => {
+    await testApp.prisma.organizationMembership.updateMany({
+      where: { organizationId: fixture.organizationId, userId: fixture.ownerUserId },
+      data: { status: 'REMOVED' },
+    });
+    const response = await authed(testApp, fixture.ownerAccessToken).get(accessStatusUrl()).expect(200);
+    expect(response.body.data).toEqual({ hasInactiveMembership: true });
+  });
+
+  it('never reports an inactive membership when another active organization still exists', async () => {
+    const other = await createBookableFixture(testApp);
+    await testApp.prisma.organizationMembership.create({
+      data: { organizationId: other.organizationId, userId: fixture.ownerUserId, status: 'ACTIVE', joinedAt: new Date() },
+    });
+    await testApp.prisma.organizationMembership.updateMany({
+      where: { organizationId: fixture.organizationId, userId: fixture.ownerUserId },
+      data: { status: 'REMOVED' },
+    });
+    const response = await authed(testApp, fixture.ownerAccessToken).get(accessStatusUrl()).expect(200);
+    expect(response.body.data).toEqual({ hasInactiveMembership: false });
+  });
+});

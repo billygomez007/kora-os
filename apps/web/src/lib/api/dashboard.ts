@@ -225,6 +225,18 @@ export function amountMinor(
   return selected.amountMinor ?? selected.totalMinor ?? selected.minor ?? 0;
 }
 
+/** Thrown only when a signed-in account genuinely has no usable business
+ * workspace — never for a request that merely failed. Callers that have
+ * already classified the account via `resolveWorkspaceEntry` should not
+ * normally see this; it remains a typed defense-in-depth signal for the
+ * rare race where access changes between that check and this call. */
+export class WorkspaceNotFoundError extends Error {}
+
+/** Thrown when the resolved organization has no branch the caller can
+ * see yet — distinct from `WorkspaceNotFoundError` so a caller never
+ * conflates "no business at all" with "business exists, no branch". */
+export class NoBranchAccessError extends Error {}
+
 export async function resolveActiveWorkspace(): Promise<ActiveWorkspace> {
   let organizationId = localStorage.getItem("kora.active.organizationId");
 
@@ -233,7 +245,9 @@ export async function resolveActiveWorkspace(): Promise<ActiveWorkspace> {
   const organizations = await koraData<OrganizationSummary[]>("/organizations");
 
   if (!organizations.length) {
-    throw new Error("No Kora business workspace was found for this account.");
+    throw new WorkspaceNotFoundError(
+      "No Kora business workspace was found for this account.",
+    );
   }
 
   const organization =
@@ -242,15 +256,41 @@ export async function resolveActiveWorkspace(): Promise<ActiveWorkspace> {
 
   organizationId = organization.id;
 
-  const branches = await koraData<Branch[]>(
-    `/organizations/${organizationId}/branches`,
+  // `/organizations/{id}/branches` returns every non-archived branch in
+  // the organization, with no per-caller restriction — it is not the
+  // authorization boundary. `/me/workspaces` already computes exactly
+  // which branches this membership may see (every active branch for
+  // `branches.manage`, otherwise only its explicit assignments — see
+  // WorkspacesService). Intersecting the two means a branch-restricted
+  // staff member can never have their active branch default to one they
+  // are not assigned to, even transiently.
+  const [branches, workspaces] = await Promise.all([
+    koraData<Branch[]>(`/organizations/${organizationId}/branches`),
+    koraData<{
+      organizations: Array<{ organizationId: string; branches: Array<{ branchId: string }> }>;
+    }>("/me/workspaces"),
+  ]);
+
+  const authorizedBranchIds = new Set(
+    workspaces.organizations
+      .find((item) => item.organizationId === organizationId)
+      ?.branches.map((item) => item.branchId) ?? [],
+  );
+  const authorizedBranches = branches.filter((item) =>
+    authorizedBranchIds.has(item.id),
   );
 
-  if (!branches.length) {
-    throw new Error("This Kora business does not have a branch yet.");
+  if (!authorizedBranches.length) {
+    throw new NoBranchAccessError(
+      branches.length
+        ? "Your account is not assigned to a branch in this business yet."
+        : "This Kora business does not have a branch yet.",
+    );
   }
 
-  const branch = branches.find((item) => item.id === branchId) ?? branches[0];
+  const branch =
+    authorizedBranches.find((item) => item.id === branchId) ??
+    authorizedBranches[0];
 
   branchId = branch.id;
 

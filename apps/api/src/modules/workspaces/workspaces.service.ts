@@ -35,6 +35,16 @@ export interface MyWorkspacesView {
   organizations: WorkspaceOrganizationView[];
 }
 
+export interface AccessStatusView {
+  /** True only when every one of this user's organization memberships
+   * is SUSPENDED or REMOVED (never when the user simply has none, and
+   * never when at least one ACTIVE membership exists) — lets a client
+   * distinguish "authenticated user who has not yet built a business"
+   * from "authenticated user whose access was revoked" without
+   * changing the `/me/workspaces` contract Android already depends on. */
+  hasInactiveMembership: boolean;
+}
+
 /**
  * The one safe, read-only projection a mobile client needs to decide
  * which workspaces to offer and how to shape their navigation —
@@ -123,5 +133,31 @@ export class WorkspacesService {
     );
 
     return { customerWorkspaceAvailable: true, organizations };
+  }
+
+  /**
+   * A user with zero entries in `/me/workspaces` is ambiguous: it is
+   * both the ordinary "signed up, never created or joined a business"
+   * state and the "every membership was suspended/removed" state. This
+   * answers only that narrow question, read fresh on every call, so a
+   * client can route the second case to an explicit access-unavailable
+   * screen instead of the business-onboarding flow meant for the first.
+   */
+  async getAccessStatus(userId: string): Promise<AccessStatusView> {
+    const activeCount = await this.prisma.organizationMembership.count({
+      where: { userId, status: MembershipStatus.ACTIVE },
+    });
+    if (activeCount > 0) {
+      return { hasInactiveMembership: false };
+    }
+
+    const inactiveCount = await this.prisma.organizationMembership.count({
+      where: {
+        userId,
+        status: { in: [MembershipStatus.SUSPENDED, MembershipStatus.REMOVED] },
+      },
+    });
+
+    return { hasInactiveMembership: inactiveCount > 0 };
   }
 }

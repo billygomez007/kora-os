@@ -4,6 +4,7 @@ import { FormEvent, Suspense, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useLocale, useTranslations } from "next-intl";
 import {
   saveKoraSession,
   type KoraSession,
@@ -13,10 +14,16 @@ import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
 function VerifyContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const locale = useLocale();
+  const t = useTranslations("Auth");
+  const localize = (path: string) => `/${locale}${path}`;
 
   const email = searchParams.get("email")?.trim().toLowerCase() ?? "";
   const challengeId = searchParams.get("challengeId") ?? "";
   const mode = searchParams.get("mode") === "signup" ? "signup" : "signin";
+  const journey =
+    searchParams.get("journey") === "customer" ? "customer" : "business";
+  const invitationToken = searchParams.get("invitation")?.trim() ?? "";
 
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
@@ -27,13 +34,13 @@ function VerifyContent() {
 
     if (!challengeId) {
       setStatus("error");
-      setMessage("This verification session is no longer valid. Request a new code.");
+      setMessage(t("verificationExpired"));
       return;
     }
 
     if (code.length < 4 || code.length > 10) {
       setStatus("error");
-      setMessage("Enter the verification code from your email.");
+      setMessage(t("verificationCodeRequired"));
       return;
     }
 
@@ -41,7 +48,7 @@ function VerifyContent() {
 
     if (!apiBase) {
       setStatus("error");
-      setMessage("Kora web authentication is not connected to the API.");
+      setMessage(t("apiUnavailable"));
       return;
     }
 
@@ -66,7 +73,7 @@ function VerifyContent() {
     } catch {
       setStatus("error");
       setMessage(
-        "Kora could not reach the API. Check your connection and try again.",
+        t("networkError"),
       );
       return;
     }
@@ -83,20 +90,34 @@ function VerifyContent() {
 
     if (!session?.accessToken) {
       setStatus("error");
-      setMessage("Kora sent an unexpected response. Please try again.");
+      setMessage(t("unexpected"));
       return;
     }
 
     saveKoraSession(session);
 
-    router.replace(mode === "signup" ? "/onboarding" : "/app");
+    if (invitationToken) {
+      router.replace(localize(`/invite/${encodeURIComponent(invitationToken)}`));
+      return;
+    }
+
+    if (mode === "signup") {
+      router.replace(
+        journey === "customer"
+          ? localize("/customer-onboarding")
+          : localize("/onboarding"),
+      );
+      return;
+    }
+
+    router.replace(localize("/app"));
   }
 
   if (!email || !challengeId) {
     return (
       <main className="auth-page">
         <section className="auth-card">
-          <Link href="/" className="auth-logo">
+          <Link href={localize("/")} className="auth-logo">
             <Image
               src="/brand/kora-app-icon.png"
               alt="Kora OS"
@@ -108,19 +129,18 @@ function VerifyContent() {
           </Link>
 
           <div className="auth-heading">
-            <span>VERIFY YOUR EMAIL</span>
-            <h1>Request a new code.</h1>
+            <span>{t("verifyEmail")}</span>
+            <h1>{t("requestNewCodeTitle")}</h1>
             <p>
-              This verification session is missing the information Kora needs
-              to continue securely.
+              {t("missingVerificationData")}
             </p>
           </div>
 
           <Link
-            href={mode === "signup" ? "/get-started" : "/login"}
+            href={mode === "signup" ? localize("/get-started") : localize("/login")}
             className="auth-primary-link"
           >
-            Request a new code
+            {t("requestNewCode")}
           </Link>
         </section>
       </main>
@@ -130,7 +150,7 @@ function VerifyContent() {
   return (
     <main className="auth-page">
       <section className="auth-card verify-card">
-        <Link href="/" className="auth-logo">
+        <Link href={localize("/")} className="auth-logo">
           <Image
             src="/brand/kora-app-icon.png"
             alt="Kora OS"
@@ -142,15 +162,15 @@ function VerifyContent() {
         </Link>
 
         <div className="auth-heading">
-          <span>VERIFY YOUR EMAIL</span>
-          <h1>Enter your verification code.</h1>
+          <span>{t("verifyEmail")}</span>
+          <h1>{t("enterVerificationCode")}</h1>
           <p>
-            We sent a code to <strong>{email}</strong>.
+            {t("codeSentTo", { email })}
           </p>
         </div>
 
         <form className="auth-form" onSubmit={handleVerify}>
-          <label htmlFor="code">Verification code</label>
+          <label htmlFor="code">{t("verificationCode")}</label>
 
           <input
             id="code"
@@ -177,16 +197,16 @@ function VerifyContent() {
             disabled={status === "loading"}
           >
             {status === "loading"
-              ? "Verifying..."
-              : "Verify and continue"}
+              ? t("verifying")
+              : t("verifyContinue")}
           </button>
         </form>
 
         <Link
-          href={mode === "signup" ? "/get-started" : "/login"}
+          href={mode === "signup" ? localize("/get-started") : localize("/login")}
           className="auth-back-link"
         >
-          Use a different email
+          {t("differentEmail")}
         </Link>
       </section>
     </main>

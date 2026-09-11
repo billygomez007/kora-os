@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import WorkspaceShell from "@/components/workspace/WorkspaceShell";
 import {
   type ActiveWorkspace,
@@ -69,8 +70,28 @@ interface SubscriptionDetail {
   currentPeriodStart?: string | null;
   currentPeriodEnd?: string | null;
   trialEndsAt?: string | null;
-  entitlements?: unknown[];
+  entitlements?: Record<string, boolean | number | string | null>;
+  usage?: {
+    branchesUsed: number;
+    branchesMax: number | null;
+    staffUsed: number;
+    staffMax: number | null;
+  };
   [key: string]: unknown;
+}
+
+interface SubscriptionCatalogPrice {
+  billingInterval: "MONTH" | "YEAR";
+  amountMinor: number | null;
+  currency: string;
+}
+
+interface SubscriptionCatalogPlan {
+  planCode: string;
+  planName: string;
+  description: string | null;
+  prices: SubscriptionCatalogPrice[];
+  entitlements?: Record<string, boolean | number | string | null>;
 }
 
 const DAYS = [
@@ -98,7 +119,21 @@ function messageOf(error: unknown) {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
+function formatPlanAmount(currency: string, amountMinor: number | null) {
+  if (amountMinor === null) return "Custom";
+  return `${currency} ${(amountMinor / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function planLimit(entitlements: SubscriptionCatalogPlan["entitlements"], code: string) {
+  const value = entitlements?.[code];
+  return typeof value === "number" ? String(value) : "Custom";
+}
+
 export default function SettingsPage() {
+  const t = useTranslations("Settings");
   const [tab, setTab] = useState<Tab>("profile");
   const [workspace, setWorkspace] = useState<ActiveWorkspace | null>(null);
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
@@ -107,6 +142,7 @@ export default function SettingsPage() {
   const [branch, setBranch] = useState<BranchDetail | null>(null);
   const [subscription, setSubscription] =
     useState<SubscriptionDetail | null>(null);
+  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionCatalogPlan[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState("");
   const [error, setError] = useState("");
@@ -121,7 +157,7 @@ export default function SettingsPage() {
       const active = await resolveActiveWorkspace();
       setWorkspace(active);
 
-      const [profileResult, hoursResult, policyResult, branches, subscriptionResult] =
+      const [profileResult, hoursResult, policyResult, branches, subscriptionResult, plansResult] =
         await Promise.all([
           koraData<BusinessProfile | null>(
             `/organizations/${active.organizationId}/business-profile`,
@@ -138,6 +174,9 @@ export default function SettingsPage() {
           koraData<SubscriptionDetail>(
             `/organizations/${active.organizationId}/subscription`,
           ).catch(() => null),
+          koraData<SubscriptionCatalogPlan[]>(
+            `/organizations/${active.organizationId}/subscription/plans`,
+          ).catch(() => []),
         ]);
 
       setProfile(
@@ -152,6 +191,7 @@ export default function SettingsPage() {
         branches.find((item) => item.id === active.branchId) ?? null,
       );
       setSubscription(subscriptionResult);
+      setSubscriptionPlans(plansResult);
     } catch (err) {
       setError(messageOf(err));
     } finally {
@@ -377,12 +417,71 @@ export default function SettingsPage() {
       setError("");
       setNotice("");
 
-      await koraData(
+      if (!published && branch) {
+        const discoveryPayload = {
+          ...(branch.latitude != null ? { latitude: branch.latitude } : {}),
+          ...(branch.longitude != null ? { longitude: branch.longitude } : {}),
+          ...(branch.publicPhone?.trim()
+            ? { publicPhone: branch.publicPhone.trim() }
+            : {}),
+          ...(branch.publicEmail?.trim()
+            ? { publicEmail: branch.publicEmail.trim() }
+            : {}),
+          ...(branch.openingHoursNote?.trim()
+            ? { openingHoursNote: branch.openingHoursNote.trim() }
+            : {}),
+          isDiscoverable: Boolean(branch.isDiscoverable),
+        };
+
+        const savedBranch = await koraData<BranchDetail>(
+          `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/discovery`,
+          {
+            method: "PUT",
+            body: JSON.stringify(discoveryPayload),
+          },
+        );
+
+        setBranch((current) =>
+          current ? { ...current, ...savedBranch } : current,
+        );
+      }
+
+      if (!published) {
+        const publicProfile = await koraData<BusinessProfile>(
+          `/organizations/${workspace.organizationId}/business-profile`,
+          {
+            method: "PUT",
+            body: JSON.stringify({
+              ...(profile.slug?.trim() ? { slug: profile.slug.trim() } : {}),
+              displayName: profile.displayName.trim(),
+              ...(profile.description?.trim()
+                ? { description: profile.description.trim() }
+                : {}),
+              ...(profile.logoImageUrl?.trim()
+                ? { logoImageUrl: profile.logoImageUrl.trim() }
+                : {}),
+              ...(profile.coverImageUrl?.trim()
+                ? { coverImageUrl: profile.coverImageUrl.trim() }
+                : {}),
+              visibility: "PUBLIC",
+              ...(profile.searchKeywords?.trim()
+                ? { searchKeywords: profile.searchKeywords.trim() }
+                : {}),
+            }),
+          },
+        );
+
+        setProfile(publicProfile);
+      }
+
+      const publicationResult = await koraData<BusinessProfile>(
         `/organizations/${workspace.organizationId}/business-profile/${
           published ? "unpublish" : "publish"
         }`,
         { method: "POST" },
       );
+
+      setProfile(publicationResult);
 
       await load();
       setNotice(
@@ -1027,17 +1126,15 @@ export default function SettingsPage() {
             <section className="settingsPanel">
               <div className="settingsPanelHead">
                 <div>
-                  <span>KORA PLAN</span>
-                  <h2>Subscription</h2>
-                  <p>
-                    Your current Kora subscription and workspace access.
-                  </p>
+                  <span>{t("subscription.kicker")}</span>
+                  <h2>{t("subscription.title")}</h2>
+                  <p>{t("subscription.description")}</p>
                 </div>
               </div>
 
               <div className="subscriptionHero">
                 <div>
-                  <small>CURRENT PLAN</small>
+                  <small>{t("subscription.currentPlan")}</small>
                   <h3>
                     {String(
                       subscription?.planName ??
@@ -1054,32 +1151,77 @@ export default function SettingsPage() {
 
               <div className="settingsInfoGrid">
                 <article>
-                  <small>BUSINESS</small>
+                  <small>{t("subscription.business")}</small>
                   <strong>{workspace?.organizationName}</strong>
                 </article>
                 <article>
-                  <small>BRANCH</small>
+                  <small>{t("subscription.branch")}</small>
                   <strong>{workspace?.branchName}</strong>
                 </article>
                 <article>
-                  <small>CURRENCY</small>
+                  <small>{t("subscription.currency")}</small>
                   <strong>{workspace?.currency}</strong>
                 </article>
                 <article>
-                  <small>TIME ZONE</small>
+                  <small>{t("subscription.timeZone")}</small>
                   <strong>{workspace?.timeZone}</strong>
                 </article>
+                <article>
+                  <small>{t("subscription.branchLimit")}</small>
+                  <strong>{subscription?.usage?.branchesMax ?? t("subscription.custom")}</strong>
+                </article>
+                <article>
+                  <small>{t("subscription.staffLimit")}</small>
+                  <strong>{subscription?.usage?.staffMax ?? t("subscription.custom")}</strong>
+                </article>
               </div>
+
+              {subscriptionPlans.length > 0 ? (
+                <div className="subscriptionCatalog">
+                  <div className="subscriptionCatalogHead">
+                    <div>
+                      <small>{t("subscription.catalogKicker")}</small>
+                      <h3>{t("subscription.catalogTitle")}</h3>
+                    </div>
+                    <span>{t("subscription.catalogNote")}</span>
+                  </div>
+                  <div className="subscriptionCatalogGrid">
+                    {subscriptionPlans.map((plan) => (
+                      <article key={plan.planCode}>
+                        <strong>{plan.planName}</strong>
+                        <span>{plan.description}</span>
+                        <div className="subscriptionPlanLimits">
+                          <small>{t("subscription.branchesLimit")}: {planLimit(plan.entitlements, "branches.max")}</small>
+                          <small>{t("subscription.staffLimit")}: {planLimit(plan.entitlements, "staff.max")}</small>
+                        </div>
+                        <span className="subscriptionPlanCapabilities">
+                          {plan.entitlements?.["cash.reconciliation"] === true
+                            ? t("subscription.cashReconciliationIncluded")
+                            : plan.entitlements?.["reporting.performance"] === true
+                              ? t("subscription.performanceReportingIncluded")
+                              : t("subscription.coreOperationsIncluded")}
+                        </span>
+                        {plan.prices.map((price) => (
+                          <div key={`${plan.planCode}-${price.billingInterval}`}>
+                            <small>
+                              {price.billingInterval === "YEAR"
+                                ? t("subscription.annual")
+                                : t("subscription.monthly")}
+                            </small>
+                            <b>{formatPlanAmount(price.currency, price.amountMinor)}</b>
+                          </div>
+                        ))}
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="settingsTrust">
                 <span>◆</span>
                 <div>
-                  <strong>Subscription management</strong>
-                  <p>
-                    Kora is reading the plan directly from your business
-                    subscription record. Billing actions will only appear when
-                    the backend supports them.
-                  </p>
+                  <strong>{t("subscription.managementTitle")}</strong>
+                  <p>{t("subscription.managementBody")}</p>
                 </div>
               </div>
             </section>
@@ -1568,6 +1710,84 @@ export default function SettingsPage() {
           overflow-wrap: anywhere;
         }
 
+        .subscriptionCatalog {
+          margin-top: 24px;
+        }
+
+        .subscriptionCatalogHead {
+          display: flex;
+          justify-content: space-between;
+          gap: 16px;
+          align-items: end;
+          margin-bottom: 12px;
+        }
+
+        .subscriptionCatalogHead small {
+          color: var(--ws-gold);
+          font-size: 9px;
+          font-weight: 900;
+          letter-spacing: .14em;
+        }
+
+        .subscriptionCatalogHead h3 {
+          margin: 6px 0 0;
+          font-size: 18px;
+        }
+
+        .subscriptionCatalogHead > span {
+          max-width: 260px;
+          color: var(--ws-text-secondary);
+          font-size: 11px;
+          line-height: 1.5;
+          text-align: right;
+        }
+
+        .subscriptionCatalogGrid {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .subscriptionCatalogGrid article {
+          display: grid;
+          gap: 7px;
+          padding: 15px;
+          border: 1px solid var(--ws-border);
+          border-radius: 13px;
+          background: var(--ws-surface);
+        }
+
+        .subscriptionCatalogGrid article > strong {
+          font-size: 15px;
+        }
+
+        .subscriptionCatalogGrid article > span {
+          min-height: 34px;
+          color: var(--ws-text-secondary);
+          font-size: 11px;
+          line-height: 1.4;
+        }
+
+        .subscriptionCatalogGrid article div {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          align-items: center;
+          padding-top: 7px;
+          border-top: 1px solid var(--ws-border);
+        }
+
+        .subscriptionCatalogGrid article div small {
+          color: var(--ws-text-secondary);
+          font-size: 10px;
+        }
+
+        .subscriptionCatalogGrid article div b {
+          color: var(--ws-gold);
+          font-size: 12px;
+          text-align: right;
+        }
+
         .accountSecurityCard {
           display: grid;
           grid-template-columns: 52px minmax(0, 1fr) auto;
@@ -1625,6 +1845,20 @@ export default function SettingsPage() {
         }
 
         @media (max-width: 720px) {
+          .subscriptionCatalogHead {
+            align-items: flex-start;
+            flex-direction: column;
+          }
+
+          .subscriptionCatalogHead > span {
+            max-width: none;
+            text-align: left;
+          }
+
+          .subscriptionCatalogGrid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
           .accountSecurityCard {
             grid-template-columns: 48px minmax(0, 1fr);
           }

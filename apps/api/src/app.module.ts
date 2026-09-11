@@ -24,10 +24,13 @@ import { CustomersModule } from './modules/customers/customers.module.js';
 import { DiscoveryModule } from './modules/discovery/discovery.module.js';
 import { FavoritesModule } from './modules/favorites/favorites.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { MarketplaceOrdersModule } from './modules/marketplace-orders/marketplace-orders.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { PlatformModule } from './modules/platform/platform.module.js';
 import { ProductsModule } from './modules/products/products.module.js';
 import { QueueModule } from './modules/queue/queue.module.js';
+import { QrModule } from './modules/qr/qr.module.js';
 import { ReceiptsModule } from './modules/receipts/receipts.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
 import { SchedulingModule } from './modules/scheduling/scheduling.module.js';
@@ -51,8 +54,11 @@ const repositoryRootEnvPath = path.resolve(
   '../../../.env',
 );
 
+import { ProviderWorkdayModule } from './modules/provider-workday/provider-workday.module.js';
+
 @Module({
   imports: [
+    ProviderWorkdayModule,
     ConfigModule.forRoot({
       cache: true,
       isGlobal: true,
@@ -78,16 +84,19 @@ const repositoryRootEnvPath = path.resolve(
     CustomerProfileModule,
     CustomersModule,
     FavoritesModule,
+    MarketplaceOrdersModule,
     WorkspacesModule,
     AppointmentsModule,
     ServiceSessionsModule,
     QueueModule,
+    QrModule,
     CheckoutsModule,
     CommissionsModule,
     ReceiptsModule,
     TransactionsModule,
     CashModule,
     PaymentsModule,
+    PlatformModule,
     CorrectionsModule,
     ReportsModule,
     AuthModule,

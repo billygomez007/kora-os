@@ -3,27 +3,77 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
+import { useEffect, useMemo, useState } from "react";
 import { getKoraSession } from "@/lib/auth/session";
-import { resolveActiveWorkspace } from "@/lib/api/dashboard";
-
-const navItems = [
-  ["Overview", "▣", "/app"],
-  ["Appointments", "▧", "/app/appointments"],
-  ["Queue", "◌", "/app/queue"],
-  ["Customers", "◉", "/app/customers"],
-  ["Staff", "♙", "/app/staff"],
-  ["Services", "▤", "/app/services"],
-  ["Products & Inventory", "▦", "/app/products"],
-  ["Payments", "▥", "/app/payments"],
-  ["Reports", "◫", "/app/reports"],
-  ["Settings", "⚙", "/app/settings"],
-];
+import { logoutKoraSession } from "@/lib/api/kora-api";
+import {
+  resolveActiveWorkspace,
+  type ActiveWorkspace,
+} from "@/lib/api/dashboard";
+import LanguageSwitcher from "@/components/i18n/LanguageSwitcher";
+import { stripLocale } from "@/i18n/routing";
+import {
+  hasAnyWorkspacePermission,
+  visibleWorkspaceNavItems,
+  workspaceNavItems,
+  type WorkspaceNavItem,
+} from "./workspace-navigation";
 
 interface WorkspaceIdentity {
   businessName: string;
   branchName: string;
   email: string | null;
+  roleLabel: string;
+  permissionCodes: string[];
+}
+
+function roleLabel(workspace: ActiveWorkspace): string {
+  if (workspace.roleNames.length) {
+    return workspace.roleNames.join(" · ");
+  }
+
+  if (workspace.roleCodes.length) {
+    return workspace.roleCodes
+      .map((code) =>
+        code
+          .split("_")
+          .map((part) =>
+            part.length
+              ? `${part[0].toUpperCase()}${part.slice(1)}`
+              : part,
+          )
+          .join(" "),
+      )
+      .join(" · ");
+  }
+
+  return "Kora team member";
+}
+
+function routeIsAllowed(
+  pathname: string,
+  permissionCodes: readonly string[],
+): boolean {
+  if (pathname === "/app") return true;
+
+  const route = workspaceNavItems
+    .filter((item) => item.href !== "/app")
+    .sort((a, b) => b.href.length - a.href.length)
+    .find(
+      (item) =>
+        pathname === item.href ||
+        pathname.startsWith(`${item.href}/`),
+    );
+
+  if (!route) {
+    return true;
+  }
+
+  return hasAnyWorkspacePermission(
+    permissionCodes,
+    route.anyPermissions,
+  );
 }
 
 export default function WorkspaceShell({
@@ -36,14 +86,21 @@ export default function WorkspaceShell({
   actions?: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const routePathname = stripLocale(pathname);
+  const t = useTranslations("Workspace");
 
   const [identity, setIdentity] = useState<WorkspaceIdentity>({
     businessName: "Your Kora Business",
     branchName: "Primary location",
     email: null,
+    roleLabel: "Kora team member",
+    permissionCodes: [],
   });
 
+  const [accessResolved, setAccessResolved] = useState(false);
+  const [workspaceContextError, setWorkspaceContextError] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -51,22 +108,78 @@ export default function WorkspaceShell({
 
       void resolveActiveWorkspace()
         .then((workspace) => {
+          setWorkspaceContextError(false);
           setIdentity({
             businessName: workspace.organizationName,
             branchName: workspace.branchName,
             email: session?.user?.email ?? null,
+            roleLabel: roleLabel(workspace),
+            permissionCodes: workspace.permissionCodes,
           });
+
+          setAccessResolved(true);
         })
-        .catch(() => {
+        .catch((reason) => {
+          setWorkspaceContextError(true);
+          if (process.env.NODE_ENV === "development") {
+            console.warn("[Kora workspace] context resolution failed", reason);
+          }
           setIdentity((current) => ({
             ...current,
             email: session?.user?.email ?? null,
           }));
+
+          setAccessResolved(true);
         });
     }, 0);
 
     return () => window.clearTimeout(timer);
   }, []);
+
+  const visibleNavItems = useMemo(
+    () =>
+      visibleWorkspaceNavItems(identity.permissionCodes),
+    [identity.permissionCodes],
+  );
+
+  const pageAllowed =
+    !accessResolved ||
+    routeIsAllowed(routePathname, identity.permissionCodes);
+
+  async function handleSignOut() {
+    if (signingOut) return;
+
+    setSigningOut(true);
+
+    try {
+      await logoutKoraSession();
+    } finally {
+      window.location.replace("/login");
+    }
+  }
+
+  function renderNavItem(item: WorkspaceNavItem, mobile = false) {
+    const active =
+      item.href === "/app"
+        ? routePathname === "/app"
+        : routePathname.startsWith(item.href);
+
+    return (
+      <Link
+        key={item.labelKey}
+        href={item.href}
+        className={active ? "active" : ""}
+        onClick={
+          mobile
+            ? () => setMobileNavOpen(false)
+            : undefined
+        }
+      >
+        <span>{item.icon}</span>
+        {t(item.labelKey)}
+      </Link>
+    );
+  }
 
   return (
     <main className="workspace-page">
@@ -83,42 +196,42 @@ export default function WorkspaceShell({
         </div>
 
         <div className="workspace-business">
-          <small>WORKSPACE</small>
+          <small>{t("workspace").toUpperCase()}</small>
           <strong>{identity.businessName}</strong>
           <span>{identity.branchName}</span>
         </div>
 
         <nav className="workspace-nav">
-          {navItems.map(([label, icon, href]) => {
-            const active =
-              href === "/app"
-                ? pathname === "/app"
-                : pathname.startsWith(href);
-
-            return (
-              <Link
-                key={label}
-                href={href}
-                className={active ? "active" : ""}
-              >
-                <span>{icon}</span>
-                {label}
-              </Link>
-            );
-          })}
+          {workspaceContextError ? (
+            <p className="workspace-nav-error">
+              Workspace access unavailable. Sign in again.
+            </p>
+          ) : (
+            visibleNavItems.map((item) => renderNavItem(item))
+          )}
         </nav>
 
         <div className="workspace-sidebar-footer">
+          <LanguageSwitcher compact />
           <div className="workspace-user">
             <div className="workspace-avatar">
               {identity.email?.slice(0, 1).toUpperCase() || "K"}
             </div>
 
             <div>
-              <strong>Business owner</strong>
-              <span>{identity.email || "Kora account"}</span>
+              <strong>{identity.roleLabel}</strong>
+              <span>{identity.email || t("account")}</span>
             </div>
           </div>
+
+          <button
+            type="button"
+            className="workspace-signout-button"
+            onClick={() => void handleSignOut()}
+            disabled={signingOut}
+          >
+            {signingOut ? t("signingOut") : t("signOut")}
+          </button>
         </div>
       </aside>
 
@@ -131,10 +244,12 @@ export default function WorkspaceShell({
             aria-controls="workspace-mobile-nav"
             aria-label={
               mobileNavOpen
-                ? "Close workspace menu"
-                : "Open workspace menu"
+                ? t("closeMenu")
+                : t("openMenu")
             }
-            onClick={() => setMobileNavOpen((current) => !current)}
+            onClick={() =>
+              setMobileNavOpen((current) => !current)
+            }
           >
             <span />
             <span />
@@ -142,19 +257,38 @@ export default function WorkspaceShell({
           </button>
 
           <div className="workspace-topbar-title">
-            <span>Kora workspace</span>
+            <span>Kora {t("workspace").toLowerCase()}</span>
             <strong>{title}</strong>
           </div>
 
-          {actions && (
+          {pageAllowed && actions ? (
             <div className="workspace-actions">
               {actions}
             </div>
-          )}
+          ) : null}
         </header>
 
         <div className="workspace-content">
-          {children}
+          {!accessResolved ? (
+            <div className="workspace-access-loading">
+              {t("checkingAccess")}
+            </div>
+          ) : pageAllowed ? (
+            children
+          ) : (
+            <section className="workspace-access-denied">
+              <span>{t("restrictedKicker")}</span>
+              <h1>{t("restrictedTitle")}</h1>
+              <p>{t("restrictedBody")}</p>
+
+              <Link
+                href="/app"
+                className="workspace-primary-button"
+              >
+                {t("returnOverview")}
+              </Link>
+            </section>
+          )}
         </div>
       </section>
 
@@ -171,33 +305,44 @@ export default function WorkspaceShell({
           >
             <div className="workspace-mobile-nav-head">
               <span>{identity.businessName}</span>
+
               <button
                 type="button"
-                aria-label="Close workspace menu"
+                aria-label={t("closeMenu")}
                 onClick={() => setMobileNavOpen(false)}
               >
                 ×
               </button>
             </div>
 
-            {navItems.map(([label, icon, href]) => {
-              const active =
-                href === "/app"
-                  ? pathname === "/app"
-                  : pathname.startsWith(href);
+            <div className="workspace-mobile-nav-links">
+              {visibleNavItems.map((item) =>
+                renderNavItem(item, true),
+              )}
+            </div>
 
-              return (
-                <Link
-                  key={label}
-                  href={href}
-                  className={active ? "active" : ""}
-                  onClick={() => setMobileNavOpen(false)}
-                >
-                  <span>{icon}</span>
-                  {label}
-                </Link>
-              );
-            })}
+            <div className="workspace-mobile-account">
+              <LanguageSwitcher compact />
+              <div className="workspace-user">
+                <div className="workspace-avatar">
+                  {identity.email?.slice(0, 1).toUpperCase() || "K"}
+                </div>
+
+                <div>
+                  <strong>{identity.roleLabel}</strong>
+                  <span>{identity.email || t("account")}</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="workspace-signout-button"
+                onClick={() => void handleSignOut()}
+                disabled={signingOut}
+              >
+                {signingOut ? t("signingOut") : t("signOut")}
+              </button>
+            </div>
           </nav>
         </div>
       ) : null}

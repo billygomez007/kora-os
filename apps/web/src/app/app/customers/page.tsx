@@ -68,6 +68,7 @@ function totalActivity(customer: Customer) {
 
 export default function CustomersPage() {
   const [organizationId, setOrganizationId] = useState("");
+  const [canManageCustomers, setCanManageCustomers] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selected, setSelected] = useState<Customer | null>(null);
   const [search, setSearch] = useState("");
@@ -84,6 +85,9 @@ export default function CustomersPage() {
         try {
           const workspace = await resolveActiveWorkspace();
           setOrganizationId(workspace.organizationId);
+          setCanManageCustomers(
+            workspace.permissionCodes.includes("customers.manage"),
+          );
         } catch (cause) {
           setError(
             cause instanceof Error
@@ -160,11 +164,13 @@ export default function CustomersPage() {
   }, [customers]);
 
   function openCreate() {
+    if (!canManageCustomers) return;
     setForm(EMPTY_FORM);
     setModal("create");
   }
 
   function openEdit(customer: Customer) {
+    if (!canManageCustomers) return;
     setSelected(customer);
     setForm({
       name: customer.name,
@@ -177,7 +183,11 @@ export default function CustomersPage() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!organizationId || !form.name.trim()) return;
+    if (
+      !canManageCustomers ||
+      !organizationId ||
+      !form.name.trim()
+    ) return;
 
     setSaving(true);
     setError("");
@@ -225,7 +235,7 @@ export default function CustomersPage() {
   }
 
   async function toggleArchive(customer: Customer) {
-    if (!organizationId) return;
+    if (!canManageCustomers || !organizationId) return;
 
     setSaving(true);
     setError("");
@@ -253,13 +263,15 @@ export default function CustomersPage() {
     <WorkspaceShell
       title="Customers"
       actions={
-        <button
-          type="button"
-          className="workspace-primary-button"
-          onClick={openCreate}
-        >
-          + Add customer
-        </button>
+        canManageCustomers ? (
+          <button
+            type="button"
+            className="workspace-primary-button"
+            onClick={openCreate}
+          >
+            + Add customer
+          </button>
+        ) : null
       }
     >
       <div className="kora-customers-page">
@@ -351,7 +363,7 @@ export default function CustomersPage() {
                 ? "Try another name, phone number or email address."
                 : "Add your first customer, or create an appointment or walk-in. Kora will keep the relationship history together automatically."}
             </p>
-            {!search ? (
+            {!search && canManageCustomers ? (
               <button className="kora-gold-button" onClick={openCreate}>
                 ＋ Add your first customer
               </button>
@@ -436,15 +448,17 @@ export default function CustomersPage() {
               >
                 ×
               </button>
-              <div className="drawer-actions">
-                <button onClick={() => openEdit(selected)}>Edit</button>
-                <button
-                  onClick={() => void toggleArchive(selected)}
-                  disabled={saving}
-                >
-                  {selected.archivedAt ? "Restore" : "Archive"}
-                </button>
-              </div>
+              {canManageCustomers ? (
+                <div className="drawer-actions">
+                  <button onClick={() => openEdit(selected)}>Edit</button>
+                  <button
+                    onClick={() => void toggleArchive(selected)}
+                    disabled={saving}
+                  >
+                    {selected.archivedAt ? "Restore" : "Archive"}
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             <div className="drawer-profile">

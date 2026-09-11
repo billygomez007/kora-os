@@ -21,6 +21,36 @@ export interface DiscoveryBusinessSummary {
   categories: string[];
 }
 
+export interface DiscoveryProductVariantSummary {
+  variantId: string;
+  name: string;
+  sellingPriceMinor: number;
+}
+
+export interface DiscoveryProductBranchAvailability {
+  branchId: string;
+  branchName: string;
+  variants: Array<{
+    variantId: string;
+    available: boolean;
+  }>;
+}
+
+export interface DiscoveryProductSummary {
+  productId: string;
+  name: string;
+  description: string | null;
+  imageUrl: string | null;
+  currency: string;
+  trackInventory: boolean;
+  category: {
+    id: string;
+    name: string;
+  } | null;
+  variants: DiscoveryProductVariantSummary[];
+  branchAvailability: DiscoveryProductBranchAvailability[];
+}
+
 export interface DiscoveryBranchSummary {
   branchId: string;
   name: string;
@@ -106,7 +136,11 @@ export class DiscoveryService {
         },
       },
     });
-    if (!profile || profile.visibility === BusinessProfileVisibility.PRIVATE || !profile.publishedAt) {
+    if (
+      !profile ||
+      profile.visibility === BusinessProfileVisibility.PRIVATE ||
+      !profile.publishedAt
+    ) {
       // LINK_ONLY is intentionally still resolvable here — only exact-slug
       // access is exempt from the PUBLIC-only rule that `search` enforces.
       throw new NotFoundException('Business not found');
@@ -119,7 +153,11 @@ export class DiscoveryService {
       where: { slug },
       select: { organizationId: true, visibility: true, publishedAt: true },
     });
-    if (!profile || profile.visibility === BusinessProfileVisibility.PRIVATE || !profile.publishedAt) {
+    if (
+      !profile ||
+      profile.visibility === BusinessProfileVisibility.PRIVATE ||
+      !profile.publishedAt
+    ) {
       throw new NotFoundException('Business not found');
     }
 
@@ -151,15 +189,140 @@ export class DiscoveryService {
    * the underlying organizationId rather than the public-shaped summary
    * DTO those two methods return.
    */
-  async resolveAccessibleOrganizationBySlug(slug: string): Promise<{ organizationId: string }> {
+  async resolveAccessibleOrganizationBySlug(
+    slug: string,
+  ): Promise<{ organizationId: string }> {
     const profile = await this.prisma.publicBusinessProfile.findUnique({
       where: { slug },
       select: { organizationId: true, visibility: true, publishedAt: true },
     });
-    if (!profile || profile.visibility === BusinessProfileVisibility.PRIVATE || !profile.publishedAt) {
+    if (
+      !profile ||
+      profile.visibility === BusinessProfileVisibility.PRIVATE ||
+      !profile.publishedAt
+    ) {
       throw new NotFoundException('Business not found');
     }
     return { organizationId: profile.organizationId };
+  }
+
+  async listProductsByBusinessSlug(
+    slug: string,
+  ): Promise<DiscoveryProductSummary[]> {
+    const { organizationId } =
+      await this.resolveAccessibleOrganizationBySlug(slug);
+
+    const branches = await this.prisma.branch.findMany({
+      where: {
+        organizationId,
+        isDiscoverable: true,
+      },
+      select: {
+        id: true,
+        name: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    const branchIds = branches.map((branch) => branch.id);
+
+    const products = await this.prisma.product.findMany({
+      where: {
+        organizationId,
+        archivedAt: null,
+        isVisibleOnMarketplace: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        imageUrl: true,
+        currency: true,
+        trackInventory: true,
+        productCategory: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        variants: {
+          where: { archivedAt: null },
+          select: {
+            id: true,
+            name: true,
+            sellingPriceMinor: true,
+          },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+        branchInventory: {
+          where: {
+            branchId: { in: branchIds },
+          },
+          select: {
+            branchId: true,
+            productVariantId: true,
+            quantityOnHand: true,
+          },
+        },
+      },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+
+    return products
+      .filter((product) => product.variants.length > 0)
+      .map((product) => {
+        const inventoryByBranchVariant = new Map(
+          product.branchInventory.map((row) => [
+            `${row.branchId}:${row.productVariantId}`,
+            row.quantityOnHand,
+          ]),
+        );
+
+        return {
+          productId: product.id,
+          name: product.name,
+          description: product.description,
+          imageUrl: product.imageUrl,
+          currency: product.currency,
+          trackInventory: product.trackInventory,
+          category: product.productCategory,
+          variants: product.variants.map((variant) => ({
+            variantId: variant.id,
+            name: variant.name,
+            sellingPriceMinor: variant.sellingPriceMinor,
+          })),
+          branchAvailability: branches.map((branch) => ({
+            branchId: branch.id,
+            branchName: branch.name,
+            variants: product.variants.map((variant) => {
+              const quantity = inventoryByBranchVariant.get(
+                `${branch.id}:${variant.id}`,
+              );
+
+              return {
+                variantId: variant.id,
+                available: product.trackInventory ? (quantity ?? 0) > 0 : true,
+              };
+            }),
+          })),
+        };
+      });
+  }
+
+  async getProductByBusinessSlug(
+    slug: string,
+    productId: string,
+  ): Promise<DiscoveryProductSummary> {
+    const products = await this.listProductsByBusinessSlug(slug);
+    const product = products.find(
+      (candidate) => candidate.productId === productId,
+    );
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    return product;
   }
 
   async listCategories() {
@@ -167,7 +330,10 @@ export class DiscoveryService {
       where: { active: true },
       orderBy: { sortOrder: 'asc' },
     });
-    return categories.map((category) => ({ code: category.code, name: category.name }));
+    return categories.map((category) => ({
+      code: category.code,
+      name: category.name,
+    }));
   }
 }
 
@@ -243,7 +409,9 @@ export function toSummary(profile: {
     logoImageUrl: profile.logoImageUrl,
     coverImageUrl: profile.coverImageUrl,
     verificationStatus: profile.verificationStatus,
-    categories: profile.organization.categoryAssignments.map((a) => a.category.name),
+    categories: profile.organization.categoryAssignments.map(
+      (a) => a.category.name,
+    ),
   };
 }
 

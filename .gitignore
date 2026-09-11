@@ -21,3 +21,6 @@ apps/api/src/generated/
 
 # TypeScript incremental build metadata
 *.tsbuildinfo
+
+# Local 21st design-context output (generated, not application source)
+apps/web/.21st/

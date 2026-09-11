@@ -21,6 +21,7 @@ import type {
 } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { EntitlementsService } from '../subscriptions/entitlements.service.js';
+import { StaffInvitationEmailService } from './staff-invitation-email.service.js';
 
 type InvitationWithDetails = StaffInvitation & {
   organization: Organization;
@@ -59,6 +60,7 @@ export class StaffInvitationService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly invitationEmailService: StaffInvitationEmailService,
   ) {}
 
   /**
@@ -140,6 +142,30 @@ export class StaffInvitationService {
       requestId: input.requestId,
       source: 'staff_invitations',
     });
+
+    if (emailNormalized) {
+      const [organization, branch] = await Promise.all([
+        this.prisma.organization.findUniqueOrThrow({
+          where: { id: input.organizationId },
+          select: { name: true },
+        }),
+        input.branchId
+          ? this.prisma.branch.findUnique({
+              where: { id: input.branchId },
+              select: { name: true },
+            })
+          : Promise.resolve(null),
+      ]);
+
+      await this.invitationEmailService.send({
+        email: emailNormalized,
+        organizationName: organization.name,
+        roleName: role.name,
+        branchName: branch?.name ?? null,
+        rawToken,
+        expiresAt: invitation.expiresAt,
+      });
+    }
 
     return {
       invitation: { id: invitation.id, expiresAt: invitation.expiresAt, status: invitation.status },

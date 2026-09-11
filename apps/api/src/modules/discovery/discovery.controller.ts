@@ -23,6 +23,19 @@ export class DiscoveryController {
     return this.discoveryService.getBranches(slug);
   }
 
+  @Get('businesses/:slug/products')
+  async listProducts(@Param('slug') slug: string) {
+    return this.discoveryService.listProductsByBusinessSlug(slug);
+  }
+
+  @Get('businesses/:slug/products/:productId')
+  async getProduct(
+    @Param('slug') slug: string,
+    @Param('productId') productId: string,
+  ) {
+    return this.discoveryService.getProductByBusinessSlug(slug, productId);
+  }
+
   @Get('categories')
   async listCategories() {
     return this.discoveryService.listCategories();

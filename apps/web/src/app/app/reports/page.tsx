@@ -1,12 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import WorkspaceShell from "@/components/workspace/WorkspaceShell";
 import {
   resolveActiveWorkspace,
   type ActiveWorkspace,
 } from "@/lib/api/dashboard";
-import { koraData } from "@/lib/api/kora-api";
+import { KoraApiError, koraData } from "@/lib/api/kora-api";
+import {
+  buildReportQuery,
+  canReadReports,
+} from "@/lib/workspace/report-query";
 
 type RangeKey = "today" | "7d" | "30d";
 
@@ -64,6 +69,18 @@ type ServiceEntry = {
 type PaymentMethodEntry = {
   method: string;
   [key: string]: unknown;
+};
+
+type CashReconciliationEntry = {
+  cashSessionId: string;
+  registerCode: string;
+  registerName: string;
+  currency: string;
+  status: string;
+  expectedClosingCashMinor: number | null;
+  countedCashMinor: number | null;
+  varianceMinor: number | null;
+  reviewOutcome: string | null;
 };
 
 type ReportList<T> = {
@@ -154,6 +171,7 @@ function textFrom(
 }
 
 export default function ReportsPage() {
+  const t = useTranslations("Reports");
   const [workspace, setWorkspace] = useState<ActiveWorkspace | null>(null);
   const [range, setRange] = useState<RangeKey>("7d");
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -161,26 +179,29 @@ export default function ReportsPage() {
   const [staff, setStaff] = useState<StaffEntry[]>([]);
   const [services, setServices] = useState<ServiceEntry[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodEntry[]>([]);
+  const [cashReconciliation, setCashReconciliation] = useState<CashReconciliationEntry[]>([]);
+  const [cashState, setCashState] = useState<"loading" | "ready" | "forbidden" | "unavailable" | "error">("loading");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [loadState, setLoadState] = useState<
+    "loading" | "ready" | "forbidden" | "error"
+  >("loading");
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadState("loading");
+    setCashState("loading");
     setError("");
 
     try {
       const active = await resolveActiveWorkspace();
+      if (!canReadReports(active.permissionCodes)) {
+        throw new Error("You do not have permission to view business reports.");
+      }
       const dates = rangeDates(range);
 
-      const params = new URLSearchParams({
-        from: dates.from,
-        to: dates.to,
-        branchId: active.branchId,
-        limit: "100",
-      });
-
       const base = `/organizations/${active.organizationId}/reports`;
-      const query = params.toString();
+      const query = buildReportQuery(active, dates);
 
       const [
         overviewData,
@@ -202,17 +223,44 @@ export default function ReportsPage() {
         ),
       ]);
 
+      let cashData: CashReconciliationEntry[] = [];
+      try {
+        const cashReport = await koraData<ReportList<CashReconciliationEntry>>(
+          `${base}/cash-reconciliation?${query}`,
+        );
+        cashData = cashReport.data ?? [];
+        setCashState("ready");
+      } catch (cause) {
+        setCashState(
+          cause instanceof KoraApiError && cause.status === 403
+            ? "forbidden"
+            : cause instanceof KoraApiError && cause.status === 0
+              ? "unavailable"
+              : "error",
+        );
+      }
+
       setWorkspace(active);
       setOverview(overviewData);
       setRevenue(revenueData);
       setStaff(staffData.data ?? []);
       setServices(servicesData.data ?? []);
       setPaymentMethods(paymentData.data ?? []);
+      setCashReconciliation(cashData);
+      setLoadState("ready");
     } catch (cause) {
-      setError(
+      setCashState("unavailable");
+      const message =
         cause instanceof Error
           ? cause.message
-          : "Unable to load Kora reports.",
+          : "Unable to load Kora reports.";
+      setLoadState(
+        message === "You do not have permission to view business reports."
+          ? "forbidden"
+          : "error",
+      );
+      setError(
+        message,
       );
     } finally {
       setLoading(false);
@@ -262,6 +310,7 @@ export default function ReportsPage() {
     1,
     ...(revenue?.buckets ?? []).map((item) => item.amountMinor),
   );
+  const reportReady = loadState === "ready";
 
   return (
     <WorkspaceShell
@@ -324,41 +373,49 @@ export default function ReportsPage() {
 
       {error ? (
         <section className="error">
-          <strong>Reports could not load</strong>
+          <strong>
+            {loadState === "forbidden" ? t("accessRestricted") : t("couldNotLoad")}
+          </strong>
           <span>{error}</span>
-          <button type="button" onClick={() => void load()}>
-            Try again
-          </button>
+          {loadState !== "forbidden" ? (
+            <button type="button" onClick={() => void load()}>
+              {t("tryAgain")}
+            </button>
+          ) : null}
         </section>
+      ) : null}
+
+      {loading ? (
+        <section className="loadingState">{t("loading")}</section>
       ) : null}
 
       <section className="metrics">
         <article className="metric primary">
           <span>Net revenue</span>
-          <strong>{money(net, currency)}</strong>
-          <small>Sales less refunds and reversals</small>
+          <strong>{reportReady ? money(net, currency) : "—"}</strong>
+          <small>{reportReady ? "Sales less refunds and reversals" : t("unavailable")}</small>
         </article>
 
         <article className="metric">
           <span>Gross sales</span>
-          <strong>{money(gross, currency)}</strong>
-          <small>{overview?.transactionCount ?? 0} posted sales</small>
+          <strong>{reportReady ? money(gross, currency) : "—"}</strong>
+          <small>{reportReady ? `${overview?.transactionCount ?? 0} posted sales` : t("unavailable")}</small>
         </article>
 
         <article className="metric">
           <span>Refunds &amp; reversals</span>
-          <strong>{money(refunds + reversals, currency)}</strong>
+          <strong>{reportReady ? money(refunds + reversals, currency) : "—"}</strong>
           <small>
-            {(overview?.refundTransactionCount ?? 0) +
-              (overview?.reversalTransactionCount ?? 0)}{" "}
-            corrections
+            {reportReady
+              ? `${(overview?.refundTransactionCount ?? 0) + (overview?.reversalTransactionCount ?? 0)} corrections`
+              : t("unavailable")}
           </small>
         </article>
 
         <article className="metric">
           <span>Average sale</span>
-          <strong>{money(average, currency)}</strong>
-          <small>Average posted sale value</small>
+          <strong>{reportReady ? money(average, currency) : "—"}</strong>
+          <small>{reportReady ? "Average posted sale value" : t("unavailable")}</small>
         </article>
       </section>
 
@@ -369,10 +426,12 @@ export default function ReportsPage() {
               <span className="sectionLabel">PERFORMANCE</span>
               <h2>Revenue trend</h2>
             </div>
-            <strong>{money(gross, currency)}</strong>
+            <strong>{reportReady ? money(gross, currency) : "—"}</strong>
           </header>
 
-          {(revenue?.buckets ?? []).length ? (
+          {!reportReady ? (
+            <div className="smallEmpty">{t("revenueUnavailable")}</div>
+          ) : (revenue?.buckets ?? []).length ? (
             <div className="chart">
               {(revenue?.buckets ?? []).map((bucket, index) => {
                 const height = Math.max(
@@ -416,26 +475,26 @@ export default function ReportsPage() {
           <div className="snapshotRows">
             <div>
               <span>Completed services</span>
-              <strong>{overview?.completedServiceCount ?? 0}</strong>
+              <strong>{reportReady ? overview?.completedServiceCount ?? 0 : "—"}</strong>
             </div>
             <div>
               <span>Pending payment confirmations</span>
-              <strong>{overview?.pendingPaymentClaimCount ?? 0}</strong>
+              <strong>{reportReady ? overview?.pendingPaymentClaimCount ?? 0 : "—"}</strong>
             </div>
             <div>
               <span>Disputed payments</span>
-              <strong>{overview?.disputedPaymentClaimCount ?? 0}</strong>
+              <strong>{reportReady ? overview?.disputedPaymentClaimCount ?? 0 : "—"}</strong>
             </div>
             <div>
               <span>Commission accrued</span>
               <strong>
-                {money(
+                {reportReady ? money(
                   amountForCurrency(
                     overview?.commissionAccrued,
                     currency,
                   ),
                   currency,
-                )}
+                ) : "—"}
               </strong>
             </div>
           </div>
@@ -451,7 +510,9 @@ export default function ReportsPage() {
             </div>
           </header>
 
-          {services.length ? (
+          {!reportReady ? (
+            <div className="smallEmpty">{t("servicesUnavailable")}</div>
+          ) : services.length ? (
             <div className="ranking">
               {services.slice(0, 6).map((service, index) => {
                 const value = numberFrom(service, [
@@ -501,7 +562,9 @@ export default function ReportsPage() {
             </div>
           </header>
 
-          {staff.length ? (
+          {!reportReady ? (
+            <div className="smallEmpty">{t("staffUnavailable")}</div>
+          ) : staff.length ? (
             <div className="ranking">
               {staff.slice(0, 6).map((member, index) => (
                 <div className="rank" key={member.staffProfileId}>
@@ -555,7 +618,9 @@ export default function ReportsPage() {
           </div>
         </header>
 
-        {paymentMethods.length ? (
+        {!reportReady ? (
+          <div className="smallEmpty">{t("paymentsUnavailable")}</div>
+        ) : paymentMethods.length ? (
           <div className="methods">
             {paymentMethods.map((method) => (
               <div className="method" key={method.method}>
@@ -586,6 +651,61 @@ export default function ReportsPage() {
         ) : (
           <div className="smallEmpty">
             No posted payment-method activity for this period.
+          </div>
+        )}
+      </section>
+
+      <section className="panel cashReconciliationPanel">
+        <header>
+          <div>
+            <span className="sectionLabel">{t("cashKicker")}</span>
+            <h2>{t("cashTitle")}</h2>
+          </div>
+          <span className="cashDescription">{t("cashDescription")}</span>
+        </header>
+
+        {cashState === "forbidden" ? (
+          <div className="smallEmpty">{t("cashForbidden")}</div>
+        ) : cashState === "error" ? (
+          <div className="smallEmpty">{t("cashError")}</div>
+        ) : cashState === "unavailable" ? (
+          <div className="smallEmpty">{t("cashUnavailable")}</div>
+        ) : cashState === "loading" || !reportReady ? (
+          <div className="smallEmpty">{t("unavailable")}</div>
+        ) : cashReconciliation.length === 0 ? (
+          <div className="smallEmpty">
+            <strong>{t("cashNoSessionsTitle")}</strong>
+            <span>{t("cashNoSessionsBody")}</span>
+          </div>
+        ) : (
+          <div className="cashTableWrap">
+            <table className="cashTable">
+              <thead>
+                <tr>
+                  <th>{t("cashRegister")}</th>
+                  <th>{t("cashStatus")}</th>
+                  <th>{t("cashExpected")}</th>
+                  <th>{t("cashCounted")}</th>
+                  <th>{t("cashVariance")}</th>
+                  <th>{t("cashReview")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cashReconciliation.map((session) => (
+                  <tr key={session.cashSessionId}>
+                    <td>
+                      <strong>{session.registerName}</strong>
+                      <small>{session.registerCode}</small>
+                    </td>
+                    <td>{session.status}</td>
+                    <td>{session.expectedClosingCashMinor === null ? t("cashNotClosed") : money(session.expectedClosingCashMinor, session.currency)}</td>
+                    <td>{session.countedCashMinor === null ? t("cashNotClosed") : money(session.countedCashMinor, session.currency)}</td>
+                    <td>{session.varianceMinor === null ? t("cashNotClosed") : money(session.varianceMinor, session.currency)}</td>
+                    <td>{session.reviewOutcome ?? t("cashNotReviewed")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
@@ -698,6 +818,16 @@ export default function ReportsPage() {
 
         .error span {
           flex: 1;
+        }
+
+        .loadingState {
+          margin-bottom: 18px;
+          padding: 14px 16px;
+          border: 1px solid var(--ws-border);
+          border-radius: 12px;
+          background: var(--ws-surface);
+          color: var(--ws-text-secondary);
+          font-size: 13px;
         }
 
         .error button {
@@ -946,6 +1076,65 @@ export default function ReportsPage() {
           margin-bottom: 20px;
         }
 
+        .cashReconciliationPanel {
+          margin-bottom: 20px;
+        }
+
+        .cashDescription {
+          max-width: 360px;
+          color: var(--ws-text-secondary);
+          font-size: 12px;
+          line-height: 1.5;
+          text-align: right;
+        }
+
+        .cashTableWrap {
+          overflow-x: auto;
+        }
+
+        .cashTable {
+          width: 100%;
+          min-width: 700px;
+          border-collapse: collapse;
+        }
+
+        .cashTable th,
+        .cashTable td {
+          padding: 12px 8px;
+          border-bottom: 1px solid var(--ws-border);
+          color: var(--ws-text-secondary);
+          font-size: 12px;
+          text-align: left;
+          white-space: nowrap;
+        }
+
+        .cashTable th {
+          color: var(--ws-text-muted);
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+
+        .cashTable td strong,
+        .cashTable td small {
+          display: block;
+        }
+
+        .cashTable td strong {
+          color: var(--ws-text);
+        }
+
+        .cashTable td small {
+          margin-top: 3px;
+          color: var(--ws-text-muted);
+          font-size: 10px;
+        }
+
+        .cashTable tr:last-child td {
+          border-bottom: 0;
+        }
+
         .methods {
           display: grid;
           grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1018,6 +1207,11 @@ export default function ReportsPage() {
           .error {
             align-items: stretch;
             flex-direction: column;
+          }
+
+          .cashDescription {
+            max-width: none;
+            text-align: left;
           }
         }
       `}</style>

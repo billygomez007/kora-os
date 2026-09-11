@@ -30,12 +30,20 @@ export class OrganizationAppointmentsController {
     @Param('branchId') branchId: string,
     @Query() query: ListAppointmentsQueryDto,
   ) {
-    return this.queriesService.listForOrganizationBranch(tenant.organizationId, branchId, {
-      from: query.from,
-      to: query.to,
-      cursor: query.cursor,
-      limit: query.limit,
-    });
+    const assignedStaffProfileId =
+      await this.resolveAppointmentReadScope(tenant);
+
+    return this.queriesService.listForOrganizationBranch(
+      tenant.organizationId,
+      branchId,
+      {
+        from: query.from,
+        to: query.to,
+        cursor: query.cursor,
+        limit: query.limit,
+        assignedStaffProfileId,
+      },
+    );
   }
 
   @RequirePermissions('appointments.read')
@@ -45,7 +53,15 @@ export class OrganizationAppointmentsController {
     @Param('branchId') branchId: string,
     @Param('appointmentId') appointmentId: string,
   ) {
-    return this.queriesService.getForOrganization(tenant.organizationId, branchId, appointmentId);
+    const assignedStaffProfileId =
+      await this.resolveAppointmentReadScope(tenant);
+
+    return this.queriesService.getForOrganization(
+      tenant.organizationId,
+      branchId,
+      appointmentId,
+      assignedStaffProfileId,
+    );
   }
 
   @RequirePermissions('appointments.manage')
@@ -132,4 +148,23 @@ export class OrganizationAppointmentsController {
       requestId: request.requestId,
     });
   }
+  private async resolveAppointmentReadScope(
+    tenant: TenantContext,
+  ): Promise<string | undefined> {
+    if (
+      tenant.isOwner ||
+      tenant.permissionCodes.has('appointments.manage')
+    ) {
+      return undefined;
+    }
+
+    const staffProfile =
+      await this.queriesService.resolveStaffProfileForMembership(
+        tenant.organizationId,
+        tenant.membershipId,
+      );
+
+    return staffProfile.id;
+  }
+
 }

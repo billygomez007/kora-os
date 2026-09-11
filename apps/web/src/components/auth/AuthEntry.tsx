@@ -4,9 +4,11 @@ import { FormEvent, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useLocale, useTranslations } from "next-intl";
 import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
 
 type AuthMode = "signin" | "signup";
+type SignupJourney = "business" | "customer";
 
 interface OtpRequestResponse {
   data?: {
@@ -15,21 +17,54 @@ interface OtpRequestResponse {
   };
 }
 
-export default function AuthEntry({ mode }: { mode: AuthMode }) {
+export default function AuthEntry({
+  mode,
+  journey,
+  onBack,
+}: {
+  mode: AuthMode;
+  journey?: SignupJourney;
+  onBack?: () => void;
+}) {
   const router = useRouter();
+  const locale = useLocale();
+  const t = useTranslations("Auth");
 
   const [email, setEmail] = useState("");
+
+  function invitationTokenFromUrl(): string {
+    if (typeof window === "undefined") return "";
+
+    return (
+      new URLSearchParams(window.location.search)
+        .get("invitation")
+        ?.trim() ?? ""
+    );
+  }
+
+  function invitedEmailFromUrl(): string {
+    if (typeof window === "undefined") return "";
+
+    return (
+      new URLSearchParams(window.location.search)
+        .get("email")
+        ?.trim()
+        .toLowerCase() ?? ""
+    );
+  }
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [message, setMessage] = useState("");
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail =
+      email.trim().toLowerCase() || invitedEmailFromUrl();
+    const invitationToken = invitationTokenFromUrl();
 
     if (!normalizedEmail || !normalizedEmail.includes("@")) {
       setStatus("error");
-      setMessage("Enter a valid email address.");
+      setMessage(t("invalidEmail"));
       return;
     }
 
@@ -37,7 +72,7 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
 
     if (!apiBase) {
       setStatus("error");
-      setMessage("Kora web authentication is not connected to the API.");
+      setMessage(t("apiUnavailable"));
       return;
     }
 
@@ -59,9 +94,7 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
       });
     } catch {
       setStatus("error");
-      setMessage(
-        "Kora could not reach the API. Check your connection and try again.",
-      );
+      setMessage(t("networkError"));
       return;
     }
 
@@ -78,9 +111,7 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
 
     if (!challengeId) {
       setStatus("error");
-      setMessage(
-        "Kora sent an unexpected response. Please try again.",
-      );
+      setMessage(t("unexpected"));
       return;
     }
 
@@ -90,7 +121,15 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
       mode,
     });
 
-    router.push(`/verify?${params.toString()}`);
+    if (mode === "signup" && journey) {
+      params.set("journey", journey);
+    }
+
+    if (invitationToken) {
+      params.set("invitation", invitationToken);
+    }
+
+    router.push(`/${locale}/verify?${params.toString()}`);
   }
 
   return (
@@ -99,7 +138,7 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
       <div className="auth-glow auth-glow-two" />
 
       <section className="auth-card">
-        <Link href="/" className="auth-logo">
+        <Link href={`/${locale}`} className="auth-logo">
           <Image
             src="/brand/kora-app-icon.png"
             alt="Kora OS"
@@ -112,30 +151,34 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
 
         <div className="auth-heading">
           <span>
-            {mode === "signin" ? "WELCOME BACK" : "GET STARTED WITH KORA"}
+            {mode === "signin" ? t("welcomeBack") : t("getStarted")}
           </span>
 
           <h1>
             {mode === "signin"
-              ? "Sign in to your Kora workspace."
-              : "Start running your business with Kora."}
+              ? t("signInTitle")
+              : journey === "customer"
+                ? t("customerTitle")
+                : t("businessTitle")}
           </h1>
 
           <p>
             {mode === "signin"
-              ? "Enter your email and we’ll send you a secure verification code. No password required."
-              : "Create your Kora account with your email. We’ll send you a secure verification code to continue."}
+              ? t("signInBody")
+              : journey === "customer"
+                ? t("customerBody")
+                : t("businessBody")}
           </p>
         </div>
 
         <form className="auth-form" onSubmit={handleSubmit}>
-          <label htmlFor="email">Email address</label>
+          <label htmlFor="email">{t("email")}</label>
 
           <input
             id="email"
             type="email"
             autoComplete="email"
-            placeholder="you@business.com"
+            placeholder={t("emailPlaceholder")}
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             disabled={status === "loading"}
@@ -152,27 +195,55 @@ export default function AuthEntry({ mode }: { mode: AuthMode }) {
             disabled={status === "loading"}
           >
             {status === "loading"
-              ? "Sending code..."
-              : "Continue with email"}
+              ? t("sending")
+              : t("continueEmail")}
           </button>
         </form>
+
+        {mode === "signup" && onBack && (
+          <button
+            type="button"
+            className="auth-back-button"
+            onClick={onBack}
+            disabled={status === "loading"}
+          >
+            {t("chooseDifferent")}
+          </button>
+        )}
 
         <div className="auth-switch">
           {mode === "signin" ? (
             <>
-              New to Kora?{" "}
-              <Link href="/get-started">Create an account</Link>
+              {t("newToKora")} {" "}
+              <Link
+                href={
+                  invitationTokenFromUrl()
+                    ? `/${locale}/get-started?invitation=${encodeURIComponent(invitationTokenFromUrl())}&email=${encodeURIComponent(email.trim().toLowerCase() || invitedEmailFromUrl())}`
+                    : `/${locale}/get-started`
+                }
+              >
+                {t("createAccount")}
+              </Link>
             </>
           ) : (
             <>
-              Already use Kora? <Link href="/login">Sign in</Link>
+              {t("alreadyUse")} {" "}
+              <Link
+                href={
+                  invitationTokenFromUrl()
+                    ? `/${locale}/login?invitation=${encodeURIComponent(invitationTokenFromUrl())}&email=${encodeURIComponent(email.trim().toLowerCase() || invitedEmailFromUrl())}`
+                    : `/${locale}/login`
+                }
+              >
+                {t("signIn")}
+              </Link>
             </>
           )}
         </div>
 
         <div className="auth-security">
           <span>●</span>
-          Secure passwordless authentication
+          {t("secure")}
         </div>
       </section>
     </main>

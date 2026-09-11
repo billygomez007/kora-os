@@ -46,6 +46,42 @@ describe('Owner/manager reports (e2e)', () => {
     return `/v1/organizations/${fixture.organizationId}/reports/${path}?${query.toString()}`;
   }
 
+  const reportRoutes = ['overview', 'revenue', 'staff-performance', 'services', 'payment-methods', 'commissions', 'cash-reconciliation'];
+
+  it.each(reportRoutes)('%s preserves Cashier denial and Owner/Manager access', async (route) => {
+    const organizations = await authed(testApp, cashier.accessToken).get('/v1/organizations').expect(200);
+    const membership = organizations.body.data.find((org: { id: string }) => org.id === fixture.organizationId);
+    expect(membership.permissionCodes).toContain('reports.basic');
+    expect(membership.permissionCodes).not.toContain('reports.read');
+    const url = reportsUrl(route, { branchId: fixture.branchId });
+    await authed(testApp, cashier.accessToken).get(url).expect(403);
+    await authed(testApp, fixture.ownerAccessToken).get(url).expect(200);
+    await authed(testApp, manager.accessToken).get(url).expect(200);
+  });
+
+  it('restricts report readers to assigned branches and their organization', async () => {
+    const reader = await createNoPermissionActor(testApp, fixture);
+    const role = await testApp.prisma.membershipRole.findFirstOrThrow({ where: { membershipId: reader.membershipId } });
+    const permission = await testApp.prisma.permission.findUniqueOrThrow({ where: { code: 'reports.read' } });
+    await testApp.prisma.rolePermission.create({ data: { roleId: role.roleId, permissionId: permission.id } });
+    const unassigned = await testApp.prisma.branch.create({ data: {
+      organizationId: fixture.organizationId, name: 'Other branch', code: 'OTHER',
+      countryCode: 'GH', currency: 'GHS', timeZone: 'Africa/Accra',
+    } });
+    const other = await createBookableFixture(testApp);
+    await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+    for (const route of reportRoutes) {
+      await authed(testApp, reader.accessToken).get(reportsUrl(route, { branchId: fixture.branchId })).expect(200);
+      await authed(testApp, reader.accessToken).get(reportsUrl(route, { branchId: unassigned.id })).expect(403);
+      await authed(testApp, reader.accessToken).get(reportsUrl(route).replace(fixture.organizationId, other.organizationId)).expect(403);
+    }
+    const scoped = await authed(testApp, reader.accessToken).get(reportsUrl('overview')).expect(200);
+    expect(scoped.body.data.transactionCount).toBe(1);
+    await testApp.prisma.branchAssignment.deleteMany({ where: { membershipId: reader.membershipId } });
+    const empty = await authed(testApp, reader.accessToken).get(reportsUrl('overview')).expect(200);
+    expect(empty.body.data.transactionCount).toBe(0);
+  });
+
   describe('overview', () => {
     it('rejects an unauthenticated request', async () => {
       await request(testApp.app.getHttpServer()).get(reportsUrl('overview')).expect(401);

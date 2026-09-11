@@ -90,4 +90,54 @@ describe('EntitlementsService', () => {
       /does not match/i,
     );
   });
+
+  it('accepts null for a custom integer limit', async () => {
+    const { service } = createServiceWithStub([
+      {
+        value: null,
+        entitlement: {
+          code: 'branches.max',
+          valueType: EntitlementValueType.INTEGER,
+        },
+      },
+    ]);
+
+    await expect(service.resolveForPlan('enterprise')).resolves.toEqual({
+      'branches.max': null,
+    });
+  });
+
+  it('returns a clear upgrade-required error for a missing feature', async () => {
+    const { service } = createServiceWithStub([
+      {
+        value: false,
+        entitlement: {
+          code: 'cash.reconciliation',
+          valueType: EntitlementValueType.BOOLEAN,
+        },
+      },
+    ], { planId: 'starter' });
+
+    await expect(
+      service.requireForOrganization('org-1', 'cash.reconciliation'),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'PLAN_ENTITLEMENT_REQUIRED' }),
+    });
+  });
+
+  it('rejects a write that would exceed a numeric plan limit', async () => {
+    const { service } = createServiceWithStub([
+      {
+        value: 1,
+        entitlement: {
+          code: 'branches.max',
+          valueType: EntitlementValueType.INTEGER,
+        },
+      },
+    ]);
+
+    await expect(service.assertWithinLimit('starter', 'branches.max', 1)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'PLAN_LIMIT_REACHED', limit: 1 }),
+    });
+  });
 });

@@ -3,11 +3,21 @@ import {
   getKoraSession,
   saveKoraSession,
   type KoraSession,
-} from "@/lib/auth/session";
+} from "../auth/session.ts";
 
+const configuredApiBase = process.env.NEXT_PUBLIC_KORA_API_URL?.replace(/\/$/, "");
 const API_BASE =
-  process.env.NEXT_PUBLIC_KORA_API_URL?.replace(/\/$/, "") ||
-  "http://localhost:3000";
+  configuredApiBase ||
+  (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000");
+
+function requireApiBase(): string {
+  if (!API_BASE) {
+    throw new Error(
+      "NEXT_PUBLIC_KORA_API_URL is required outside local development",
+    );
+  }
+  return API_BASE;
+}
 
 type ApiEnvelope<T> = {
   data: T;
@@ -103,7 +113,7 @@ async function refreshKoraSession(): Promise<KoraSession> {
     let response: Response;
 
     try {
-      response = await fetch(`${API_BASE}/v1/auth/refresh`, {
+      response = await fetch(`${requireApiBase()}/v1/auth/refresh`, {
         method: "POST",
         headers: {
           Accept: "application/json",
@@ -182,7 +192,7 @@ async function authenticatedFetch(
     headers.set("Content-Type", "application/json");
   }
 
-  return fetch(`${API_BASE}/v1${path}`, {
+  return fetch(`${requireApiBase()}/v1${path}`, {
     ...init,
     headers,
   });
@@ -248,4 +258,20 @@ export async function koraEnvelope<T>(
   init: RequestInit = {},
 ): Promise<ApiEnvelope<T>> {
   return koraApi<ApiEnvelope<T>>(path, init);
+}
+
+export async function logoutKoraSession(): Promise<void> {
+  const session = getKoraSession();
+
+  try {
+    if (session?.accessToken) {
+      await authenticatedFetch(
+        "/auth/logout",
+        { method: "POST" },
+        session.accessToken,
+      );
+    }
+  } finally {
+    clearKoraSession();
+  }
 }

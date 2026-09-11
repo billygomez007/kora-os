@@ -18,6 +18,11 @@ import {
   koraApi,
   koraData,
 } from "@/lib/api/kora-api";
+import {
+  staffCapabilities,
+  staffRequestPlan,
+  type StaffRequestKind,
+} from "@/lib/workspace/staff-capabilities";
 
 interface AssignableRole {
   id: string;
@@ -38,6 +43,33 @@ interface StaffInvitation {
   expiresAt: string;
   createdAt: string;
 }
+
+interface StaffAvailabilityRule {
+  id?: string;
+  dayOfWeek: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  effectiveFrom?: string | null;
+  effectiveUntil?: string | null;
+  isActive?: boolean;
+}
+
+interface BusinessHour {
+  id?: string;
+  dayOfWeek: number;
+  startLocalTime: string;
+  endLocalTime: string;
+}
+
+const WORKING_DAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
 
 interface CreateInvitationResult {
   invitation: {
@@ -133,6 +165,24 @@ export default function StaffPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  // Capabilities derived from the active workspace's permissionCodes.
+  // Never inferred from role names or from data shape (e.g. staffProfileId
+  // presence) -- only from the explicit permission codes the API resolved
+  // for this membership, mirroring the backend's own authorization model.
+  const [canReadStaff, setCanReadStaff] = useState(false);
+  const [canInviteStaff, setCanInviteStaff] = useState(false);
+  const [canReadAvailability, setCanReadAvailability] = useState(false);
+  const [canManageAvailability, setCanManageAvailability] = useState(false);
+  const [canReadServices, setCanReadServices] = useState(false);
+  const [canManageServices, setCanManageServices] = useState(false);
+
+  const [availabilityRules, setAvailabilityRules] =
+    useState<StaffAvailabilityRule[]>([]);
+  const [availabilityLoading, setAvailabilityLoading] =
+    useState(false);
+  const [availabilityMode, setAvailabilityMode] =
+    useState<"business" | "custom">("business");
+
   const [showInvite, setShowInvite] = useState(false);
   const [selectedMember, setSelectedMember] =
     useState<StaffMember | null>(null);
@@ -148,79 +198,113 @@ export default function StaffPage() {
     try {
       const workspace = await resolveActiveWorkspace();
 
-      const results = await Promise.allSettled([
-        koraData<StaffMember[]>(
-          `/organizations/${workspace.organizationId}/staff`,
-        ),
+      const capabilities = staffCapabilities(workspace.permissionCodes);
+      const {
+        canReadStaff: nextCanReadStaff,
+        canInviteStaff: nextCanInviteStaff,
+        canReadAvailability: nextCanReadAvailability,
+        canManageAvailability: nextCanManageAvailability,
+        canReadServices: nextCanReadServices,
+        canManageServices: nextCanManageServices,
+      } = capabilities;
 
-        koraData<AssignableRole[]>(
-          `/organizations/${workspace.organizationId}/staff-invitations/assignable-roles`,
-        ),
-
-        koraData<Branch[]>(
-          `/organizations/${workspace.organizationId}/branches`,
-        ),
-
-        koraData<StaffInvitation[]>(
-          `/organizations/${workspace.organizationId}/staff-invitations`,
-        ),
-      ]);
-
-      const [
-        staffResult,
-        roleResult,
-        branchResult,
-        invitationResult,
-      ] = results;
-
-      if (staffResult.status === "fulfilled") {
-        setStaff(staffResult.value ?? []);
-      } else {
-        console.error(
-          "Kora staff directory request failed:",
-          staffResult.reason,
-        );
-      }
-
-      if (roleResult.status === "fulfilled") {
-        setRoles(roleResult.value ?? []);
-      } else {
-        console.error(
-          "Kora assignable roles request failed:",
-          roleResult.reason,
-        );
-      }
-
-      if (branchResult.status === "fulfilled") {
-        setBranches(branchResult.value ?? []);
-      } else {
-        console.error(
-          "Kora branch request failed:",
-          branchResult.reason,
-        );
-      }
-
-      if (invitationResult.status === "fulfilled") {
-        setInvitations(invitationResult.value ?? []);
-      } else {
-        console.error(
-          "Kora staff invitation request failed:",
-          invitationResult.reason,
-        );
-      }
+      setCanReadStaff(nextCanReadStaff);
+      setCanInviteStaff(nextCanInviteStaff);
+      setCanReadAvailability(nextCanReadAvailability);
+      setCanManageAvailability(nextCanManageAvailability);
+      setCanReadServices(nextCanReadServices);
+      setCanManageServices(nextCanManageServices);
 
       setInviteBranchId((current) =>
         current || workspace.branchId,
       );
 
-      const failures = results.filter(
-        (result) => result.status === "rejected",
-      ).length;
+      // Only request what this membership's permissionCodes actually
+      // authorize. Skipped requests are not failures and must not add to
+      // the "could not be loaded" count below -- only a real failure of
+      // an authorized request should surface as an error.
+      const requestPlan = staffRequestPlan(capabilities);
+      const authorizedRequests: Array<{
+        kind: StaffRequestKind;
+        label: string;
+        run: () => Promise<void>;
+      }> = [];
 
-      if (failures > 0) {
+      if (requestPlan.includes("directory")) {
+        authorizedRequests.push({
+          kind: "directory",
+          label: "staff directory",
+          run: async () => {
+            const data = await koraData<StaffMember[]>(
+              `/organizations/${workspace.organizationId}/staff`,
+            );
+            setStaff(data ?? []);
+          },
+        });
+
+        authorizedRequests.push({
+          kind: "invitations",
+          label: "staff invitations",
+          run: async () => {
+            const data = await koraData<StaffInvitation[]>(
+              `/organizations/${workspace.organizationId}/staff-invitations`,
+            );
+            setInvitations(data ?? []);
+          },
+        });
+      } else {
+        setStaff([]);
+        setInvitations([]);
+      }
+
+      if (requestPlan.includes("assignable-roles")) {
+        authorizedRequests.push({
+          kind: "assignable-roles",
+          label: "assignable roles",
+          run: async () => {
+            const data = await koraData<AssignableRole[]>(
+              `/organizations/${workspace.organizationId}/staff-invitations/assignable-roles`,
+            );
+            setRoles(data ?? []);
+          },
+        });
+
+        // Branches are only needed to populate the invite form's branch
+        // picker, which only an inviter can open.
+        authorizedRequests.push({
+          kind: "branches",
+          label: "branches",
+          run: async () => {
+            const data = await koraData<Branch[]>(
+              `/organizations/${workspace.organizationId}/branches`,
+            );
+            setBranches(data ?? []);
+          },
+        });
+      } else {
+        setRoles([]);
+        setBranches([]);
+      }
+
+      const results = await Promise.allSettled(
+        authorizedRequests.map((request) => request.run()),
+      );
+
+      let failureCount = 0;
+      results.forEach((result, index) => {
+        if (result.status === "rejected") {
+          failureCount += 1;
+          console.error(
+            `Kora ${authorizedRequests[index].label} request failed:`,
+            result.reason,
+          );
+        }
+      });
+
+      if (failureCount > 0) {
         setError(
-          `${failures} staff workspace request${
-            failures === 1 ? "" : "s"
+          `${failureCount} staff workspace request${
+            failureCount === 1 ? "" : "s"
           } could not be loaded. Available information is still shown.`,
         );
       }
@@ -283,8 +367,200 @@ export default function StaffPage() {
     [invitations],
   );
 
+  // Whether the staff detail drawer offers any actual management action
+  // for the current user. Drives the row button wording (Manage vs View)
+  // -- never derived from whether a StaffMember happens to have a
+  // staffProfileId.
+  const canManageStaffDetail = canManageAvailability || canManageServices;
+
+  async function loadStaffAvailability(member: StaffMember) {
+    if (!member.staffProfileId || !canReadAvailability) {
+      setAvailabilityRules([]);
+      return;
+    }
+
+    setAvailabilityLoading(true);
+    setError("");
+
+    try {
+      const workspace = await resolveActiveWorkspace();
+
+      const rules = await koraData<StaffAvailabilityRule[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/staff/${member.staffProfileId}/availability-rules`,
+      );
+
+      setAvailabilityRules(rules ?? []);
+      setAvailabilityMode((rules ?? []).length ? "custom" : "business");
+    } catch (reason) {
+      setAvailabilityRules([]);
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to load this team member's working hours.",
+      );
+    } finally {
+      setAvailabilityLoading(false);
+    }
+  }
+
+  function availabilityByDay() {
+    const map = new Map<number, StaffAvailabilityRule>();
+    for (const rule of availabilityRules) {
+      if (rule.isActive !== false && !map.has(rule.dayOfWeek)) {
+        map.set(rule.dayOfWeek, rule);
+      }
+    }
+    return map;
+  }
+
+  function toggleAvailabilityDay(dayOfWeek: number) {
+    const existing = availabilityRules.some(
+      (rule) => rule.dayOfWeek === dayOfWeek && rule.isActive !== false,
+    );
+
+    if (existing) {
+      setAvailabilityRules((current) =>
+        current.filter((rule) => rule.dayOfWeek !== dayOfWeek),
+      );
+      return;
+    }
+
+    setAvailabilityRules((current) => [
+      ...current,
+      {
+        dayOfWeek,
+        startLocalTime: "09:00",
+        endLocalTime: "17:00",
+        isActive: true,
+      },
+    ]);
+  }
+
+  function updateAvailabilityHour(
+    dayOfWeek: number,
+    field: "startLocalTime" | "endLocalTime",
+    value: string,
+  ) {
+    setAvailabilityRules((current) =>
+      current.map((rule) =>
+        rule.dayOfWeek === dayOfWeek
+          ? { ...rule, [field]: value }
+          : rule,
+      ),
+    );
+  }
+
+  async function applyBusinessHoursToStaff() {
+    if (!selectedMember?.staffProfileId || !canManageAvailability) return;
+
+    setWorking(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const workspace = await resolveActiveWorkspace();
+
+      const businessHours = await koraData<BusinessHour[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/business-hours`,
+      );
+
+      if (!businessHours?.length) {
+        setError(
+          "Set this branch's business hours in Settings before using them for staff availability.",
+        );
+        return;
+      }
+
+      const rules = businessHours.map((hour) => ({
+        dayOfWeek: hour.dayOfWeek,
+        startLocalTime: hour.startLocalTime,
+        endLocalTime: hour.endLocalTime,
+        isActive: true,
+      }));
+
+      const saved = await koraData<StaffAvailabilityRule[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/staff/${selectedMember.staffProfileId}/availability-rules`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ rules }),
+        },
+      );
+
+      setAvailabilityRules(saved ?? rules);
+      setAvailabilityMode("business");
+      setNotice(
+        `${displayName(selectedMember)} now follows ${workspace.branchName}'s business hours.`,
+      );
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to apply business hours to this team member.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function saveCustomAvailability() {
+    if (!selectedMember?.staffProfileId || !canManageAvailability) return;
+
+    if (!availabilityRules.length) {
+      setError("Choose at least one working day.");
+      return;
+    }
+
+    setWorking(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const workspace = await resolveActiveWorkspace();
+
+      const rules = availabilityRules.map((rule) => ({
+        dayOfWeek: rule.dayOfWeek,
+        startLocalTime: rule.startLocalTime,
+        endLocalTime: rule.endLocalTime,
+        isActive: true,
+      }));
+
+      const saved = await koraData<StaffAvailabilityRule[]>(
+        `/organizations/${workspace.organizationId}/branches/${workspace.branchId}/staff/${selectedMember.staffProfileId}/availability-rules`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ rules }),
+        },
+      );
+
+      setAvailabilityRules(saved ?? rules);
+      setAvailabilityMode("custom");
+      setNotice(`${displayName(selectedMember)}'s working hours were saved.`);
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to save this team member's working hours.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  function openInviteDrawer() {
+    if (!canInviteStaff) return;
+
+    setError("");
+    setNotice("");
+    setShowInvite(true);
+  }
+
   async function inviteStaff(event: FormEvent) {
     event.preventDefault();
+
+    if (!canInviteStaff) {
+      setError("You do not have permission to invite staff.");
+      return;
+    }
 
     if (!inviteEmail.trim() && !invitePhone.trim()) {
       setError(
@@ -355,6 +631,11 @@ export default function StaffPage() {
   }
 
   async function revokeInvitation(invitationId: string) {
+    if (!canInviteStaff) {
+      setError("You do not have permission to revoke invitations.");
+      return;
+    }
+
     setWorking(true);
     setError("");
     setNotice("");
@@ -386,17 +667,15 @@ export default function StaffPage() {
     <WorkspaceShell
       title="Staff"
       actions={
-        <button
-          type="button"
-          className="workspace-primary-button"
-          onClick={() => {
-            setError("");
-            setNotice("");
-            setShowInvite(true);
-          }}
-        >
-          + Invite staff
-        </button>
+        canInviteStaff ? (
+          <button
+            type="button"
+            className="workspace-primary-button"
+            onClick={openInviteDrawer}
+          >
+            + Invite staff
+          </button>
+        ) : undefined
       }
     >
       <section className="workspace-feature-heading">
@@ -422,33 +701,35 @@ export default function StaffPage() {
         </div>
       )}
 
-      <section className="staff-metrics">
-        <article>
-          <span>TEAM MEMBERS</span>
-          <strong>{staff.length}</strong>
-          <small>Total members</small>
-        </article>
+      {canReadStaff && (
+        <section className="staff-metrics">
+          <article>
+            <span>TEAM MEMBERS</span>
+            <strong>{staff.length}</strong>
+            <small>Total members</small>
+          </article>
 
-        <article>
-          <span>ACTIVE</span>
-          <strong>{activeStaff}</strong>
-          <small>Active members</small>
-        </article>
+          <article>
+            <span>ACTIVE</span>
+            <strong>{activeStaff}</strong>
+            <small>Active members</small>
+          </article>
 
-        <article>
-          <span>PROVIDERS</span>
-          <strong>{providers}</strong>
-          <small>Operational staff profiles</small>
-        </article>
+          <article>
+            <span>PROVIDERS</span>
+            <strong>{providers}</strong>
+            <small>Operational staff profiles</small>
+          </article>
 
-        <article>
-          <span>PENDING INVITES</span>
-          <strong>
-            {pendingInvitations.length}
-          </strong>
-          <small>Awaiting acceptance</small>
-        </article>
-      </section>
+          <article>
+            <span>PENDING INVITES</span>
+            <strong>
+              {pendingInvitations.length}
+            </strong>
+            <small>Awaiting acceptance</small>
+          </article>
+        </section>
+      )}
 
       <section className="workspace-feature-card">
         <div className="workspace-feature-card-head">
@@ -469,6 +750,10 @@ export default function StaffPage() {
           <div className="workspace-feature-empty">
             Loading your team…
           </div>
+        ) : !canReadStaff ? (
+          <div className="workspace-feature-empty">
+            You do not have permission to view the staff directory.
+          </div>
         ) : staff.length === 0 ? (
           <div className="staff-empty">
             <div>＋</div>
@@ -478,12 +763,14 @@ export default function StaffPage() {
               receive appointments and manage daily work.
             </p>
 
-            <button
-              type="button"
-              onClick={() => setShowInvite(true)}
-            >
-              Invite staff
-            </button>
+            {canInviteStaff && (
+              <button
+                type="button"
+                onClick={openInviteDrawer}
+              >
+                Invite staff
+              </button>
+            )}
           </div>
         ) : (
           <div className="staff-table-wrap">
@@ -565,11 +852,14 @@ export default function StaffPage() {
                 <button
                   type="button"
                   className="staff-manage-button"
-                  onClick={() =>
-                    setSelectedMember(member)
-                  }
+                  onClick={() => {
+                    setSelectedMember(member);
+                    setAvailabilityMode("business");
+                    setAvailabilityRules([]);
+                    void loadStaffAvailability(member);
+                  }}
                 >
-                  Manage
+                  {canManageStaffDetail ? "Manage" : "View"}
                 </button>
               </div>
             ))}
@@ -577,6 +867,7 @@ export default function StaffPage() {
         )}
       </section>
 
+      {canReadStaff && (
       <section className="workspace-feature-card staff-invitations-card">
         <div className="workspace-feature-card-head">
           <div>
@@ -652,8 +943,8 @@ export default function StaffPage() {
                     {invitation.status}
                   </span>
 
-                  {invitation.status ===
-                  "PENDING" ? (
+                  {invitation.status === "PENDING" &&
+                  canInviteStaff ? (
                     <button
                       type="button"
                       className="staff-revoke-button"
@@ -675,8 +966,9 @@ export default function StaffPage() {
           </div>
         )}
       </section>
+      )}
 
-      {showInvite && (
+      {showInvite && canInviteStaff && (
         <div className="services-drawer-backdrop">
           <aside className="services-drawer staff-drawer">
             <div className="services-drawer-head">
@@ -849,9 +1141,10 @@ export default function StaffPage() {
               <button
                 type="button"
                 aria-label="Close staff details"
-                onClick={() =>
-                  setSelectedMember(null)
-                }
+                onClick={() => {
+                  setSelectedMember(null);
+                  setAvailabilityRules([]);
+                }}
               >
                 ×
               </button>
@@ -947,13 +1240,162 @@ export default function StaffPage() {
                   </p>
                 )}
 
-                {selectedMember.staffProfileId && (
+                {selectedMember.staffProfileId && canManageServices && (
                   <Link
                     href="/app/services"
                     className="staff-service-link"
                   >
                     Manage service assignments →
                   </Link>
+                )}
+
+                {selectedMember.staffProfileId &&
+                  !canManageServices &&
+                  canReadServices && (
+                    <p className="staff-hours-note">
+                      Ask an owner or manager to update service
+                      assignments.
+                    </p>
+                  )}
+              </section>
+
+              <section className="staff-working-hours">
+                <small>WORKING HOURS</small>
+
+                {!selectedMember.staffProfileId ? (
+                  <p>
+                    Working hours become available after this team member has
+                    an active staff profile.
+                  </p>
+                ) : !canReadAvailability ? (
+                  <p>
+                    You do not have permission to view this team member&apos;s
+                    working hours.
+                  </p>
+                ) : canManageAvailability ? (
+                  <>
+                    <div className="staff-hours-mode">
+                      <button
+                        type="button"
+                        className={availabilityMode === "business" ? "active" : ""}
+                        disabled={working || availabilityLoading}
+                        onClick={() => void applyBusinessHoursToStaff()}
+                      >
+                        Use business hours
+                      </button>
+
+                      <button
+                        type="button"
+                        className={availabilityMode === "custom" ? "active" : ""}
+                        disabled={working || availabilityLoading}
+                        onClick={() => setAvailabilityMode("custom")}
+                      >
+                        Custom hours
+                      </button>
+                    </div>
+
+                    {availabilityLoading ? (
+                      <p>Loading working hours…</p>
+                    ) : availabilityMode === "custom" ? (
+                      <>
+                        <div className="staff-hours-list">
+                          {WORKING_DAYS.map((day, dayOfWeek) => {
+                            const item = availabilityByDay().get(dayOfWeek);
+
+                            return (
+                              <div className="staff-hours-row" key={day}>
+                                <div className="staff-hours-day">
+                                  <button
+                                    type="button"
+                                    className={`settingsSwitch ${item ? "on" : ""}`}
+                                    onClick={() => toggleAvailabilityDay(dayOfWeek)}
+                                    aria-label={`${item ? "Disable" : "Enable"} ${day}`}
+                                  >
+                                    <i />
+                                  </button>
+                                  <strong>{day}</strong>
+                                </div>
+
+                                {item ? (
+                                  <div className="staff-hours-times">
+                                    <input
+                                      type="time"
+                                      value={item.startLocalTime}
+                                      onChange={(event) =>
+                                        updateAvailabilityHour(
+                                          dayOfWeek,
+                                          "startLocalTime",
+                                          event.target.value,
+                                        )
+                                      }
+                                    />
+                                    <span>to</span>
+                                    <input
+                                      type="time"
+                                      value={item.endLocalTime}
+                                      onChange={(event) =>
+                                        updateAvailabilityHour(
+                                          dayOfWeek,
+                                          "endLocalTime",
+                                          event.target.value,
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                ) : (
+                                  <span className="hoursClosed">Unavailable</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <button
+                          type="button"
+                          className="workspace-primary-button staff-hours-save"
+                          disabled={working}
+                          onClick={() => void saveCustomAvailability()}
+                        >
+                          {working ? "Saving…" : "Save working hours"}
+                        </button>
+                      </>
+                    ) : (
+                      <p className="staff-hours-note">
+                        This team member follows the current branch business
+                        hours. Choose the button above again whenever branch
+                        hours change to refresh their schedule.
+                      </p>
+                    )}
+                  </>
+                ) : availabilityLoading ? (
+                  <p>Loading working hours…</p>
+                ) : availabilityMode === "custom" ? (
+                  <div className="staff-hours-list">
+                    {WORKING_DAYS.map((day, dayOfWeek) => {
+                      const item = availabilityByDay().get(dayOfWeek);
+
+                      return (
+                        <div className="staff-hours-row" key={day}>
+                          <div className="staff-hours-day">
+                            <strong>{day}</strong>
+                          </div>
+
+                          {item ? (
+                            <span>
+                              {item.startLocalTime} – {item.endLocalTime}
+                            </span>
+                          ) : (
+                            <span className="hoursClosed">Unavailable</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="staff-hours-note">
+                    This team member follows the current branch business
+                    hours.
+                  </p>
                 )}
               </section>
             </div>

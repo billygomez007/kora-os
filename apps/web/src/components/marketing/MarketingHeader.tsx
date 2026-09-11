@@ -1,25 +1,32 @@
 "use client";
 
 import { useState } from "react";
+import { useLocale, useTranslations } from "next-intl";
+import LanguageSwitcher from "@/components/i18n/LanguageSwitcher";
+import { type Locale } from "@/i18n/config";
+import { localizePathname } from "@/i18n/routing";
 import { Logo } from "./Logo";
-
-const NAV_LINKS: Array<[string, string]> = [
-  ["#features", "Features"],
-  ["#businesses", "For Businesses"],
-  ["#customers", "For Customers"],
-  ["#pricing", "Pricing"],
-  ["#resources", "Resources"],
-];
 
 export default function MarketingHeader() {
   const [open, setOpen] = useState(false);
+  const t = useTranslations("MarketingHeader");
+  const common = useTranslations("Common");
+  const locale = useLocale() as Locale;
+  const home = localizePathname("/", locale);
+  const navLinks = [
+    [`${home}#features`, t("features")],
+    [`${home}#businesses`, t("businesses")],
+    [`${home}#customers`, t("customers")],
+    [`${home}#pricing`, t("pricing")],
+    [`${home}#resources`, t("resources")],
+  ];
 
   return (
     <header className="nav shell">
       <Logo />
 
       <nav>
-        {NAV_LINKS.map(([href, label]) => (
+        {navLinks.map(([href, label]) => (
           <a key={href} href={href}>
             {label}
           </a>
@@ -27,9 +34,10 @@ export default function MarketingHeader() {
       </nav>
 
       <div className="nav-actions">
-        <a href="/login">Sign in</a>
-        <a className="gold-btn small-btn" href="/get-started">
-          Get started
+        <LanguageSwitcher compact />
+        <a href={localizePathname("/login", locale)}>{common("signIn")}</a>
+        <a className="gold-btn small-btn" href={localizePathname("/get-started", locale)}>
+          {common("getStarted")}
         </a>
       </div>
 
@@ -38,7 +46,7 @@ export default function MarketingHeader() {
         className="nav-menu-toggle"
         aria-expanded={open}
         aria-controls="mobile-nav-panel"
-        aria-label={open ? "Close navigation menu" : "Open navigation menu"}
+        aria-label={open ? t("closeMenu") : t("openMenu")}
         onClick={() => setOpen((current) => !current)}
       >
         <span />
@@ -51,10 +59,10 @@ export default function MarketingHeader() {
           id="mobile-nav-panel"
           className="mobile-nav-panel"
           role="dialog"
-          aria-label="Site navigation"
+          aria-label={t("siteNavigation")}
         >
           <nav>
-            {NAV_LINKS.map(([href, label]) => (
+            {navLinks.map(([href, label]) => (
               <a key={href} href={href} onClick={() => setOpen(false)}>
                 {label}
               </a>
@@ -62,15 +70,16 @@ export default function MarketingHeader() {
           </nav>
 
           <div className="mobile-nav-actions">
-            <a href="/login" onClick={() => setOpen(false)}>
-              Sign in
+            <LanguageSwitcher compact />
+            <a href={localizePathname("/login", locale)} onClick={() => setOpen(false)}>
+              {common("signIn")}
             </a>
             <a
               className="gold-btn"
-              href="/get-started"
+              href={localizePathname("/get-started", locale)}
               onClick={() => setOpen(false)}
             >
-              Get started
+              {common("getStarted")}
             </a>
           </div>
         </div>

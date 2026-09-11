@@ -15,6 +15,7 @@ import {
 } from '../src/modules/organizations/onboarding.service.js';
 import { OrganizationsModule } from '../src/modules/organizations/organizations.module.js';
 import { EntitlementsService } from '../src/modules/subscriptions/entitlements.service.js';
+import { PLAN_ENTITLEMENTS } from '../src/modules/subscriptions/plan-entitlements.js';
 import { SubscriptionsModule } from '../src/modules/subscriptions/subscriptions.module.js';
 
 /**
@@ -111,14 +112,16 @@ describe('OnboardingService (integration)', () => {
     expect(result.ownerMembership.userId).toBe(ownerUserId);
     expect(result.primaryBranch.organizationId).toBe(result.organization.id);
     expect(result.subscription.status).toBe('TRIALING');
-    // Starter plan entitlements (seeded in prisma/seed.ts), proving these
-    // came from the database rather than being hard-coded here.
-    expect(result.entitlements).toEqual({
-      'branches.max': 1,
-      'staff.max': 5,
-      'reports.advanced': false,
-      'integrations.whatsapp': false,
-    });
+    // Compared against the canonical model (apps/api/src/modules/
+    // subscriptions/plan-entitlements.ts), not a literal copy of it — this
+    // proves the seeded database still matches the current canonical
+    // catalogue, and that onboarding's resolved entitlements are read from
+    // the database rather than hard-coded, instead of asserting a stale
+    // hand-copied entitlement shape that drifts from the real model.
+    expect(result.entitlements).toEqual(PLAN_ENTITLEMENTS.starter);
+    expect(result.entitlements['branches.max']).toBe(1);
+    expect(result.entitlements['staff.max']).toBe(5);
+    expect(result.entitlements['cash.reconciliation']).toBe(false);
 
     const ownerRoleAssignment = await prisma.membershipRole.findFirst({
       where: { membershipId: result.ownerMembership.id },
@@ -260,14 +263,42 @@ describe('OnboardingService (integration)', () => {
     const resolved = await entitlementsService.resolveForOrganization(
       result.organization.id,
     );
-    // Growth-plan entitlements (seeded in prisma/seed.ts) — proves the
-    // resolution is driven entirely by the subscription's current plan,
-    // not by any code path specific to "starter".
-    expect(resolved).toEqual({
-      'branches.max': 3,
-      'staff.max': 20,
-      'reports.advanced': true,
-      'integrations.whatsapp': false,
-    });
+    // Growth is the legacy internal plan code (docs/SUBSCRIPTION_
+    // ENTITLEMENTS.md) but carries the same entitlements as the public
+    // Business plan. Compared against the canonical model rather than a
+    // literal copy, same reasoning as the Starter assertion above — this
+    // proves resolution is driven entirely by the subscription's current
+    // plan (data-driven), not by any code path specific to "starter".
+    expect(resolved).toEqual(PLAN_ENTITLEMENTS.growth);
+    expect(resolved).toEqual(PLAN_ENTITLEMENTS.business);
+    expect(resolved['branches.max']).toBe(3);
+    expect(resolved['staff.max']).toBe(20);
+    expect(resolved['reporting.performance']).toBe(true);
+    expect(resolved['cash.reconciliation']).toBe(false);
+  });
+
+  it('cumulatively raises entitlements from Starter through Business and Pro (data-driven)', async () => {
+    const ownerUserId = await createTestUser('owner-plan-tiers');
+    const result = await onboardingService.onboardOrganization(
+      baseInput({ ownerUserId }),
+    );
+    createdOrganizationIds.push(result.organization.id);
+
+    const entitlementsService = moduleRef.get(EntitlementsService);
+
+    for (const planCode of ['business', 'pro', 'enterprise'] as const) {
+      const plan = await prisma.subscriptionPlan.findUniqueOrThrow({
+        where: { code: planCode },
+      });
+      await prisma.organizationSubscription.update({
+        where: { organizationId: result.organization.id },
+        data: { planId: plan.id },
+      });
+
+      const resolved = await entitlementsService.resolveForOrganization(
+        result.organization.id,
+      );
+      expect(resolved).toEqual(PLAN_ENTITLEMENTS[planCode]);
+    }
   });
 });

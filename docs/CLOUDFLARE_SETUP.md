@@ -8,8 +8,11 @@ account credential belongs in this repository.
 2. **DNS → Records:** confirm the apex, `www`, and `api` records target the
    existing Vercel/Railway origins and are proxied. Confirm MX, SPF, DKIM,
    DMARC, Resend, Vercel, and Railway verification records are DNS-only.
-3. **SSL/TLS → Overview:** select **Full (strict)**. Confirm valid origin
-   certificates for Vercel and Railway before enabling enforcement.
+3. **SSL/TLS → Overview:** use provider-specific origin settings. Prefer
+   **Full (strict)** for the Vercel-backed apex and `www` origins once their
+   certificates validate. Railway may require **Full** (rather than Full
+   (strict)) for `api.koraafric.com` under Railway's Cloudflare-compatible
+   configuration; confirm the active Railway certificate before enforcing it.
 4. **SSL/TLS → Edge Certificates:** enable **Always Use HTTPS**. Enable
    Automatic HTTPS Rewrites only after checking the web build for mixed
    content. Delay HSTS until HTTPS is stable and rollback has been tested.

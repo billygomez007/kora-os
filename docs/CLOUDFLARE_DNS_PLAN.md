@@ -46,8 +46,10 @@ copy them from the active provider dashboards.
 1. Add the zone to Cloudflare and review the imported records.
 2. Correct the proxy state using the table above; leave mail and verification
    records DNS-only.
-3. Configure Full (strict) TLS and confirm both origins have valid
-   certificates.
+3. Configure provider-specific TLS and confirm the origins before enforcing
+   it: prefer **Full (strict)** for the Vercel-backed apex and `www` origins
+   when their certificates validate; Railway may require **Full** for
+   `api.koraafric.com` under Railway's Cloudflare-compatible configuration.
 4. Change nameservers at the registrar to the two Cloudflare nameservers.
 5. Wait for authoritative propagation and verify apex, `www`, and `api` over
    HTTPS from more than one resolver.

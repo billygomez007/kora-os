@@ -386,6 +386,32 @@ async function seedEntitlementDefinitions(): Promise<void> {
       create: entitlement,
     });
   }
+
+  // Prune entitlement codes that no longer exist in the canonical
+  // catalogue above (e.g. a code renamed or retired in a later model
+  // revision) — upserting only ever adds/updates, so without this an
+  // environment seeded before such a change keeps stale rows forever,
+  // and EntitlementsService.resolveForOrganization/resolveForPlan (which
+  // reads every plan_entitlements row for a plan, not just the current
+  // canonical codes) would keep returning them alongside the current
+  // set. plan_entitlements is deleted first: EntitlementDefinition's
+  // relation is onDelete: Restrict, not Cascade, by design (prisma/
+  // schema.prisma), so a stale definition cannot be removed while a
+  // plan_entitlements row still references it.
+  const canonicalCodes = ENTITLEMENT_DEFINITIONS.map((entitlement) => entitlement.code);
+  const staleDefinitions = await prisma.entitlementDefinition.findMany({
+    where: { code: { notIn: canonicalCodes } },
+    select: { id: true },
+  });
+  if (staleDefinitions.length > 0) {
+    const staleIds = staleDefinitions.map((definition) => definition.id);
+    await prisma.planEntitlement.deleteMany({
+      where: { entitlementId: { in: staleIds } },
+    });
+    await prisma.entitlementDefinition.deleteMany({
+      where: { id: { in: staleIds } },
+    });
+  }
 }
 
 async function seedPlans(): Promise<void> {

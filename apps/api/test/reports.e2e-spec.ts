@@ -46,7 +46,13 @@ describe('Owner/manager reports (e2e)', () => {
     return `/v1/organizations/${fixture.organizationId}/reports/${path}?${query.toString()}`;
   }
 
-  const reportRoutes = ['overview', 'revenue', 'staff-performance', 'services', 'payment-methods', 'commissions', 'cash-reconciliation'];
+  // RBAC-only report routes: gated by `reports.read`/`reports.basic`
+  // alone, with no additional plan-entitlement requirement. Kept separate
+  // from `cash-reconciliation`, which also requires the `cash.reconciliation`
+  // plan entitlement (Pro/Enterprise only — see docs/SUBSCRIPTION_
+  // ENTITLEMENTS.md and ReportsService.cashReconciliation) and so cannot
+  // be exercised on this fixture's default Starter trial plan the same way.
+  const reportRoutes = ['overview', 'revenue', 'staff-performance', 'services', 'payment-methods', 'commissions'];
 
   it.each(reportRoutes)('%s preserves Cashier denial and Owner/Manager access', async (route) => {
     const organizations = await authed(testApp, cashier.accessToken).get('/v1/organizations').expect(200);
@@ -54,6 +60,28 @@ describe('Owner/manager reports (e2e)', () => {
     expect(membership.permissionCodes).toContain('reports.basic');
     expect(membership.permissionCodes).not.toContain('reports.read');
     const url = reportsUrl(route, { branchId: fixture.branchId });
+    await authed(testApp, cashier.accessToken).get(url).expect(403);
+    await authed(testApp, fixture.ownerAccessToken).get(url).expect(200);
+    await authed(testApp, manager.accessToken).get(url).expect(200);
+  });
+
+  it('cash-reconciliation requires both reports.read AND the cash.reconciliation plan entitlement', async () => {
+    const url = reportsUrl('cash-reconciliation', { branchId: fixture.branchId });
+
+    // RBAC alone is not enough: on the default Starter trial plan (no
+    // cash.reconciliation entitlement), even Owner/Manager are denied.
+    await authed(testApp, cashier.accessToken).get(url).expect(403);
+    await authed(testApp, fixture.ownerAccessToken).get(url).expect(403);
+    await authed(testApp, manager.accessToken).get(url).expect(403);
+
+    const proPlan = await testApp.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code: 'pro' } });
+    await testApp.prisma.organizationSubscription.update({
+      where: { organizationId: fixture.organizationId },
+      data: { planId: proPlan.id },
+    });
+
+    // Once the plan grants the entitlement, RBAC still applies: Cashier
+    // (reports.basic only) stays denied, Owner/Manager (reports.read) pass.
     await authed(testApp, cashier.accessToken).get(url).expect(403);
     await authed(testApp, fixture.ownerAccessToken).get(url).expect(200);
     await authed(testApp, manager.accessToken).get(url).expect(200);
@@ -410,6 +438,17 @@ describe('Owner/manager reports (e2e)', () => {
         .post(`/v1/organizations/${fixture.organizationId}/cash-sessions/${session.body.data.id}/close`)
         .send({ countedCashMinor: 750 })
         .expect(201);
+
+      // Cash session operations themselves are plan-independent; only the
+      // cash-reconciliation *report* additionally requires the
+      // cash.reconciliation entitlement (Pro/Enterprise — see the
+      // dedicated entitlement test above), so the fixture's default
+      // Starter trial plan must be upgraded before reading the report.
+      const proPlan = await testApp.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code: 'pro' } });
+      await testApp.prisma.organizationSubscription.update({
+        where: { organizationId: fixture.organizationId },
+        data: { planId: proPlan.id },
+      });
 
       const response = await authed(testApp, manager.accessToken).get(reportsUrl('cash-reconciliation')).expect(200);
       const entry = response.body.data.find((e: { cashSessionId: string }) => e.cashSessionId === session.body.data.id);

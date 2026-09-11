@@ -93,6 +93,18 @@ function safeFilename(value: string) {
   );
 }
 
+function escapeHtml(value: string): string {
+  const entities: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#39;',
+    '"': '&quot;',
+  };
+
+  return value.replace(/[&<>'"]/g, (character) => entities[character]);
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -493,12 +505,14 @@ export default function QrStorefrontPage() {
     const businessName =
       profile?.displayName ||
       workspace.organizationName;
+    const safeBusinessName = escapeHtml(businessName);
+    const safeQrLabel = escapeHtml(selectedQr.label || selectedQr.type);
 
     popup.document.write(`
       <!doctype html>
       <html>
         <head>
-          <title>${businessName} — Kora QR</title>
+          <title>${safeBusinessName} — Kora QR</title>
           <style>
             body {
               margin: 0;
@@ -569,12 +583,11 @@ export default function QrStorefrontPage() {
               KORA SMART STOREFRONT
             </div>
 
-            <h1>${businessName}</h1>
+            <h1>${safeBusinessName}</h1>
 
             <div class="label">
               ${
-                selectedQr.label ||
-                selectedQr.type
+                safeQrLabel
               }
             </div>
 

@@ -24,13 +24,16 @@ export interface KoraEnvironment extends Record<string, unknown> {
   OTP_RESEND_COOLDOWN_SECONDS: number;
   OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: number;
   OTP_MAX_REQUESTS_PER_IP_PER_HOUR: number;
-  EMAIL_DELIVERY_MODE?: 'smtp';
+  EMAIL_DELIVERY_MODE?: 'smtp' | 'resend';
   SMTP_HOST?: string;
   SMTP_PORT?: number;
   SMTP_SECURE?: boolean;
   SMTP_USER?: string;
   SMTP_PASSWORD?: string;
   EMAIL_FROM?: string;
+  RESEND_API_KEY?: string;
+  OTP_FROM_EMAIL?: string;
+  INVITATION_FROM_EMAIL?: string;
 }
 
 export function validateEnvironment(
@@ -134,6 +137,9 @@ export function validateEnvironment(
     smtpUser,
     smtpPassword,
     emailFrom,
+    resendApiKey,
+    otpFromEmail,
+    invitationFromEmail,
   } = validateEmailDeliveryConfig(input);
 
   return {
@@ -160,6 +166,9 @@ export function validateEnvironment(
     SMTP_USER: smtpUser,
     SMTP_PASSWORD: smtpPassword,
     EMAIL_FROM: emailFrom,
+    RESEND_API_KEY: resendApiKey,
+    OTP_FROM_EMAIL: otpFromEmail,
+    INVITATION_FROM_EMAIL: invitationFromEmail,
   };
 }
 
@@ -216,13 +225,16 @@ function requirePositiveInteger(
 }
 
 interface EmailDeliveryConfig {
-  emailDeliveryMode: 'smtp' | undefined;
+  emailDeliveryMode: 'smtp' | 'resend' | undefined;
   smtpHost: string | undefined;
   smtpPort: number | undefined;
   smtpSecure: boolean | undefined;
   smtpUser: string | undefined;
   smtpPassword: string | undefined;
   emailFrom: string | undefined;
+  resendApiKey: string | undefined;
+  otpFromEmail: string | undefined;
+  invitationFromEmail: string | undefined;
 }
 
 /**
@@ -234,7 +246,7 @@ interface EmailDeliveryConfig {
  * path either). Leaving it unset is always valid and always safe: it
  * means EmailOtpModule falls back to UnconfiguredEmailOtpSender, which
  * fails closed rather than pretending to deliver. The only accepted
- * value is "smtp" — there is deliberately no "console"/"dev"/"fake"
+ * value is "smtp" or "resend" — there is deliberately no "console"/"dev"/"fake"
  * value that configuration could ever select.
  */
 function validateEmailDeliveryConfig(
@@ -245,16 +257,20 @@ function validateEmailDeliveryConfig(
       ? input.EMAIL_DELIVERY_MODE.trim()
       : '';
   const emailDeliveryMode = rawMode.length > 0 ? rawMode : undefined;
-  if (emailDeliveryMode !== undefined && emailDeliveryMode !== 'smtp') {
+  if (
+    emailDeliveryMode !== undefined &&
+    emailDeliveryMode !== 'smtp' &&
+    emailDeliveryMode !== 'resend'
+  ) {
     throw new Error(
-      'EMAIL_DELIVERY_MODE must be "smtp" if set, and left unset to use no email delivery (fails closed)',
+      'EMAIL_DELIVERY_MODE must be "smtp" or "resend" if set, and left unset to use no email delivery (fails closed)',
     );
   }
 
   const smtpUser = optionalString(input.SMTP_USER);
   const smtpPassword = optionalString(input.SMTP_PASSWORD);
 
-  if (emailDeliveryMode !== 'smtp') {
+  if (emailDeliveryMode === undefined) {
     return {
       emailDeliveryMode,
       smtpHost: undefined,
@@ -263,6 +279,40 @@ function validateEmailDeliveryConfig(
       smtpUser,
       smtpPassword,
       emailFrom: undefined,
+      resendApiKey: undefined,
+      otpFromEmail: undefined,
+      invitationFromEmail: undefined,
+    };
+  }
+
+  if (emailDeliveryMode === 'resend') {
+    const resendApiKey = optionalString(input.RESEND_API_KEY);
+    if (!resendApiKey) {
+      throw new Error('RESEND_API_KEY is required when EMAIL_DELIVERY_MODE=resend');
+    }
+    const otpFromEmail = optionalString(input.OTP_FROM_EMAIL);
+    if (!otpFromEmail || !otpFromEmail.includes('@')) {
+      throw new Error(
+        'OTP_FROM_EMAIL must be a non-empty address when EMAIL_DELIVERY_MODE=resend',
+      );
+    }
+    const invitationFromEmail = optionalString(input.INVITATION_FROM_EMAIL);
+    if (!invitationFromEmail || !invitationFromEmail.includes('@')) {
+      throw new Error(
+        'INVITATION_FROM_EMAIL must be a non-empty address when EMAIL_DELIVERY_MODE=resend',
+      );
+    }
+    return {
+      emailDeliveryMode,
+      smtpHost: undefined,
+      smtpPort: undefined,
+      smtpSecure: undefined,
+      smtpUser,
+      smtpPassword,
+      emailFrom: undefined,
+      resendApiKey,
+      otpFromEmail,
+      invitationFromEmail,
     };
   }
 
@@ -296,6 +346,9 @@ function validateEmailDeliveryConfig(
     smtpUser,
     smtpPassword,
     emailFrom,
+    resendApiKey: undefined,
+    otpFromEmail: undefined,
+    invitationFromEmail: undefined,
   };
 }
 

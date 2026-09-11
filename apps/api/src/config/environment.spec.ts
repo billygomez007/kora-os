@@ -157,10 +157,46 @@ describe('validateEnvironment', () => {
     ).toMatchObject({ EMAIL_DELIVERY_MODE: undefined });
   });
 
-  it('rejects any EMAIL_DELIVERY_MODE other than "smtp" — no console or fake mode is a valid config value', () => {
+  it('rejects any EMAIL_DELIVERY_MODE other than "smtp" or "resend"', () => {
     expect(() =>
       validateEnvironment({ EMAIL_DELIVERY_MODE: 'console' }),
-    ).toThrow('EMAIL_DELIVERY_MODE must be "smtp"');
+    ).toThrow('EMAIL_DELIVERY_MODE must be "smtp" or "resend"');
+  });
+
+  it('requires Resend credentials and separate sender identities when EMAIL_DELIVERY_MODE=resend', () => {
+    expect(() => validateEnvironment({ EMAIL_DELIVERY_MODE: 'resend' })).toThrow(
+      'RESEND_API_KEY is required',
+    );
+    expect(() =>
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'resend',
+        RESEND_API_KEY: 're_placeholder_not_a_real_key',
+      }),
+    ).toThrow('OTP_FROM_EMAIL must be a non-empty address');
+    expect(() =>
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'resend',
+        RESEND_API_KEY: 're_placeholder_not_a_real_key',
+        OTP_FROM_EMAIL: 'Kora OS <login@koraafric.com>',
+      }),
+    ).toThrow('INVITATION_FROM_EMAIL must be a non-empty address');
+  });
+
+  it('accepts the production Resend HTTPS configuration without SMTP variables', () => {
+    expect(
+      validateEnvironment({
+        EMAIL_DELIVERY_MODE: 'resend',
+        RESEND_API_KEY: 're_placeholder_not_a_real_key',
+        OTP_FROM_EMAIL: 'Kora OS <login@koraafric.com>',
+        INVITATION_FROM_EMAIL: 'Kora OS Invitations <invite@koraafric.com>',
+      }),
+    ).toMatchObject({
+      EMAIL_DELIVERY_MODE: 'resend',
+      RESEND_API_KEY: 're_placeholder_not_a_real_key',
+      OTP_FROM_EMAIL: 'Kora OS <login@koraafric.com>',
+      INVITATION_FROM_EMAIL: 'Kora OS Invitations <invite@koraafric.com>',
+      SMTP_HOST: undefined,
+    });
   });
 
   it('requires SMTP_HOST, SMTP_PORT, SMTP_SECURE, and EMAIL_FROM when EMAIL_DELIVERY_MODE=smtp', () => {
@@ -233,14 +269,14 @@ describe('validateEnvironment', () => {
         SMTP_SECURE: 'true',
         SMTP_USER: 'resend',
         SMTP_PASSWORD: 're_placeholder_not_a_real_key',
-        EMAIL_FROM: 'Kora OS <login@auth.koraafric.com>',
+        EMAIL_FROM: 'Kora OS <login@koraafric.com>',
       }),
     ).toMatchObject({
       SMTP_HOST: 'smtp.resend.com',
       SMTP_PORT: 465,
       SMTP_SECURE: true,
       SMTP_USER: 'resend',
-      EMAIL_FROM: 'Kora OS <login@auth.koraafric.com>',
+      EMAIL_FROM: 'Kora OS <login@koraafric.com>',
     });
   });
 
@@ -253,7 +289,7 @@ describe('validateEnvironment', () => {
         SMTP_SECURE: 'false',
         SMTP_USER: 'resend',
         SMTP_PASSWORD: 're_placeholder_not_a_real_key',
-        EMAIL_FROM: 'Kora OS <login@auth.koraafric.com>',
+        EMAIL_FROM: 'Kora OS <login@koraafric.com>',
       }),
     ).toMatchObject({ SMTP_PORT: 587, SMTP_SECURE: false });
   });

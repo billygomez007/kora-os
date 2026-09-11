@@ -1,21 +1,26 @@
 "use client";
 
 import { useLocale, useTranslations } from "next-intl";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { localeCookieName, type Locale } from "@/i18n/config";
 import { localizePathname } from "@/i18n/routing";
+
+function persistLocalePreference(locale: Locale): void {
+  document.cookie = `${localeCookieName}=${locale}; Path=/; Max-Age=31536000; SameSite=Lax`;
+}
 
 export default function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
   const locale = useLocale();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const t = useTranslations("Common");
 
   function select(nextLocale: Locale) {
     if (nextLocale === locale) return;
-    document.cookie = `${localeCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    persistLocalePreference(nextLocale);
     const search = searchParams.toString();
-    window.location.assign(`${localizePathname(pathname, nextLocale)}${search ? `?${search}` : ""}`);
+    router.push(`${localizePathname(pathname, nextLocale)}${search ? `?${search}` : ""}`);
   }
 
   return (

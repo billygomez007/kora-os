@@ -1067,25 +1067,16 @@ point in this section was produced against that clean instance.
 
 ## 28. Resend production email preparation
 
-Kora's official domain is `koraafric.com`, with `auth.koraafric.com` as
-the dedicated authentication-sending subdomain and
-`Kora OS <login@auth.koraafric.com>` as the sender identity — kept
-separate from the future `api.koraafric.com` (API hosting, not yet
-provisioned) and `app.koraafric.com` (a future web application, not
-built in this or any stage so far).
+Kora's official domain is `koraafric.com`, which is the verified
+authentication-sending domain. The sender identity is
+`Kora OS <login@koraafric.com>`. Production web and API hosting use
+`koraafric.com` and `api.koraafric.com` respectively.
 
-This stage connected the existing `EmailOtpSender` port and
-`SmtpEmailOtpSender` adapter (section 6) to
-[Resend](https://resend.com)'s documented SMTP configuration —
-`smtp.resend.com`, username `resend`, the Resend API key as the SMTP
-password, recommended port 465 with implicit TLS (587 with STARTTLS as
-a documented alternative) — through configuration alone. No second
-email-sending path, SDK, or authentication system was introduced:
-Resend is reached through the exact same `nodemailer`-based transport
-that already serves the local Mailpit container in development, exactly
-as docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md's setup guide
-describes end to end (Resend account, DNS records, API key, hosting
-configuration, delivery monitoring).
+This stage added a provider-neutral Resend HTTPS adapter alongside the
+existing `SmtpEmailOtpSender` used by local Mailpit. Production reaches
+[Resend](https://resend.com)'s `/emails` endpoint with
+`EMAIL_DELIVERY_MODE=resend`; OTP and staff invitations share the same
+transport while retaining their existing templates and security behavior.
 
 Two small, justified additions closed genuine gaps rather than
 compatibility defects — the adapter already worked with Resend's
@@ -1118,13 +1109,10 @@ unchanged, working local Mailpit defaults — using a placeholder-shaped
 API key value, never a real one, and directing the real value to the
 eventual hosting provider's secret manager instead.
 
-Real external delivery to Gmail, Outlook, or iCloud was not attempted —
-see docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md's "Live delivery
-boundary" for exactly why (no production hosting exists yet, the
-domain is not yet verified in Resend, and no real API key has been
-issued). Automated coverage (mocked SMTP transport only, never a real
-network send) proves: the correct host/port/TLS/auth configuration for
-both the recommended and alternative ports, the correct sender identity,
+Real external delivery to Gmail, Outlook, or iCloud must be verified
+against the deployed Railway configuration — automated coverage uses
+mocked Resend/SMTP transports only, never a real network send — and
+proves the correct sender identities,
 that the expiry wording matches configuration, that the HTML and text
 bodies both carry the required content and nothing else, and that an
 authentication failure (a rejected Resend API key, simulated) is

@@ -120,13 +120,13 @@ application log — there is no console/stdout sender, in any
 environment. Locally, `pnpm db:up` also starts a Mailpit container
 (`infrastructure/compose.yaml`) and codes are delivered to it over real
 SMTP — read them at http://127.0.0.1:8025 (see `EmailOtpModule` and
-`SmtpEmailOtpSender`). Production is prepared for
-[Resend](https://resend.com) as the real email provider, through this
-exact same SMTP adapter and no code path specific to Resend — see
+`SmtpEmailOtpSender`). Production uses
+[Resend](https://resend.com) through the HTTPS API adapter — see
 `docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md` for the full setup and
-`docs/ARCHITECTURE.md` section 28 for what changed. It is not live yet:
-no production hosting exists, and the sending domain
-(`auth.koraafric.com`) is not yet verified with a real Resend account.
+`docs/ARCHITECTURE.md` section 28 for what changed. Production runs on
+Railway and must use the verified `koraafric.com` sender domain; delivery
+still fails closed when the required Railway Resend variables are missing or
+incorrect.
 
 ## Services, availability, and booking in one paragraph
 

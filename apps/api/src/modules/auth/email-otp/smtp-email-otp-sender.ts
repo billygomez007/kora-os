@@ -20,20 +20,17 @@ const SMTP_SOCKET_TIMEOUT_MS = 15_000;
  * SMTP delivery adapter behind the EmailOtpSender port. Selected whenever
  * EMAIL_DELIVERY_MODE=smtp (see environment.ts and EmailOtpModule) —
  * development points this at the local Mailpit container
- * (infrastructure/compose.yaml, no real provider); production points the
- * same SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASSWORD/EMAIL_FROM values at
- * Resend (docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md) — smtp.resend.com,
- * username "resend", the Resend API key as the password. No provider-
- * specific code exists here or needs to: this class only ever talks
- * standard SMTP, so the same adapter serves Mailpit locally and Resend in
- * production purely through configuration.
+ * (infrastructure/compose.yaml, no real provider). Production uses the
+ * provider-neutral Resend HTTPS adapter; this class remains the legacy SMTP
+ * path for local and compatible deployments.
  *
  * `logger`/`debug` are explicitly left off (nodemailer defaults to off,
  * but this is pinned rather than relied on): those options print raw SMTP
  * protocol traffic, which for this transport's DATA command includes the
  * OTP code itself. Every failure is caught here and re-thrown as
- * EmailDeliveryUnavailableError with only the error's name logged — never
- * the message, since SMTP client libraries routinely echo the remote
+ * EmailDeliveryUnavailableError with only a small, allowlisted diagnostic
+ * metadata set logged — never the message, since SMTP client libraries
+ * routinely echo the remote
  * server's response text (which can itself echo back parts of the
  * request, or a provider's own diagnostic detail) into Error#message.
  */
@@ -76,12 +73,47 @@ export class SmtpEmailOtpSender implements EmailOtpSender {
         html: buildOtpEmailHtml(params),
       });
     } catch (error) {
-      this.logger.error(
-        `Email OTP delivery via SMTP failed (${error instanceof Error ? error.name : 'unknown error'})`,
-      );
+      this.logger.error(`Email OTP delivery via SMTP failed (${smtpFailureMetadata(error)})`);
       throw new EmailDeliveryUnavailableError();
     }
   }
+}
+
+interface SmtpErrorShape {
+  name?: unknown;
+  code?: unknown;
+  command?: unknown;
+  responseCode?: unknown;
+}
+
+/**
+ * Keep operational SMTP diagnostics useful without ever logging Error#message,
+ * which may contain an OTP recipient, provider response, or credential detail.
+ */
+function smtpFailureMetadata(error: unknown): string {
+  const record = error && typeof error === 'object' ? (error as SmtpErrorShape) : {};
+  const name = safeDiagnosticToken(
+    error instanceof Error ? error.name : record.name,
+  );
+  const code = safeDiagnosticToken(record.code);
+  const command = safeDiagnosticToken(record.command);
+  const responseCode =
+    typeof record.responseCode === 'number' &&
+    Number.isInteger(record.responseCode) &&
+    record.responseCode >= 100 &&
+    record.responseCode <= 999
+      ? String(record.responseCode)
+      : 'none';
+
+  return `name=${name} code=${code} command=${command} responseCode=${responseCode}`;
+}
+
+function safeDiagnosticToken(value: unknown): string {
+  if (typeof value !== 'string') {
+    return 'none';
+  }
+  const normalized = value.trim().replace(/\s+/g, '_');
+  return /^[A-Za-z0-9_.-]{1,40}$/.test(normalized) ? normalized : 'none';
 }
 
 function formatExpiry(expiryMinutes: number): string {
@@ -93,7 +125,7 @@ function formatExpiry(expiryMinutes: number): string {
  * render `buildOtpEmailHtml` falls back to this, so it carries the exact
  * same information, never a shortened or different message.
  */
-function buildOtpEmailText(params: EmailOtpDeliveryParams): string {
+export function buildOtpEmailText(params: EmailOtpDeliveryParams): string {
   const expiry = formatExpiry(params.expiryMinutes);
   return [
     'KORA OS',
@@ -125,7 +157,7 @@ function buildOtpEmailText(params: EmailOtpDeliveryParams): string {
  * stylesheet, tracking pixel, or external asset required to understand
  * the message. The verification code remains the visual focus.
  */
-function buildOtpEmailHtml(params: EmailOtpDeliveryParams): string {
+export function buildOtpEmailHtml(params: EmailOtpDeliveryParams): string {
   const expiry = escapeHtml(formatExpiry(params.expiryMinutes));
   const code = escapeHtml(params.code);
 

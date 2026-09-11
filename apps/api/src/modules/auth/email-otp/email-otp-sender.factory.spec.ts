@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { createEmailOtpSender } from './email-otp-sender.factory.js';
 import { FakeEmailOtpSender } from './fake-email-otp-sender.js';
+import { ResendEmailOtpSender } from './resend-email-otp-sender.js';
 import { UnconfiguredEmailOtpSender } from './unconfigured-email-otp-sender.js';
 
 const SMTP_CONFIG = {
@@ -50,5 +51,17 @@ describe('createEmailOtpSender', () => {
       configFor({ NODE_ENV: 'production', EMAIL_DELIVERY_MODE: 'smtp', ...SMTP_CONFIG }),
     );
     expect(sender).toBeInstanceOf(SmtpEmailOtpSender);
+  });
+
+  it('selects Resend HTTPS delivery when EMAIL_DELIVERY_MODE=resend', () => {
+    const sender = createEmailOtpSender(
+      configFor({
+        NODE_ENV: 'production',
+        EMAIL_DELIVERY_MODE: 'resend',
+        RESEND_API_KEY: 're_placeholder_not_a_real_key',
+        OTP_FROM_EMAIL: 'Kora OS <login@koraafric.com>',
+      }),
+    );
+    expect(sender).toBeInstanceOf(ResendEmailOtpSender);
   });
 });

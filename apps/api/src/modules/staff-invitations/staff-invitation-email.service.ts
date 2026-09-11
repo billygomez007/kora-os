@@ -1,6 +1,7 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import nodemailer, { type Transporter } from 'nodemailer';
+import { ResendEmailSender } from '../../common/email/resend-email-sender.js';
 
 export interface StaffInvitationEmailParams {
   email: string;
@@ -15,6 +16,7 @@ export interface StaffInvitationEmailParams {
 export class StaffInvitationEmailService {
   private readonly logger = new Logger(StaffInvitationEmailService.name);
   private readonly transporter: Transporter | null;
+  private readonly resendSender: ResendEmailSender | null;
   private readonly fromAddress: string | null;
   private readonly webBaseUrl: string;
 
@@ -30,10 +32,15 @@ export class StaffInvitationEmailService {
 
     if (mode !== 'smtp') {
       this.transporter = null;
-      this.fromAddress = null;
+      this.resendSender = mode === 'resend' ? new ResendEmailSender(config) : null;
+      this.fromAddress =
+        mode === 'resend'
+          ? config.getOrThrow<string>('INVITATION_FROM_EMAIL')
+          : null;
       return;
     }
 
+    this.resendSender = null;
     const user = config.get<string>('SMTP_USER');
     const password = config.get<string>('SMTP_PASSWORD');
 
@@ -52,7 +59,7 @@ export class StaffInvitationEmailService {
   }
 
   async send(params: StaffInvitationEmailParams): Promise<void> {
-    if (!this.transporter || !this.fromAddress) {
+    if ((!this.transporter && !this.resendSender) || !this.fromAddress) {
       this.logger.error('Staff invitation email delivery is not configured');
       throw new ServiceUnavailableException(
         'Kora could not send the staff invitation email. Please try again later.',
@@ -60,15 +67,20 @@ export class StaffInvitationEmailService {
     }
 
     const inviteUrl = `${this.webBaseUrl}/invite/${encodeURIComponent(params.rawToken)}`;
+    const message = {
+      from: this.fromAddress,
+      to: params.email,
+      subject: `${params.organizationName} invited you to Kora OS`,
+      text: buildText(params, inviteUrl),
+      html: buildHtml(params, inviteUrl),
+    };
 
     try {
-      await this.transporter.sendMail({
-        from: this.fromAddress,
-        to: params.email,
-        subject: `${params.organizationName} invited you to Kora OS`,
-        text: buildText(params, inviteUrl),
-        html: buildHtml(params, inviteUrl),
-      });
+      if (this.resendSender) {
+        await this.resendSender.send(message);
+      } else {
+        await this.transporter!.sendMail(message);
+      }
     } catch (error) {
       this.logger.error(
         `Staff invitation email delivery failed (${error instanceof Error ? error.name : 'unknown error'})`,

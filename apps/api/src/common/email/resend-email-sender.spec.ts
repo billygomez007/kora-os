@@ -1,0 +1,102 @@
+import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
+import { ResendEmailSender } from './resend-email-sender.js';
+
+function config(apiKey = 're_do_not_leak_this_00000000000000000000'): ConfigService {
+  return new ConfigService({ RESEND_API_KEY: apiKey });
+}
+
+describe('ResendEmailSender', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('posts the transactional message to the HTTPS API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'email-id' }), {
+        status: 200,
+        headers: { 'x-resend-request-id': 'req_123' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(config());
+
+    await sender.send({
+      from: 'Kora OS <login@koraafric.com>',
+      to: 'person@example.test',
+      subject: 'Sign-in code',
+      text: 'Your code is 123456',
+      html: '<p>Your code is 123456</p>',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.resend.com/emails',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer re_do_not_leak_this_00000000000000000000',
+          'Content-Type': 'application/json',
+        },
+      }),
+    );
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      from: 'Kora OS <login@koraafric.com>',
+      to: 'person@example.test',
+    });
+  });
+
+  it('fails safely on provider rejection and logs only safe metadata', async () => {
+    const loggerError = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('secret provider details', {
+          status: 422,
+          headers: { 'x-resend-request-id': 'req_safe_1' },
+        }),
+      ),
+    );
+    const sender = new ResendEmailSender(config());
+
+    await expect(
+      sender.send({
+        from: 'Kora OS <login@koraafric.com>',
+        to: 'person@example.test',
+        subject: 'Sign-in code',
+        text: '123456',
+        html: '<p>123456</p>',
+      }),
+    ).rejects.toThrow('Resend email delivery failed');
+
+    const logged = loggerError.mock.calls.flat().map(String).join('\n');
+    expect(logged).toContain('provider=resend');
+    expect(logged).toContain('status=422');
+    expect(logged).toContain('requestId=req_safe_1');
+    expect(logged).not.toContain('secret provider details');
+    expect(logged).not.toContain('re_do_not_leak');
+    expect(logged).not.toContain('123456');
+  });
+
+  it('classifies network failures without exposing the underlying error', async () => {
+    const loggerError = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('socket details and API key')));
+    const sender = new ResendEmailSender(config());
+
+    await expect(
+      sender.send({
+        from: 'Kora OS <login@koraafric.com>',
+        to: 'person@example.test',
+        subject: 'Sign-in code',
+        text: '123456',
+        html: '<p>123456</p>',
+      }),
+    ).rejects.toThrow('Resend email delivery failed');
+
+    const logged = loggerError.mock.calls.flat().map(String).join('\n');
+    expect(logged).toContain('provider=resend');
+    expect(logged).not.toContain('socket details');
+    expect(logged).not.toContain('API key');
+  });
+});

@@ -21,11 +21,8 @@ function createConfig(overrides: Record<string, unknown> = {}): ConfigService {
   });
 }
 
-/** Resend's documented SMTP configuration
- * (docs/operations/EMAIL_OTP_PRODUCTION_SETUP.md): smtp.resend.com,
- * username "resend", the API key as the password, recommended port 465
- * with implicit TLS, sender "Kora OS <login@auth.koraafric.com>". Uses a
- * placeholder API-key-shaped value, never a real one. */
+/** Legacy SMTP configuration coverage. Production uses the Resend HTTPS
+ * adapter; these tests keep local Mailpit and SMTP compatibility intact. */
 function resendConfig(overrides: Record<string, unknown> = {}): ConfigService {
   return createConfig({
     SMTP_HOST: 'smtp.resend.com',
@@ -33,7 +30,7 @@ function resendConfig(overrides: Record<string, unknown> = {}): ConfigService {
     SMTP_SECURE: true,
     SMTP_USER: 'resend',
     SMTP_PASSWORD: 're_placeholder_not_a_real_key',
-    EMAIL_FROM: 'Kora OS <login@auth.koraafric.com>',
+    EMAIL_FROM: 'Kora OS <login@koraafric.com>',
     ...overrides,
   });
 }
@@ -99,7 +96,7 @@ describe('SmtpEmailOtpSender', () => {
       expiryMinutes: 10,
     });
 
-    expect(sendMail.mock.calls[0][0].from).toBe('Kora OS <login@auth.koraafric.com>');
+    expect(sendMail.mock.calls[0][0].from).toBe('Kora OS <login@koraafric.com>');
   });
 
   it('configures implicit TLS on port 465 (Resend\'s recommended configuration) exactly as given', () => {
@@ -225,16 +222,16 @@ describe('SmtpEmailOtpSender', () => {
     expect(options.auth).toEqual({ user: 'a-user', pass: 'a-password' });
   });
 
-  it('never logs the OTP code, and translates any send failure into EmailDeliveryUnavailableError without leaking the underlying error message', async () => {
+  it('logs safe SMTP diagnostics without the OTP, recipient, or provider message', async () => {
     // SmtpEmailOtpSender logs through Nest's Logger (not console.* — Nest
     // writes to process.stdout/stderr directly), so the spy targets the
     // method our code actually calls.
     const loggerErrorSpy = vi.spyOn(Logger.prototype, 'error');
-    sendMail.mockRejectedValueOnce(
-      new Error(
-        '550 5.1.1 someone@example.test: Recipient address rejected — sensitive-provider-diagnostic',
-      ),
+    const error = Object.assign(
+      new Error('550 5.1.1 someone@example.test: sensitive-provider-diagnostic'),
+      { code: 'EENVELOPE', command: 'RCPT TO', responseCode: 550 },
     );
+    sendMail.mockRejectedValueOnce(error);
     const sender = new SmtpEmailOtpSender(createConfig());
 
     await expect(
@@ -250,6 +247,9 @@ describe('SmtpEmailOtpSender', () => {
     expect(logged).not.toContain('999111');
     expect(logged).not.toContain('sensitive-provider-diagnostic');
     expect(logged).not.toContain('someone@example.test');
+    expect(logged).toContain('code=EENVELOPE');
+    expect(logged).toContain('command=RCPT_TO');
+    expect(logged).toContain('responseCode=550');
 
     loggerErrorSpy.mockRestore();
   });
@@ -258,7 +258,10 @@ describe('SmtpEmailOtpSender', () => {
     const loggerErrorSpy = vi.spyOn(Logger.prototype, 'error');
     const realApiKey = 're_do_not_leak_this_00000000000000000000';
     sendMail.mockRejectedValueOnce(
-      new Error(`535 5.7.8 Authentication failed: invalid API key ${realApiKey}`),
+      Object.assign(
+        new Error(`535 5.7.8 Authentication failed: invalid API key ${realApiKey}`),
+        { code: 'EAUTH', command: 'AUTH', responseCode: 535 },
+      ),
     );
     const sender = new SmtpEmailOtpSender(resendConfig({ SMTP_PASSWORD: realApiKey }));
 
@@ -278,6 +281,37 @@ describe('SmtpEmailOtpSender', () => {
     expect((thrown as Error).message).not.toContain(realApiKey);
     const logged = loggerErrorSpy.mock.calls.flat().map(String).join('\n');
     expect(logged).not.toContain(realApiKey);
+    expect(logged).toContain('code=EAUTH');
+    expect(logged).toContain('command=AUTH');
+    expect(logged).toContain('responseCode=535');
+
+    loggerErrorSpy.mockRestore();
+  });
+
+  it('classifies connection failures without logging the connection error message', async () => {
+    const loggerErrorSpy = vi.spyOn(Logger.prototype, 'error');
+    sendMail.mockRejectedValueOnce(
+      Object.assign(new Error('connect ECONNREFUSED internal-host:465'), {
+        code: 'ECONNECTION',
+        command: 'CONN',
+      }),
+    );
+    const sender = new SmtpEmailOtpSender(resendConfig());
+
+    await expect(
+      sender.send({
+        emailNormalized: 'someone@example.test',
+        code: '999111',
+        expiresAt: new Date(),
+        expiryMinutes: 10,
+      }),
+    ).rejects.toBeInstanceOf(EmailDeliveryUnavailableError);
+
+    const logged = loggerErrorSpy.mock.calls.flat().map(String).join('\n');
+    expect(logged).not.toContain('ECONNREFUSED internal-host:465');
+    expect(logged).toContain('code=ECONNECTION');
+    expect(logged).toContain('command=CONN');
+    expect(logged).toContain('responseCode=none');
 
     loggerErrorSpy.mockRestore();
   });

@@ -1,6 +1,7 @@
 import type { ConfigService } from '@nestjs/config';
 import type { EmailOtpSender } from './email-otp-sender.interface.js';
 import { FakeEmailOtpSender } from './fake-email-otp-sender.js';
+import { ResendEmailOtpSender } from './resend-email-otp-sender.js';
 import { SmtpEmailOtpSender } from './smtp-email-otp-sender.js';
 import { UnconfiguredEmailOtpSender } from './unconfigured-email-otp-sender.js';
 
@@ -13,8 +14,8 @@ import { UnconfiguredEmailOtpSender } from './unconfigured-email-otp-sender.js';
  *   there is no config-driven path from a real environment to the
  *   in-memory test double.
  * - Every other environment gets a real-or-nothing choice: EMAIL_DELIVERY_MODE
- *   must be exactly "smtp" (validated in environment.ts; any other value
- *   fails startup) to get SmtpEmailOtpSender, otherwise delivery is
+ *   must be exactly "smtp" or "resend" (validated in environment.ts; any
+ *   other value fails startup) to get a real provider, otherwise delivery is
  *   UnconfiguredEmailOtpSender, which always fails closed. There is no
  *   console/stdout option to fall back to.
  */
@@ -27,6 +28,9 @@ export function createEmailOtpSender(config: ConfigService): EmailOtpSender {
   const deliveryMode = config.get<string>('EMAIL_DELIVERY_MODE');
   if (deliveryMode === 'smtp') {
     return new SmtpEmailOtpSender(config);
+  }
+  if (deliveryMode === 'resend') {
+    return new ResendEmailOtpSender(config);
   }
 
   return new UnconfiguredEmailOtpSender();

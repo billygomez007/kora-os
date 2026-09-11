@@ -3,7 +3,7 @@
  * email provider is integrated yet — see docs/SECURITY.md for exactly
  * where one connects. Implementations must never resolve successfully
  * without actually attempting delivery; see UnconfiguredEmailOtpSender
- * for the fail-closed production default.
+ * for the fail-closed default when no provider is configured.
  */
 export const EMAIL_OTP_SENDER = Symbol('EMAIL_OTP_SENDER');
 

@@ -434,6 +434,17 @@ export class EmailOtpService {
   /**
    * Opt-in production diagnostics. Only challenge metadata is logged; OTPs,
    * digests, email addresses, tokens, and secret values are never logged.
+   *
+   * `replicaId`/`deploymentId` come from Railway's platform-injected
+   * `RAILWAY_REPLICA_ID`/`RAILWAY_DEPLOYMENT_ID` env vars (unset outside
+   * Railway, e.g. local dev — logged as "unknown" there). Neither is a
+   * secret; both exist specifically so an operator can tell, from two log
+   * lines for the same challengeId, whether the request and the verify
+   * were handled by the same running instance and the same deployment —
+   * the one thing this class cannot determine about itself. Combined with
+   * `pepperFingerprint`, a mismatched fingerprint alongside a mismatched
+   * replicaId is direct evidence of a per-replica OTP_PEPPER drift (e.g. a
+   * rolling deploy leaving an old instance answering some requests).
    */
   private logDiagnostic(
     event: string,
@@ -455,7 +466,7 @@ export class EmailOtpService {
       ? createHash('sha256').update(input.pepper).digest('hex').slice(0, 8)
       : 'unavailable';
     this.logger.warn(
-      `OTP diagnostic event=${event} challengeId=${safeDiagnosticToken(input.challengeId)} status=${safeDiagnosticToken(input.status)} expired=${formatDiagnosticBoolean(input.expired)} consumed=${formatDiagnosticBoolean(input.consumed)} invalidated=${formatDiagnosticBoolean(input.invalidated)} attempts=${formatDiagnosticAttempts(input.attempts)} hashMatched=${formatDiagnosticBoolean(input.hashMatched)} pepperFingerprint=${pepperFingerprint}`,
+      `OTP diagnostic event=${event} challengeId=${safeDiagnosticToken(input.challengeId)} status=${safeDiagnosticToken(input.status)} expired=${formatDiagnosticBoolean(input.expired)} consumed=${formatDiagnosticBoolean(input.consumed)} invalidated=${formatDiagnosticBoolean(input.invalidated)} attempts=${formatDiagnosticAttempts(input.attempts)} hashMatched=${formatDiagnosticBoolean(input.hashMatched)} pepperFingerprint=${pepperFingerprint} replicaId=${safeDiagnosticToken(process.env.RAILWAY_REPLICA_ID ?? 'unknown')} deploymentId=${safeDiagnosticToken(process.env.RAILWAY_DEPLOYMENT_ID ?? 'unknown')}`,
     );
   }
 

@@ -133,6 +133,159 @@ describe('EmailOtpService — safe diagnostics', () => {
     expect(logs).toContain('hashMatched=unknown');
     loggerWarn.mockRestore();
   });
+
+  it('tags each diagnostic line with a replica/deployment identity, never the pepper itself', async () => {
+    const prismaStub = {
+      emailOtpChallenge: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue({}),
+        count: vi.fn().mockResolvedValue(0),
+      },
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const pepper = 'p'.repeat(32);
+    const config = new ConfigService({
+      OTP_CODE_LENGTH: 6,
+      OTP_EXPIRY_MINUTES: 10,
+      OTP_MAX_ATTEMPTS: 5,
+      OTP_PEPPER: pepper,
+      OTP_RESEND_COOLDOWN_SECONDS: 60,
+      OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
+      OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
+      OTP_DIAGNOSTICS: true,
+    });
+    const sender = { send: vi.fn().mockResolvedValue(undefined) };
+    const auditService = { record: vi.fn().mockResolvedValue(undefined) };
+    const loggerWarn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const previousReplicaId = process.env.RAILWAY_REPLICA_ID;
+    const previousDeploymentId = process.env.RAILWAY_DEPLOYMENT_ID;
+    process.env.RAILWAY_REPLICA_ID = 'replica-a';
+    process.env.RAILWAY_DEPLOYMENT_ID = 'deploy-a';
+    const service = new EmailOtpService(
+      prismaStub as never,
+      config,
+      sender as never,
+      auditService as never,
+    );
+
+    try {
+      await service.requestChallenge({ email: 'new@example.test', requestId: 'req-replica' });
+    } finally {
+      if (previousReplicaId === undefined) delete process.env.RAILWAY_REPLICA_ID;
+      else process.env.RAILWAY_REPLICA_ID = previousReplicaId;
+      if (previousDeploymentId === undefined) delete process.env.RAILWAY_DEPLOYMENT_ID;
+      else process.env.RAILWAY_DEPLOYMENT_ID = previousDeploymentId;
+    }
+
+    const logs = loggerWarn.mock.calls.flat().map(String).join('\n');
+    expect(logs).toContain('replicaId=replica-a');
+    expect(logs).toContain('deploymentId=deploy-a');
+    expect(logs).not.toContain(pepper);
+    loggerWarn.mockRestore();
+  });
+});
+
+describe('EmailOtpService — cross-instance OTP_PEPPER consistency', () => {
+  /**
+   * Documents, against the real service (not just the pure digest
+   * helper), exactly what a deployment where two running instances hold
+   * a different OTP_PEPPER looks like: the code delivered to the user is
+   * objectively correct, entered correctly, and still rejected — because
+   * the instance that persisted codeDigest and the instance that
+   * recomputes it for comparison disagree on the key. This is the
+   * "request handled by replica A, verify handled by replica B with a
+   * different secret" hypothesis from the production OTP incident,
+   * reproduced deterministically without any real infrastructure.
+   */
+  function buildServiceWithPepper(pepper: string) {
+    const prismaStub = {
+      emailOtpChallenge: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue({}),
+        findUnique: vi.fn(),
+        count: vi.fn().mockResolvedValue(0),
+      },
+      user: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: 'user-1', emailNormalized: 'user@example.test' }),
+      },
+      authIdentity: { upsert: vi.fn().mockResolvedValue({}) },
+    };
+    const config = new ConfigService({
+      OTP_CODE_LENGTH: 6,
+      OTP_EXPIRY_MINUTES: 10,
+      OTP_MAX_ATTEMPTS: 5,
+      OTP_PEPPER: pepper,
+      OTP_RESEND_COOLDOWN_SECONDS: 60,
+      OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
+      OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
+    });
+    const sender = { send: vi.fn().mockResolvedValue(undefined) };
+    const auditService = { record: vi.fn().mockResolvedValue(undefined) };
+    const service = new EmailOtpService(
+      prismaStub as never,
+      config,
+      sender as never,
+      auditService as never,
+    );
+    return { service, prismaStub, sender };
+  }
+
+  async function requestThenBuildStoredChallenge(pepper: string) {
+    const requester = buildServiceWithPepper(pepper);
+    await requester.service.requestChallenge({ email: 'user@example.test', requestId: 'req-a' });
+
+    const created = requester.prismaStub.emailOtpChallenge.create.mock.calls[0][0].data;
+    const deliveredCode = requester.sender.send.mock.calls[0][0].code as string;
+    const storedChallenge = {
+      id: created.id,
+      emailNormalized: created.emailNormalized,
+      codeDigest: created.codeDigest,
+      status: OtpChallengeStatus.ACTIVE,
+      expiresAt: created.expiresAt,
+      attemptCount: 0,
+      maxAttempts: created.maxAttempts,
+    };
+    return { deliveredCode, storedChallenge };
+  }
+
+  it('rejects the exact correct, freshly-delivered code when the verifying instance holds a different OTP_PEPPER', async () => {
+    const pepperOnReplicaA = 'a'.repeat(32);
+    const pepperOnReplicaB = 'b'.repeat(32);
+    const { deliveredCode, storedChallenge } = await requestThenBuildStoredChallenge(pepperOnReplicaA);
+
+    const verifier = buildServiceWithPepper(pepperOnReplicaB);
+    verifier.prismaStub.emailOtpChallenge.findUnique.mockResolvedValue(storedChallenge);
+
+    await expect(
+      verifier.service.verifyChallenge({
+        challengeId: storedChallenge.id,
+        code: deliveredCode,
+        requestId: 'req-b',
+      }),
+    ).rejects.toMatchObject({ response: { code: 'OTP_INVALID' } });
+  });
+
+  it('accepts the same exact correct code when both instances share the same OTP_PEPPER (control case)', async () => {
+    const sharedPepper = 'a'.repeat(32);
+    const { deliveredCode, storedChallenge } = await requestThenBuildStoredChallenge(sharedPepper);
+
+    const verifier = buildServiceWithPepper(sharedPepper);
+    verifier.prismaStub.emailOtpChallenge.findUnique.mockResolvedValue(storedChallenge);
+    verifier.prismaStub.emailOtpChallenge.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      verifier.service.verifyChallenge({
+        challengeId: storedChallenge.id,
+        code: deliveredCode,
+        requestId: 'req-b',
+      }),
+    ).resolves.toMatchObject({ emailNormalized: 'user@example.test' });
+  });
 });
 
 describe('EmailOtpService — delivery failure', () => {

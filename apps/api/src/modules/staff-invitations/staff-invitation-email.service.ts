@@ -1,15 +1,36 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import nodemailer, { type Transporter } from 'nodemailer';
-import { ResendEmailSender } from '../../common/email/resend-email-sender.js';
+import {
+  ResendEmailDeliveryError,
+  ResendEmailSender,
+} from '../../common/email/resend-email-sender.js';
+import type { EmailSendResult } from '../../common/email/email-sender.js';
 
 export interface StaffInvitationEmailParams {
+  invitationId?: string;
+  attemptNumber?: number;
   email: string;
   organizationName: string;
   roleName: string;
   branchName?: string | null;
   rawToken: string;
   expiresAt: Date;
+}
+
+export class StaffInvitationDeliveryError extends ServiceUnavailableException {
+  constructor(
+    readonly deliveryCode: string,
+    readonly retryable: boolean,
+    readonly retryAfterSeconds: number | null = null,
+  ) {
+    super({
+      code: 'INVITATION_EMAIL_DELIVERY_FAILED',
+      message: retryable
+        ? 'Kora created the invitation, but email delivery was temporarily delayed. You can retry sending the invitation.'
+        : 'Kora created the invitation, but the email provider rejected delivery. Please check the address or revoke this invitation.',
+    });
+  }
 }
 
 @Injectable()
@@ -58,12 +79,10 @@ export class StaffInvitationEmailService {
     });
   }
 
-  async send(params: StaffInvitationEmailParams): Promise<void> {
+  async send(params: StaffInvitationEmailParams): Promise<EmailSendResult> {
     if ((!this.transporter && !this.resendSender) || !this.fromAddress) {
       this.logger.error('Staff invitation email delivery is not configured');
-      throw new ServiceUnavailableException(
-        'Kora could not send the staff invitation email. Please try again later.',
-      );
+      throw new StaffInvitationDeliveryError('NOT_CONFIGURED', true);
     }
 
     const inviteUrl = `${this.webBaseUrl}/invite/${encodeURIComponent(params.rawToken)}`;
@@ -77,19 +96,40 @@ export class StaffInvitationEmailService {
 
     try {
       if (this.resendSender) {
-        await this.resendSender.send(message);
+        const result = await this.resendSender.send(message);
+        this.logger.log(
+          `Staff invitation email accepted invitationId=${safeId(params.invitationId)} attempt=${params.attemptNumber ?? 'unknown'} providerMessageId=${safeId(result.providerMessageId)}`,
+        );
+        return result;
       } else {
         await this.transporter!.sendMail(message);
+        this.logger.log(
+          `Staff invitation email accepted invitationId=${safeId(params.invitationId)} attempt=${params.attemptNumber ?? 'unknown'} providerMessageId=none`,
+        );
+        return {};
       }
     } catch (error) {
+      if (error instanceof ResendEmailDeliveryError) {
+        this.logger.error(
+          `Staff invitation email delivery failed invitationId=${safeId(params.invitationId)} attempt=${params.attemptNumber ?? 'unknown'} provider=resend code=${error.code} status=${error.status ?? 'none'} requestId=${safeId(error.requestId)}`,
+        );
+        throw new StaffInvitationDeliveryError(
+          error.code,
+          error.retryable,
+          error.retryAfterSeconds,
+        );
+      }
       this.logger.error(
-        `Staff invitation email delivery failed (${error instanceof Error ? error.name : 'unknown error'})`,
+        `Staff invitation email delivery failed invitationId=${safeId(params.invitationId)} attempt=${params.attemptNumber ?? 'unknown'} provider=smtp code=DELIVERY_FAILED`,
       );
-      throw new ServiceUnavailableException(
-        'Kora created the invitation but could not deliver the email. Please try again.',
-      );
+      throw new StaffInvitationDeliveryError('DELIVERY_FAILED', true);
     }
   }
+}
+
+function safeId(value: string | null | undefined): string {
+  if (!value) return 'none';
+  return /^[A-Za-z0-9_-]{1,80}$/.test(value) ? value : 'redacted';
 }
 
 function buildText(

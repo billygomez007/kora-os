@@ -47,6 +47,23 @@ export class StaffInvitationsController {
   }
 
   @UseGuards(TenantAccessGuard)
+  @RequirePermissions('staff.invite')
+  @Post('organizations/:organizationId/staff-invitations/:invitationId/resend')
+  async resend(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('invitationId') invitationId: string,
+    @Req() request: RequestWithId,
+  ) {
+    return this.staffInvitationService.resend({
+      organizationId: tenant.organizationId,
+      invitationId,
+      actorMembershipId: tenant.membershipId,
+      actorUserId: tenant.userId,
+      requestId: request.requestId,
+    });
+  }
+
+  @UseGuards(TenantAccessGuard)
   @RequirePermissions('staff.read')
   @Get('organizations/:organizationId/staff-invitations')
   async list(

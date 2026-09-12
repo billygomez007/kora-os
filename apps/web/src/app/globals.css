@@ -5195,7 +5195,8 @@ footer {
     110px
     110px
     100px
-    70px;
+    118px
+    150px;
   gap: 14px;
   align-items: center;
   border-top: 1px solid var(--ws-surface-2);
@@ -5204,6 +5205,60 @@ footer {
 .staff-invite-date small,
 .staff-invite-date span {
   display: block;
+}
+
+.staff-invite-delivery {
+  display: inline-flex;
+  width: fit-content;
+  padding: 5px 8px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+}
+
+.staff-invite-delivery.delivered {
+  border-color: rgba(104, 205, 157, 0.35);
+  color: #8be0b8;
+}
+
+.staff-invite-delivery.failed {
+  border-color: rgba(235, 157, 117, 0.45);
+  color: #f0ad87;
+}
+
+.staff-invite-delivery.pending {
+  color: var(--ws-text-muted);
+}
+
+.staff-invite-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.staff-resend-button,
+.staff-revoke-button {
+  white-space: nowrap;
+}
+
+.staff-resend-button {
+  padding: 7px 9px;
+  border: 1px solid rgba(214, 170, 82, 0.35);
+  border-radius: 8px;
+  background: rgba(214, 170, 82, 0.08);
+  color: var(--ws-gold);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.staff-resend-button:disabled,
+.staff-revoke-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .staff-invite-date small {

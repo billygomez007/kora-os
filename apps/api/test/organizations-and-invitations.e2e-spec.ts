@@ -503,6 +503,140 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
       expect(pendingOnly.body.data).toHaveLength(0);
     });
 
+    it('resends one valid invitation with a cooldown and no duplicate row', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const cashierRole = roles.find((r) => r.code === 'cashier')!;
+
+      const created = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: `${unique()}@example.test`, roleId: cashierRole.id })
+        .expect(201);
+      const invitationId = created.body.data.invitation.id as string;
+      const initialCount = await prisma.staffInvitation.count({
+        where: { organizationId: org.organization.id },
+      });
+
+      const cooldown = await authed(testApp, owner.accessToken)
+        .post(
+          `/v1/organizations/${org.organization.id}/staff-invitations/${invitationId}/resend`,
+        )
+        .expect(429);
+      expect(cooldown.body.error.code).toBe('INVITATION_RESEND_COOLDOWN');
+
+      await prisma.staffInvitation.update({
+        where: { id: invitationId },
+        data: {
+          lastDeliveryAttemptAt: new Date(Date.now() - 10 * 60 * 1000),
+          nextDeliveryAttemptAt: new Date(Date.now() - 10 * 60 * 1000),
+        },
+      });
+
+      const resent = await authed(testApp, owner.accessToken)
+        .post(
+          `/v1/organizations/${org.organization.id}/staff-invitations/${invitationId}/resend`,
+        )
+        .expect(201);
+      expect(resent.body.data.invitation).toMatchObject({
+        id: invitationId,
+        status: 'PENDING',
+        deliveryStatus: 'DELIVERED',
+      });
+      expect(resent.body.data).not.toHaveProperty('rawToken');
+      expect(
+        await prisma.staffInvitation.count({
+          where: { organizationId: org.organization.id },
+        }),
+      ).toBe(initialCount);
+      const stored = await prisma.staffInvitation.findUniqueOrThrow({
+        where: { id: invitationId },
+      });
+      expect(stored.deliveryAttemptCount).toBe(2);
+      expect(stored.deliveryStatus).toBe('DELIVERED');
+    });
+
+    it('denies resend for revoked, accepted, and cross-organization invitations', async () => {
+      const owner = await registerAndLogin(testApp);
+      const invitee = await registerAndLogin(testApp);
+      const outsider = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId, invitee.userId, outsider.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      const outsiderOrg = await onboardOrganization(testApp, outsider.accessToken);
+      createdOrganizationIds.push(org.organization.id, outsiderOrg.organization.id);
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const cashierRole = roles.find((r) => r.code === 'cashier')!;
+
+      const revoked = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: `${unique()}@example.test`, roleId: cashierRole.id })
+        .expect(201);
+      await authed(testApp, owner.accessToken)
+        .post(
+          `/v1/organizations/${org.organization.id}/staff-invitations/${revoked.body.data.invitation.id}/revoke`,
+        )
+        .expect(204);
+      await authed(testApp, owner.accessToken)
+        .post(
+          `/v1/organizations/${org.organization.id}/staff-invitations/${revoked.body.data.invitation.id}/resend`,
+        )
+        .expect(409);
+
+      const accepted = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: invitee.email, roleId: cashierRole.id })
+        .expect(201);
+      await authed(testApp, invitee.accessToken)
+        .post(`/v1/staff-invitations/${accepted.body.data.rawToken}/accept`)
+        .expect(201);
+      await authed(testApp, owner.accessToken)
+        .post(
+          `/v1/organizations/${org.organization.id}/staff-invitations/${accepted.body.data.invitation.id}/resend`,
+        )
+        .expect(409);
+
+      const crossOrganization = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: `${unique()}@example.test`, roleId: cashierRole.id })
+        .expect(201);
+      await authed(testApp, outsider.accessToken)
+        .post(
+          `/v1/organizations/${org.organization.id}/staff-invitations/${crossOrganization.body.data.invitation.id}/resend`,
+        )
+        .expect(403);
+    });
+
+    it('does not count expired pending invitations against staff capacity', async () => {
+      const owner = await registerAndLogin(testApp);
+      createdUserIds.push(owner.userId);
+      const org = await onboardOrganization(testApp, owner.accessToken);
+      createdOrganizationIds.push(org.organization.id);
+
+      const limitedPlanId = await createLimitedPlan(2);
+      await prisma.organizationSubscription.update({
+        where: { organizationId: org.organization.id },
+        data: { planId: limitedPlanId },
+      });
+      const roles = await prisma.role.findMany({ where: { organizationId: null } });
+      const cashierRole = roles.find((r) => r.code === 'cashier')!;
+
+      const expired = await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: `${unique()}@example.test`, roleId: cashierRole.id })
+        .expect(201);
+      await prisma.staffInvitation.update({
+        where: { id: expired.body.data.invitation.id },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+
+      await authed(testApp, owner.accessToken)
+        .post(`/v1/organizations/${org.organization.id}/staff-invitations`)
+        .send({ email: `${unique()}@example.test`, roleId: cashierRole.id })
+        .expect(201);
+    });
+
     async function createLimitedPlan(staffMax: number): Promise<string> {
       const staffMaxEntitlement = await prisma.entitlementDefinition.findUniqueOrThrow({
         where: { code: 'staff.max' },

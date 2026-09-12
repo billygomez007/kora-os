@@ -45,4 +45,28 @@ describe('StaffInvitationEmailService with Resend', () => {
 
     await expect(service.send(params)).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
+
+  it('preserves a retryable 429 classification for the invitation workflow', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('{}', {
+          status: 429,
+          headers: {
+            'x-resend-request-id': 'req_invite_rate_1',
+            'retry-after': '12',
+          },
+        }),
+      ),
+    );
+    const service = new StaffInvitationEmailService(config());
+
+    await expect(
+      service.send({ ...params, invitationId: 'invitation-1', attemptNumber: 1 }),
+    ).rejects.toMatchObject({
+      deliveryCode: 'RATE_LIMITED',
+      retryable: true,
+      retryAfterSeconds: 12,
+    });
+  });
 });

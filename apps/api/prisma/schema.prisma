@@ -146,6 +146,14 @@ enum StaffInvitationStatus {
   @@map("staff_invitation_status")
 }
 
+enum StaffInvitationDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+
+  @@map("staff_invitation_delivery_status")
+}
+
 /// Shared lifecycle status for plans and plan prices.
 enum PlanLifecycleStatus {
   DRAFT
@@ -909,18 +917,26 @@ model StaffProfile {
 /// one for the same reason as MembershipRole.role above: it must also
 /// accept system role templates, whose `organizationId` is null.
 model StaffInvitation {
-  id                    String                @id @default(uuid()) @db.Uuid
-  organizationId        String                @map("organization_id") @db.Uuid
-  emailNormalized       String?               @map("email_normalized")
-  phoneE164             String?               @map("phone_e164")
-  tokenHash             String                @unique @map("token_hash")
-  invitedByMembershipId String                @map("invited_by_membership_id") @db.Uuid
-  roleId                String                @map("role_id") @db.Uuid
-  branchId              String?               @map("branch_id") @db.Uuid
-  status                StaffInvitationStatus @default(PENDING)
-  expiresAt             DateTime              @map("expires_at") @db.Timestamptz(6)
-  acceptedAt            DateTime?             @map("accepted_at") @db.Timestamptz(6)
-  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                    String                        @id @default(uuid()) @db.Uuid
+  organizationId        String                        @map("organization_id") @db.Uuid
+  emailNormalized       String?                       @map("email_normalized")
+  phoneE164             String?                       @map("phone_e164")
+  tokenHash             String                        @unique @map("token_hash")
+  invitedByMembershipId String                        @map("invited_by_membership_id") @db.Uuid
+  roleId                String                        @map("role_id") @db.Uuid
+  branchId              String?                       @map("branch_id") @db.Uuid
+  status                StaffInvitationStatus         @default(PENDING)
+  expiresAt             DateTime                      @map("expires_at") @db.Timestamptz(6)
+  acceptedAt            DateTime?                     @map("accepted_at") @db.Timestamptz(6)
+  deliveryStatus        StaffInvitationDeliveryStatus @default(PENDING) @map("delivery_status")
+  deliveryAttemptCount  Int                           @default(0) @map("delivery_attempt_count")
+  lastDeliveryAttemptAt DateTime?                     @map("last_delivery_attempt_at") @db.Timestamptz(6)
+  nextDeliveryAttemptAt DateTime?                     @map("next_delivery_attempt_at") @db.Timestamptz(6)
+  deliveredAt           DateTime?                     @map("delivered_at") @db.Timestamptz(6)
+  providerMessageId     String?                       @map("provider_message_id")
+  lastDeliveryErrorCode String?                       @map("last_delivery_error_code")
+  deliveryRetryable     Boolean                       @default(true) @map("delivery_retryable")
+  createdAt             DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   invitedBy    OrganizationMembership @relation("StaffInvitationInvitedBy", fields: [organizationId, invitedByMembershipId], references: [organizationId, id], onDelete: Restrict)

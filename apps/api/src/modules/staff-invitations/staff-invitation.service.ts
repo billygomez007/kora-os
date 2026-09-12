@@ -3,6 +3,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -21,7 +23,10 @@ import type {
 } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { EntitlementsService } from '../subscriptions/entitlements.service.js';
-import { StaffInvitationEmailService } from './staff-invitation-email.service.js';
+import {
+  StaffInvitationDeliveryError,
+  StaffInvitationEmailService,
+} from './staff-invitation-email.service.js';
 
 type InvitationWithDetails = StaffInvitation & {
   organization: Organization;
@@ -34,6 +39,8 @@ type TransactionClient = Prisma.TransactionClient;
 const INVITATION_TTL_DAYS = 7;
 const OWNER_ROLE_CODE = 'owner';
 const STAFF_MAX_ENTITLEMENT_CODE = 'staff.max';
+const INVITATION_RESEND_BASE_COOLDOWN_SECONDS = 60;
+const INVITATION_RESEND_MAX_COOLDOWN_SECONDS = 15 * 60;
 
 export interface CreateInvitationInput {
   organizationId: string;
@@ -47,6 +54,14 @@ export interface CreateInvitationInput {
 }
 
 export interface RevokeInvitationInput {
+  organizationId: string;
+  invitationId: string;
+  actorMembershipId: string;
+  actorUserId: string;
+  requestId: string;
+}
+
+export interface ResendInvitationInput {
   organizationId: string;
   invitationId: string;
   actorMembershipId: string;
@@ -144,6 +159,7 @@ export class StaffInvitationService {
     });
 
     if (emailNormalized) {
+      const attempt = await this.beginDeliveryAttempt(invitation.id);
       const [organization, branch] = await Promise.all([
         this.prisma.organization.findUniqueOrThrow({
           where: { id: input.organizationId },
@@ -157,20 +173,227 @@ export class StaffInvitationService {
           : Promise.resolve(null),
       ]);
 
-      await this.invitationEmailService.send({
-        email: emailNormalized,
-        organizationName: organization.name,
-        roleName: role.name,
-        branchName: branch?.name ?? null,
-        rawToken,
-        expiresAt: invitation.expiresAt,
-      });
+      try {
+        const result = await this.invitationEmailService.send({
+          invitationId: invitation.id,
+          attemptNumber: attempt.deliveryAttemptCount,
+          email: emailNormalized,
+          organizationName: organization.name,
+          roleName: role.name,
+          branchName: branch?.name ?? null,
+          rawToken,
+          expiresAt: invitation.expiresAt,
+        });
+        await this.markDeliveryDelivered(invitation.id, result.providerMessageId);
+      } catch (error) {
+        await this.markDeliveryFailed(invitation.id, error);
+        throw error;
+      }
     }
 
     return {
       invitation: { id: invitation.id, expiresAt: invitation.expiresAt, status: invitation.status },
       rawToken,
     };
+  }
+
+  async resend(input: ResendInvitationInput): Promise<{
+    invitation: {
+      id: string;
+      expiresAt: Date;
+      status: StaffInvitationStatus;
+      deliveryStatus: string;
+    };
+  }> {
+    const prepared = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM staff_invitations WHERE id = ${input.invitationId}::uuid FOR UPDATE`;
+      const invitation = await tx.staffInvitation.findFirst({
+        where: { id: input.invitationId, organizationId: input.organizationId },
+        include: { organization: true, role: true, branch: true },
+      });
+      if (!invitation) {
+        throw new NotFoundException('Invitation not found');
+      }
+      if (invitation.status !== StaffInvitationStatus.PENDING) {
+        throw new ConflictException('Only pending invitations can be resent');
+      }
+      if (!invitation.emailNormalized) {
+        throw new ConflictException('Only email invitations can be resent');
+      }
+
+      const now = new Date();
+      if (invitation.expiresAt.getTime() <= now.getTime()) {
+        await tx.staffInvitation.update({
+          where: { id: invitation.id },
+          data: { status: StaffInvitationStatus.EXPIRED },
+        });
+        throw new ConflictException('Expired invitations cannot be resent');
+      }
+      if (
+        invitation.deliveryStatus === 'FAILED' &&
+        !invitation.deliveryRetryable
+      ) {
+        throw new ConflictException(
+          'This invitation cannot be resent because the provider rejected delivery permanently',
+        );
+      }
+
+      const cooldownUntil = getInvitationCooldownUntil(invitation);
+      if (cooldownUntil && cooldownUntil.getTime() > now.getTime()) {
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((cooldownUntil.getTime() - now.getTime()) / 1000),
+        );
+        throw new HttpException({
+          code: 'INVITATION_RESEND_COOLDOWN',
+          message: `Please wait ${retryAfterSeconds} seconds before resending this invitation.`,
+          retryAfterSeconds,
+        }, HttpStatus.TOO_MANY_REQUESTS);
+      }
+
+      const rawToken = randomBytes(32).toString('base64url');
+      const attemptNumber = invitation.deliveryAttemptCount + 1;
+      const updated = await tx.staffInvitation.update({
+        where: { id: invitation.id },
+        data: {
+          tokenHash: hashToken(rawToken),
+          deliveryStatus: 'PENDING',
+          deliveryAttemptCount: { increment: 1 },
+          lastDeliveryAttemptAt: now,
+          nextDeliveryAttemptAt: new Date(
+            now.getTime() + computeCooldownSeconds(attemptNumber) * 1000,
+          ),
+          deliveredAt: null,
+          providerMessageId: null,
+          lastDeliveryErrorCode: null,
+          deliveryRetryable: true,
+        },
+      });
+
+      return {
+        invitation: updated,
+        rawToken,
+        attemptNumber,
+        organizationName: invitation.organization.name,
+        roleName: invitation.role.name,
+        branchName: invitation.branch?.name ?? null,
+        email: invitation.emailNormalized,
+      };
+    });
+
+    await this.auditService.record({
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      actorMembershipId: input.actorMembershipId,
+      action: 'staff_invitation.delivery_resent',
+      entityType: 'staff_invitation',
+      entityId: input.invitationId,
+      requestId: input.requestId,
+      source: 'staff_invitations',
+    });
+
+    try {
+      const result = await this.invitationEmailService.send({
+        invitationId: prepared.invitation.id,
+        attemptNumber: prepared.attemptNumber,
+        email: prepared.email,
+        organizationName: prepared.organizationName,
+        roleName: prepared.roleName,
+        branchName: prepared.branchName,
+        rawToken: prepared.rawToken,
+        expiresAt: prepared.invitation.expiresAt,
+      });
+      const updated = await this.markDeliveryDelivered(
+        prepared.invitation.id,
+        result.providerMessageId,
+      );
+      return {
+        invitation: {
+          id: updated.id,
+          expiresAt: updated.expiresAt,
+          status: updated.status,
+          deliveryStatus: updated.deliveryStatus,
+        },
+      };
+    } catch (error) {
+      await this.markDeliveryFailed(prepared.invitation.id, error);
+      throw error;
+    }
+  }
+
+  private async beginDeliveryAttempt(invitationId: string) {
+    const invitation = await this.prisma.staffInvitation.findUniqueOrThrow({
+      where: { id: invitationId },
+      select: { deliveryAttemptCount: true },
+    });
+    const now = new Date();
+    const attemptNumber = invitation.deliveryAttemptCount + 1;
+    return this.prisma.staffInvitation.update({
+      where: { id: invitationId },
+      data: {
+        deliveryStatus: 'PENDING',
+        deliveryAttemptCount: { increment: 1 },
+        lastDeliveryAttemptAt: now,
+        nextDeliveryAttemptAt: new Date(
+          now.getTime() + computeCooldownSeconds(attemptNumber) * 1000,
+        ),
+        deliveredAt: null,
+        providerMessageId: null,
+        lastDeliveryErrorCode: null,
+        deliveryRetryable: true,
+      },
+      select: { deliveryAttemptCount: true },
+    });
+  }
+
+  private async markDeliveryDelivered(invitationId: string, providerMessageId?: string) {
+    return this.prisma.staffInvitation.update({
+      where: { id: invitationId },
+      data: {
+        deliveryStatus: 'DELIVERED',
+        deliveredAt: new Date(),
+        providerMessageId: providerMessageId ?? null,
+        lastDeliveryErrorCode: null,
+        deliveryRetryable: false,
+      },
+      select: {
+        id: true,
+        expiresAt: true,
+        status: true,
+        deliveryStatus: true,
+      },
+    });
+  }
+
+  private async markDeliveryFailed(invitationId: string, error: unknown): Promise<void> {
+    const invitation = await this.prisma.staffInvitation.findUniqueOrThrow({
+      where: { id: invitationId },
+      select: { deliveryAttemptCount: true },
+    });
+    const deliveryError =
+      error instanceof StaffInvitationDeliveryError ? error : null;
+    const retryable = deliveryError?.retryable ?? true;
+    const retryAfterSeconds = deliveryError?.retryAfterSeconds ?? null;
+    const nextDeliveryAttemptAt = retryable
+      ? new Date(
+          Date.now() +
+            Math.max(
+              computeCooldownSeconds(invitation.deliveryAttemptCount),
+              retryAfterSeconds ?? 0,
+            ) *
+              1000,
+        )
+      : null;
+
+    await this.prisma.staffInvitation.update({
+      where: { id: invitationId },
+      data: {
+        deliveryStatus: 'FAILED',
+        nextDeliveryAttemptAt,
+        lastDeliveryErrorCode: deliveryError?.deliveryCode ?? 'DELIVERY_FAILED',
+        deliveryRetryable: retryable,
+      },
+    });
   }
 
   /**
@@ -196,6 +419,7 @@ export class StaffInvitationService {
   /** Owner/manager-facing invitation list — every status, newest first.
    * Never exposes the token hash. */
   async list(organizationId: string, status?: StaffInvitationStatus) {
+    const now = new Date();
     const invitations = await this.prisma.staffInvitation.findMany({
       where: { organizationId, ...(status ? { status } : {}) },
       include: { role: true, branch: true },
@@ -212,7 +436,14 @@ export class StaffInvitationService {
       branchId: invitation.branchId,
       branchName: invitation.branch?.name ?? null,
       status: invitation.status,
+      deliveryStatus: invitation.deliveryStatus,
+      deliveryAttemptCount: invitation.deliveryAttemptCount,
+      deliveryRetryable: invitation.deliveryRetryable,
+      lastDeliveryAttemptAt: invitation.lastDeliveryAttemptAt,
+      nextDeliveryAttemptAt: invitation.nextDeliveryAttemptAt,
+      deliveredAt: invitation.deliveredAt,
       expiresAt: invitation.expiresAt,
+      isExpired: invitation.expiresAt.getTime() <= now.getTime(),
       createdAt: invitation.createdAt,
     }));
   }
@@ -223,10 +454,11 @@ export class StaffInvitationService {
 
   /**
    * Counts every ACTIVE membership (staff already occupying a seat) plus
-   * every still-PENDING invitation (a seat already promised) against the
-   * plan's `staff.max` entitlement — both counted inside the same locked
-   * transaction so a concurrent second invitation cannot slip past the
-   * same limit before the first commits.
+   * every valid, still-actionable PENDING invitation (a seat already
+   * promised) against the plan's `staff.max` entitlement — both counted
+   * inside the same locked transaction so a concurrent second invitation
+   * cannot slip past the same limit before the first commits. Expired and
+   * permanently failed invitations are deliberately excluded.
    */
   private async assertWithinStaffLimit(tx: TransactionClient, organizationId: string): Promise<void> {
     const entitlements = await this.entitlementsService.resolveForOrganization(organizationId, tx);
@@ -240,7 +472,16 @@ export class StaffInvitationService {
         where: { organizationId, status: MembershipStatus.ACTIVE },
       }),
       tx.staffInvitation.count({
-        where: { organizationId, status: StaffInvitationStatus.PENDING },
+        where: {
+          organizationId,
+          status: StaffInvitationStatus.PENDING,
+          expiresAt: { gt: new Date() },
+          OR: [
+            { deliveryStatus: 'PENDING' },
+            { deliveryStatus: 'DELIVERED' },
+            { deliveryStatus: 'FAILED', deliveryRetryable: true },
+          ],
+        },
       }),
     ]);
 
@@ -499,4 +740,28 @@ export class StaffInvitationService {
 
 function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
+}
+
+function computeCooldownSeconds(attemptNumber: number): number {
+  const exponent = Math.max(0, attemptNumber - 1);
+  return Math.min(
+    INVITATION_RESEND_MAX_COOLDOWN_SECONDS,
+    INVITATION_RESEND_BASE_COOLDOWN_SECONDS * 2 ** exponent,
+  );
+}
+
+function getInvitationCooldownUntil(invitation: {
+  deliveryAttemptCount: number;
+  lastDeliveryAttemptAt: Date | null;
+  nextDeliveryAttemptAt: Date | null;
+}): Date | null {
+  if (!invitation.lastDeliveryAttemptAt) return null;
+  const computed = new Date(
+    invitation.lastDeliveryAttemptAt.getTime() +
+      computeCooldownSeconds(invitation.deliveryAttemptCount) * 1000,
+  );
+  if (!invitation.nextDeliveryAttemptAt) return computed;
+  return invitation.nextDeliveryAttemptAt.getTime() > computed.getTime()
+    ? invitation.nextDeliveryAttemptAt
+    : computed;
 }

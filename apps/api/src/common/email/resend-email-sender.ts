@@ -1,12 +1,18 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { EmailMessage, EmailSender } from './email-sender.js';
+import type { EmailMessage, EmailSendResult, EmailSender } from './email-sender.js';
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 const RESEND_TIMEOUT_MS = 10_000;
 
 export class ResendEmailDeliveryError extends Error {
-  constructor() {
+  constructor(
+    readonly code: 'RATE_LIMITED' | 'PROVIDER_REJECTED' | 'NETWORK_ERROR' | 'TIMEOUT',
+    readonly status: number | null = null,
+    readonly requestId: string | null = null,
+    readonly retryAfterSeconds: number | null = null,
+    readonly retryable: boolean = false,
+  ) {
     super('Resend email delivery failed');
     this.name = 'ResendEmailDeliveryError';
   }
@@ -21,7 +27,7 @@ export class ResendEmailSender implements EmailSender {
     this.apiKey = config.getOrThrow<string>('RESEND_API_KEY');
   }
 
-  async send(message: EmailMessage): Promise<void> {
+  async send(message: EmailMessage): Promise<EmailSendResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), RESEND_TIMEOUT_MS);
 
@@ -37,11 +43,24 @@ export class ResendEmailSender implements EmailSender {
       });
 
       if (!response.ok) {
-        throw new ResendHttpError(response.status, response.headers.get('x-resend-request-id'));
+        throw new ResendHttpError(
+          response.status,
+          response.headers.get('x-resend-request-id'),
+          parseRetryAfter(response.headers.get('retry-after')),
+        );
       }
+
+      const body = await response.json().catch(() => null) as { id?: unknown } | null;
+      return {
+        providerMessageId:
+          typeof body?.id === 'string' && /^[A-Za-z0-9_.-]{1,120}$/.test(body.id)
+            ? body.id
+            : undefined,
+      };
     } catch (error) {
-      this.logger.error(`Resend email delivery failed (${resendFailureMetadata(error)})`);
-      throw new ResendEmailDeliveryError();
+      const failure = classifyResendFailure(error);
+      this.logger.error(`Resend email delivery failed (${resendFailureMetadata(failure)})`);
+      throw failure;
     } finally {
       clearTimeout(timeout);
     }
@@ -52,26 +71,46 @@ class ResendHttpError extends Error {
   constructor(
     readonly status: number,
     readonly requestId: string | null,
+    readonly retryAfterSeconds: number | null,
   ) {
     super('Resend request failed');
     this.name = 'ResendHttpError';
   }
 }
 
-function resendFailureMetadata(error: unknown): string {
+function classifyResendFailure(error: unknown): ResendEmailDeliveryError {
   if (error instanceof ResendHttpError) {
-    const requestId = safeToken(error.requestId);
-    return `provider=resend status=${error.status} requestId=${requestId}`;
+    const retryable = error.status === 429 || error.status >= 500;
+    return new ResendEmailDeliveryError(
+      error.status === 429 ? 'RATE_LIMITED' : 'PROVIDER_REJECTED',
+      error.status,
+      error.requestId,
+      error.retryAfterSeconds,
+      retryable,
+    );
   }
   if (error instanceof DOMException && error.name === 'AbortError') {
-    return 'provider=resend status=timeout error=AbortError';
+    return new ResendEmailDeliveryError('TIMEOUT', null, null, null, true);
   }
-  const name = error instanceof Error ? safeToken(error.name) : 'unknown';
-  return `provider=resend status=none error=${name}`;
+  return new ResendEmailDeliveryError('NETWORK_ERROR', null, null, null, true);
+}
+
+function resendFailureMetadata(error: ResendEmailDeliveryError): string {
+  if (error.code === 'RATE_LIMITED' || error.code === 'PROVIDER_REJECTED') {
+    return `provider=resend status=${error.status ?? 'none'} requestId=${safeToken(error.requestId)} code=${error.code}`;
+  }
+  return `provider=resend status=none error=${error.code}`;
 }
 
 function safeToken(value: string | null): string {
   if (!value) return 'none';
   const normalized = value.trim();
   return /^[A-Za-z0-9_.-]{1,80}$/.test(normalized) ? normalized : 'redacted';
+}
+
+function parseRetryAfter(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value.trim());
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.min(Math.ceil(seconds), 86_400);
 }

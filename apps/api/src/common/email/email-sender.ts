@@ -7,6 +7,10 @@ export interface EmailMessage {
   html: string;
 }
 
+export interface EmailSendResult {
+  providerMessageId?: string;
+}
+
 export interface EmailSender {
-  send(message: EmailMessage): Promise<void>;
+  send(message: EmailMessage): Promise<EmailSendResult | void>;
 }

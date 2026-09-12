@@ -22,7 +22,7 @@ describe('ResendEmailSender', () => {
     vi.stubGlobal('fetch', fetchMock);
     const sender = new ResendEmailSender(config());
 
-    await sender.send({
+    const result = await sender.send({
       from: 'Kora OS <login@koraafric.com>',
       to: 'person@example.test',
       subject: 'Sign-in code',
@@ -44,6 +44,66 @@ describe('ResendEmailSender', () => {
     expect(JSON.parse(String(request.body))).toMatchObject({
       from: 'Kora OS <login@koraafric.com>',
       to: 'person@example.test',
+    });
+    expect(result).toEqual({ providerMessageId: 'email-id' });
+  });
+
+  it('classifies Resend rate limits as retryable and respects Retry-After', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('{}', {
+          status: 429,
+          headers: {
+            'x-resend-request-id': 'req_rate_1',
+            'retry-after': '17',
+          },
+        }),
+      ),
+    );
+    const sender = new ResendEmailSender(config());
+
+    await expect(
+      sender.send({
+        from: 'Kora OS <login@koraafric.com>',
+        to: 'person@example.test',
+        subject: 'Invitation',
+        text: 'Invitation',
+        html: '<p>Invitation</p>',
+      }),
+    ).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      status: 429,
+      requestId: 'req_rate_1',
+      retryAfterSeconds: 17,
+      retryable: true,
+    });
+  });
+
+  it('classifies permanent provider rejection as non-retryable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('{}', {
+          status: 422,
+          headers: { 'x-resend-request-id': 'req_invalid_1' },
+        }),
+      ),
+    );
+    const sender = new ResendEmailSender(config());
+
+    await expect(
+      sender.send({
+        from: 'Kora OS <login@koraafric.com>',
+        to: 'person@example.test',
+        subject: 'Invitation',
+        text: 'Invitation',
+        html: '<p>Invitation</p>',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_REJECTED',
+      status: 422,
+      retryable: false,
     });
   });
 

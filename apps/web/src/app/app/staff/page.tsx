@@ -40,6 +40,13 @@ interface StaffInvitation {
   branchId: string | null;
   branchName: string | null;
   status: string;
+  deliveryStatus: string;
+  deliveryAttemptCount: number;
+  deliveryRetryable: boolean;
+  lastDeliveryAttemptAt: string | null;
+  nextDeliveryAttemptAt: string | null;
+  deliveredAt: string | null;
+  isExpired: boolean;
   expiresAt: string;
   createdAt: string;
 }
@@ -139,6 +146,24 @@ function invitationStatusClass(status: string) {
   }
 
   return "staff-invite-status";
+}
+
+function invitationDeliveryStatusClass(status: string) {
+  if (status === "DELIVERED") {
+    return "staff-invite-delivery delivered";
+  }
+
+  if (status === "FAILED") {
+    return "staff-invite-delivery failed";
+  }
+
+  return "staff-invite-delivery pending";
+}
+
+function invitationDeliveryLabel(status: string) {
+  if (status === "DELIVERED") return "EMAIL SENT";
+  if (status === "FAILED") return "DELIVERY DELAYED";
+  return "SENDING";
 }
 
 function formatDate(value: string) {
@@ -350,7 +375,8 @@ export default function StaffPage() {
     () =>
       invitations.filter(
         (invitation) =>
-          invitation.status === "PENDING",
+          invitation.status === "PENDING" &&
+          !invitation.isExpired,
       ),
     [invitations],
   );
@@ -663,6 +689,37 @@ export default function StaffPage() {
     }
   }
 
+  async function resendInvitation(invitationId: string) {
+    if (!canInviteStaff) {
+      setError("You do not have permission to resend invitations.");
+      return;
+    }
+
+    setWorking(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const workspace = await resolveActiveWorkspace();
+
+      await koraApi(
+        `/organizations/${workspace.organizationId}/staff-invitations/${invitationId}/resend`,
+        { method: "POST" },
+      );
+
+      setNotice("Invitation delivery retry started.");
+      await load();
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to resend this invitation.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
+
   return (
     <WorkspaceShell
       title="Staff"
@@ -943,20 +1000,52 @@ export default function StaffPage() {
                     {invitation.status}
                   </span>
 
+                  <span
+                    className={invitationDeliveryStatusClass(
+                      invitation.deliveryStatus,
+                    )}
+                    title={
+                      invitation.deliveryAttemptCount > 0
+                        ? `${invitation.deliveryAttemptCount} delivery attempt${invitation.deliveryAttemptCount === 1 ? "" : "s"}`
+                        : undefined
+                    }
+                  >
+                    {invitationDeliveryLabel(
+                      invitation.deliveryStatus,
+                    )}
+                  </span>
+
                   {invitation.status === "PENDING" &&
                   canInviteStaff ? (
-                    <button
-                      type="button"
-                      className="staff-revoke-button"
-                      disabled={working}
-                      onClick={() =>
-                        void revokeInvitation(
-                          invitation.id,
-                        )
-                      }
-                    >
-                      Revoke
-                    </button>
+                    <div className="staff-invite-actions">
+                      {invitation.deliveryRetryable && (
+                        <button
+                          type="button"
+                          className="staff-resend-button"
+                          disabled={working}
+                          onClick={() =>
+                            void resendInvitation(
+                              invitation.id,
+                            )
+                          }
+                        >
+                          Resend
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="staff-revoke-button"
+                        disabled={working}
+                        onClick={() =>
+                          void revokeInvitation(
+                            invitation.id,
+                          )
+                        }
+                      >
+                        Revoke
+                      </button>
+                    </div>
                   ) : (
                     <span />
                   )}

@@ -359,6 +359,65 @@ describe('EmailOtpService — cross-instance OTP_PEPPER consistency', () => {
     expect(logs.join('\n')).not.toContain(wrongCode);
     loggerWarn.mockRestore();
   });
+
+  it('logs matching request-time and verify-time row fingerprints for a stable challenge, and a matching digest comparison', async () => {
+    const pepper = 'a'.repeat(32);
+    const loggerWarn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    const requester = buildServiceWithPepper(pepper, { diagnostics: true });
+    await requester.service.requestChallenge({ email: 'user@example.test', requestId: 'req-a' });
+    const created = requester.prismaStub.emailOtpChallenge.create.mock.calls[0][0].data;
+    const deliveredCode = requester.sender.send.mock.calls[0][0].code as string;
+    const storedChallenge = {
+      id: created.id,
+      emailNormalized: created.emailNormalized,
+      codeDigest: created.codeDigest,
+      status: OtpChallengeStatus.ACTIVE,
+      expiresAt: created.expiresAt,
+      attemptCount: 0,
+      maxAttempts: created.maxAttempts,
+    };
+
+    const verifier = buildServiceWithPepper(pepper, { diagnostics: true });
+    verifier.prismaStub.emailOtpChallenge.findUnique.mockResolvedValue(storedChallenge);
+    verifier.prismaStub.emailOtpChallenge.updateMany.mockResolvedValue({ count: 1 });
+
+    await verifier.service.verifyChallenge({
+      challengeId: storedChallenge.id,
+      code: deliveredCode,
+      requestId: 'req-b',
+    });
+
+    const logs = loggerWarn.mock.calls.flat().map(String);
+    const requestFingerprintLine = logs.find(
+      (line) => line.includes('event=challenge_row_fingerprint') && line.includes('phase=request'),
+    );
+    const verifyFingerprintLine = logs.find(
+      (line) => line.includes('event=challenge_row_fingerprint') && line.includes('phase=verify'),
+    );
+    expect(requestFingerprintLine).toBeDefined();
+    expect(verifyFingerprintLine).toBeDefined();
+
+    const extractField = (line: string, field: string) =>
+      line.match(new RegExp(`${field}=(\\S+)`))?.[1];
+    expect(extractField(verifyFingerprintLine!, 'digestFingerprint')).toBe(
+      extractField(requestFingerprintLine!, 'digestFingerprint'),
+    );
+    expect(extractField(verifyFingerprintLine!, 'emailFingerprint')).toBe(
+      extractField(requestFingerprintLine!, 'emailFingerprint'),
+    );
+
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/event=verify_digest_comparison .*match=yes/),
+        expect.stringMatching(
+          /event=generated_code_shape .*generatedCodeLength=6 generatedCodeByteLength=6 generatedCodeAsciiDigits=yes/,
+        ),
+      ]),
+    );
+
+    loggerWarn.mockRestore();
+  });
 });
 
 describe('EmailOtpService — delivery failure', () => {

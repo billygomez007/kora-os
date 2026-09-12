@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { normalizeEmail } from '../src/common/identity/normalize-email.js';
@@ -9,6 +9,7 @@ import { validateEnvironment } from '../src/config/environment.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { OtpChallengeStatus } from '../src/generated/prisma/client.js';
+import { computeOtpDigest } from '../src/modules/auth/email-otp/otp-code.util.js';
 import {
   authed,
   bypassOtpResendCooldown,
@@ -303,6 +304,61 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .post('/v1/auth/email-otp/verify')
         .send({ challengeId, code: realCode })
         .expect(401);
+    });
+
+    /**
+     * Production digest-mismatch investigation: rules out the database
+     * row itself changing between creation and verification. Reads
+     * codeDigest/emailNormalized fresh from real Postgres immediately
+     * after creation, again after a failed-attempt update (the exact
+     * `attemptCount: { increment: 1 } }`-only write recordFailedAttempt
+     * performs), and independently recomputes the expected digest from
+     * that second fresh read using the app's own configured OTP_PEPPER —
+     * proving the persisted row is stable and that a correct code read
+     * back off it still verifies successfully.
+     */
+    it('keeps codeDigest and emailNormalized byte-identical across a fresh read after creation and after a failed-attempt update', async () => {
+      const email = uniqueEmail();
+      const requestResponse = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const challengeId = requestResponse.body.data.challengeId;
+      const realCode = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+
+      const afterCreate = await prisma.emailOtpChallenge.findUniqueOrThrow({
+        where: { id: challengeId },
+      });
+      expect(afterCreate.attemptCount).toBe(0);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId, code: '000000' })
+        .expect(401);
+
+      const afterFailedAttempt = await prisma.emailOtpChallenge.findUniqueOrThrow({
+        where: { id: challengeId },
+      });
+      expect(afterFailedAttempt.attemptCount).toBe(1);
+      expect(afterFailedAttempt.codeDigest).toBe(afterCreate.codeDigest);
+      expect(afterFailedAttempt.emailNormalized).toBe(afterCreate.emailNormalized);
+
+      const pepper = testApp.app.get(ConfigService).getOrThrow<string>('OTP_PEPPER');
+      const recomputedFromFreshRead = computeOtpDigest({
+        pepper,
+        challengeId: afterFailedAttempt.id,
+        emailNormalized: afterFailedAttempt.emailNormalized,
+        code: realCode,
+      });
+      expect(recomputedFromFreshRead).toBe(afterFailedAttempt.codeDigest);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId, code: realCode })
+        .expect(200);
+      await trackUser(email);
     });
 
     it('rejects an expired code', async () => {

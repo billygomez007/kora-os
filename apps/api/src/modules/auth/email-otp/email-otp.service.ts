@@ -149,6 +149,26 @@ export class EmailOtpService {
       generatedCodeLength: code.length,
     });
 
+    // Fingerprints exactly what `create()` above returned — Postgres's
+    // own response to the insert, via its implicit RETURNING clause, not
+    // a value this class assembled itself — establishing the request-time
+    // baseline (checkpoint A) to compare against the same fingerprint
+    // taken at verify time (checkpoint B, in verifyChallenge).
+    this.logSimpleDiagnostic('challenge_row_fingerprint', {
+      phase: 'request',
+      challengeId,
+      digestFingerprint: fingerprint(createdChallenge.codeDigest),
+      emailFingerprint: fingerprint(createdChallenge.emailNormalized),
+      codeDigestLength: createdChallenge.codeDigest.length,
+      emailNormalizedLength: createdChallenge.emailNormalized.length,
+    });
+    this.logSimpleDiagnostic('generated_code_shape', {
+      challengeId,
+      generatedCodeLength: code.length,
+      generatedCodeByteLength: Buffer.byteLength(code, 'utf8'),
+      generatedCodeAsciiDigits: /^[0-9]+$/.test(code),
+    });
+
     this.logDiagnostic('request_persisted', {
       challengeId,
       status: OtpChallengeStatus.ACTIVE,
@@ -281,6 +301,22 @@ export class EmailOtpService {
       throw new UnauthorizedException(OTP_ERROR_BODY);
     }
 
+    // Checkpoint B: fingerprints the row exactly as verify just read it,
+    // to compare against checkpoint A (the same fingerprint logged right
+    // after this same row was created — see requestChallenge). If A != B,
+    // the persisted row itself changed between creation and this read —
+    // something no application code path should be able to do (see
+    // recordFailedAttempt and the other update/updateMany call sites,
+    // none of which ever touch codeDigest or emailNormalized).
+    this.logSimpleDiagnostic('challenge_row_fingerprint', {
+      phase: 'verify',
+      challengeId: challenge.id,
+      digestFingerprint: fingerprint(challenge.codeDigest),
+      emailFingerprint: fingerprint(challenge.emailNormalized),
+      codeDigestLength: challenge.codeDigest.length,
+      emailNormalizedLength: challenge.emailNormalized.length,
+    });
+
     const normalizedSubmittedCode = normalizeOtpCode(input.code);
     const pepper = this.config.getOrThrow<string>('OTP_PEPPER');
     const expectedDigest = computeOtpDigest({
@@ -290,6 +326,20 @@ export class EmailOtpService {
       code: normalizedSubmittedCode,
     });
     const codeIsCorrect = digestsMatch(expectedDigest, challenge.codeDigest);
+
+    // Checkpoint C: the digest verify just computed from (pepper,
+    // challenge.id, challenge.emailNormalized, submitted code), compared
+    // against checkpoint B's stored fingerprint. This is the same
+    // conclusion `hashMatched` below already reaches, derived
+    // independently through a second hash rather than the raw
+    // timing-safe comparison, specifically so a reviewer can cross-check
+    // the two without either one ever exposing the digest itself.
+    this.logSimpleDiagnostic('verify_digest_comparison', {
+      challengeId: challenge.id,
+      expectedDigestFingerprint: fingerprint(expectedDigest),
+      storedDigestFingerprint: fingerprint(challenge.codeDigest),
+      match: codeIsCorrect,
+    });
 
     if (!codeIsCorrect) {
       const failedAttempt = await this.recordFailedAttempt(challenge);
@@ -306,6 +356,8 @@ export class EmailOtpService {
       this.logSimpleDiagnostic('verify_submitted_code_shape', {
         challengeId: challenge.id,
         submittedCodeLength: normalizedSubmittedCode.length,
+        submittedCodeByteLength: Buffer.byteLength(normalizedSubmittedCode, 'utf8'),
+        submittedCodeAsciiDigits: /^[0-9]+$/.test(normalizedSubmittedCode),
       });
       await this.recordRejection(
         challenge,
@@ -557,6 +609,17 @@ function formatDiagnosticAttempts(value: number | 'unknown'): string {
 function safeDiagnosticToken(value: string): string {
   const normalized = value.trim().replace(/\s+/g, '_');
   return /^[A-Za-z0-9_.-]{1,80}$/.test(normalized) ? normalized : 'redacted';
+}
+
+/**
+ * One-way, truncated fingerprint of an already-non-plaintext stored
+ * value (a HMAC digest, a normalized email) — never of the OTP itself or
+ * of OTP_PEPPER. Used strictly to compare "is this the same value as
+ * before" across two separate log lines; the fingerprint alone cannot
+ * be reversed back to the original value.
+ */
+function fingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 12);
 }
 
 function statusToReason(status: OtpChallengeStatus): string {

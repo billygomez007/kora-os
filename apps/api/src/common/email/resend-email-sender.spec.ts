@@ -3,13 +3,35 @@ import { Logger } from '@nestjs/common';
 import { ResendEmailSender } from './resend-email-sender.js';
 
 function config(apiKey = 're_do_not_leak_this_00000000000000000000'): ConfigService {
-  return new ConfigService({ RESEND_API_KEY: apiKey });
+  return new ConfigService({ NODE_ENV: 'production', RESEND_API_KEY: apiKey });
 }
 
 describe('ResendEmailSender', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('blocks external delivery in test mode even when a provider key is present', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const sender = new ResendEmailSender(
+      new ConfigService({
+        NODE_ENV: 'test',
+        RESEND_API_KEY: 're_do_not_leak_this_00000000000000000000',
+      }),
+    );
+
+    await expect(
+      sender.send({
+        from: 'Kora OS <login@koraafric.com>',
+        to: 'person@example.test',
+        subject: 'Test email',
+        text: 'Test email',
+        html: '<p>Test email</p>',
+      }),
+    ).rejects.toThrow('External email delivery is disabled in test environment');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('posts the transactional message to the HTTPS API', async () => {

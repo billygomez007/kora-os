@@ -21,13 +21,24 @@ export class ResendEmailDeliveryError extends Error {
 /** Minimal HTTPS adapter for Resend's documented /emails endpoint. */
 export class ResendEmailSender implements EmailSender {
   private readonly logger = new Logger(ResendEmailSender.name);
+  private readonly testEnvironment: boolean;
   private readonly apiKey: string;
 
   constructor(config: ConfigService) {
-    this.apiKey = config.getOrThrow<string>('RESEND_API_KEY');
+    this.testEnvironment = config.get<string>('NODE_ENV') === 'test';
+    // Keep test construction safe even when a developer's shell exports a
+    // real key. The sender remains available in production, but test code
+    // cannot initialise a live provider transport.
+    this.apiKey = this.testEnvironment
+      ? ''
+      : config.getOrThrow<string>('RESEND_API_KEY');
   }
 
   async send(message: EmailMessage): Promise<EmailSendResult> {
+    if (this.testEnvironment) {
+      throw new Error('External email delivery is disabled in test environment');
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), RESEND_TIMEOUT_MS);
 

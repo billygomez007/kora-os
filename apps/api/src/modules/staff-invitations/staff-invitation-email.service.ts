@@ -40,8 +40,10 @@ export class StaffInvitationEmailService {
   private readonly resendSender: ResendEmailSender | null;
   private readonly fromAddress: string | null;
   private readonly webBaseUrl: string;
+  private readonly testEnvironment: boolean;
 
   constructor(private readonly config: ConfigService) {
+    this.testEnvironment = config.get<string>('NODE_ENV') === 'test';
     const mode = config.get<string>('EMAIL_DELIVERY_MODE');
 
     this.webBaseUrl = (
@@ -50,6 +52,13 @@ export class StaffInvitationEmailService {
         ? 'https://koraafric.com'
         : 'http://localhost:3001')
     ).replace(/\/+$/, '');
+
+    if (this.testEnvironment) {
+      this.transporter = null;
+      this.resendSender = null;
+      this.fromAddress = null;
+      return;
+    }
 
     if (mode !== 'smtp') {
       this.transporter = null;
@@ -80,6 +89,13 @@ export class StaffInvitationEmailService {
   }
 
   async send(params: StaffInvitationEmailParams): Promise<EmailSendResult> {
+    if (this.testEnvironment) {
+      // Test invitations are deliberately acknowledged in memory. This
+      // keeps fixture workflows useful while making external delivery
+      // impossible regardless of EMAIL_DELIVERY_MODE or provider secrets.
+      return {};
+    }
+
     if ((!this.transporter && !this.resendSender) || !this.fromAddress) {
       this.logger.error('Staff invitation email delivery is not configured');
       throw new StaffInvitationDeliveryError('NOT_CONFIGURED', true);

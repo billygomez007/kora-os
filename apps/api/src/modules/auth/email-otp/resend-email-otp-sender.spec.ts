@@ -5,6 +5,7 @@ import { EmailDeliveryUnavailableError } from './unconfigured-email-otp-sender.j
 
 function config(overrides: Record<string, unknown> = {}): ConfigService {
   return new ConfigService({
+    NODE_ENV: 'production',
     RESEND_API_KEY: 're_do_not_leak_this_00000000000000000000',
     OTP_FROM_EMAIL: 'Kora OS <login@koraafric.com>',
     ...overrides,

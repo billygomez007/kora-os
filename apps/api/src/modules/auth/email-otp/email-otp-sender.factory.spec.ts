@@ -21,9 +21,18 @@ describe('createEmailOtpSender', () => {
     const withSmtpMode = createEmailOtpSender(
       configFor({ NODE_ENV: 'test', EMAIL_DELIVERY_MODE: 'smtp', ...SMTP_CONFIG }),
     );
+    const withResendMode = createEmailOtpSender(
+      configFor({
+        NODE_ENV: 'test',
+        EMAIL_DELIVERY_MODE: 'resend',
+        RESEND_API_KEY: 're_placeholder_not_a_real_key',
+        OTP_FROM_EMAIL: 'Kora OS <login@koraafric.com>',
+      }),
+    );
 
     expect(withoutMode).toBeInstanceOf(FakeEmailOtpSender);
     expect(withSmtpMode).toBeInstanceOf(FakeEmailOtpSender);
+    expect(withResendMode).toBeInstanceOf(FakeEmailOtpSender);
   });
 
   it('fails closed in development when no delivery mode is configured', () => {

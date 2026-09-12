@@ -52,6 +52,7 @@ describe('EmailOtpService + ResendEmailOtpSender — full round trip', () => {
       authIdentity: { upsert: vi.fn().mockResolvedValue({}) },
     };
     const config = new ConfigService({
+      NODE_ENV: 'production',
       OTP_CODE_LENGTH: 6,
       OTP_EXPIRY_MINUTES: 10,
       OTP_MAX_ATTEMPTS: 5,
@@ -141,6 +142,7 @@ describe('EmailOtpService + ResendEmailOtpSender — full round trip', () => {
       authIdentity: { upsert: vi.fn().mockResolvedValue({}) },
     };
     const config = new ConfigService({
+      NODE_ENV: 'production',
       OTP_CODE_LENGTH: 6,
       OTP_EXPIRY_MINUTES: 10,
       OTP_MAX_ATTEMPTS: 5,

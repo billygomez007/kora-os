@@ -24,6 +24,23 @@ const params = {
 describe('StaffInvitationEmailService with Resend', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it('never contacts an external provider in test mode', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const service = new StaffInvitationEmailService(
+      new ConfigService({
+        NODE_ENV: 'test',
+        EMAIL_DELIVERY_MODE: 'resend',
+        RESEND_API_KEY: 're_do_not_leak_this_00000000000000000000',
+        INVITATION_FROM_EMAIL: 'Kora OS Invitations <invite@koraafric.com>',
+        KORA_WEB_URL: 'https://koraafric.com',
+      }),
+    );
+
+    await expect(service.send(params)).resolves.toEqual({});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('sends the invitation through Resend with the configured sender and URL', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

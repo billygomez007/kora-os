@@ -1,5 +1,23 @@
 import { defineConfig } from 'vitest/config';
 
+// E2E fixtures must never inherit live email configuration from a developer
+// shell or the repository .env file.
+process.env.NODE_ENV = 'test';
+for (const key of [
+  'EMAIL_DELIVERY_MODE',
+  'RESEND_API_KEY',
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_SECURE',
+  'SMTP_USER',
+  'SMTP_PASSWORD',
+  'EMAIL_FROM',
+  'OTP_FROM_EMAIL',
+  'INVITATION_FROM_EMAIL',
+]) {
+  delete process.env[key];
+}
+
 export default defineConfig({
   resolve: {
     tsconfigPaths: true,

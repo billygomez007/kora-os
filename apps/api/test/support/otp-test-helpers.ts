@@ -7,10 +7,22 @@ import { normalizeEmail } from '../../src/common/identity/normalize-email.js';
 import { PrismaService } from '../../src/database/prisma.service.js';
 import { EMAIL_OTP_SENDER } from '../../src/modules/auth/email-otp/email-otp-sender.interface.js';
 import { FakeEmailOtpSender } from '../../src/modules/auth/email-otp/fake-email-otp-sender.js';
+import type { EmailSendResult } from '../../src/common/email/email-sender.js';
+import { StaffInvitationEmailService } from '../../src/modules/staff-invitations/staff-invitation-email.service.js';
+
+class FakeStaffInvitationEmailService {
+  sendCount = 0;
+
+  async send(_params: unknown): Promise<EmailSendResult> {
+    this.sendCount += 1;
+    return {};
+  }
+}
 
 export interface TestApp {
   app: INestApplication;
   fakeEmailOtpSender: FakeEmailOtpSender;
+  fakeStaffInvitationEmailService: FakeStaffInvitationEmailService;
   prisma: PrismaService;
 }
 
@@ -48,11 +60,14 @@ export function claimTestPort(): number {
  */
 export async function createTestApp(imports: unknown[] = []): Promise<TestApp> {
   const fakeEmailOtpSender = new FakeEmailOtpSender();
+  const fakeStaffInvitationEmailService = new FakeStaffInvitationEmailService();
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule, ...(imports as never[])],
   })
     .overrideProvider(EMAIL_OTP_SENDER)
     .useValue(fakeEmailOtpSender)
+    .overrideProvider(StaffInvitationEmailService)
+    .useValue(fakeStaffInvitationEmailService)
     .compile();
 
   // forceCloseConnections is required here, not optional. Nest's Express
@@ -87,7 +102,7 @@ export async function createTestApp(imports: unknown[] = []): Promise<TestApp> {
   // each `beforeEach`) a clean slate.
   await prisma.emailOtpChallenge.deleteMany({});
 
-  return { app, fakeEmailOtpSender, prisma };
+  return { app, fakeEmailOtpSender, fakeStaffInvitationEmailService, prisma };
 }
 
 export interface SignedInUser {

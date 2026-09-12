@@ -46,13 +46,17 @@ describe('Owner/manager reports (e2e)', () => {
     return `/v1/organizations/${fixture.organizationId}/reports/${path}?${query.toString()}`;
   }
 
-  // RBAC-only report routes: gated by `reports.read`/`reports.basic`
-  // alone, with no additional plan-entitlement requirement. Kept separate
-  // from `cash-reconciliation`, which also requires the `cash.reconciliation`
-  // plan entitlement (Pro/Enterprise only — see docs/SUBSCRIPTION_
-  // ENTITLEMENTS.md and ReportsService.cashReconciliation) and so cannot
-  // be exercised on this fixture's default Starter trial plan the same way.
-  const reportRoutes = ['overview', 'revenue', 'staff-performance', 'services', 'payment-methods', 'commissions'];
+  async function setPlan(code: string): Promise<void> {
+    const plan = await testApp.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code } });
+    await testApp.prisma.organizationSubscription.update({
+      where: { organizationId: fixture.organizationId },
+      data: { planId: plan.id },
+    });
+  }
+
+  // These report routes remain available to report readers on every plan.
+  const reportRoutes = ['overview', 'revenue', 'payment-methods', 'commissions'];
+  const performanceRoutes = ['staff-performance', 'services'];
 
   it.each(reportRoutes)('%s preserves Cashier denial and Owner/Manager access', async (route) => {
     const organizations = await authed(testApp, cashier.accessToken).get('/v1/organizations').expect(200);
@@ -63,6 +67,70 @@ describe('Owner/manager reports (e2e)', () => {
     await authed(testApp, cashier.accessToken).get(url).expect(403);
     await authed(testApp, fixture.ownerAccessToken).get(url).expect(200);
     await authed(testApp, manager.accessToken).get(url).expect(200);
+  });
+
+  it.each(performanceRoutes)('%s requires reporting.performance while preserving reports.read RBAC', async (route) => {
+    const url = reportsUrl(route, { branchId: fixture.branchId });
+    const denied = await authed(testApp, fixture.ownerAccessToken).get(url).expect(403);
+    expect(denied.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
+    await authed(testApp, cashier.accessToken).get(url).expect(403);
+
+    await setPlan('business');
+    await authed(testApp, fixture.ownerAccessToken).get(url).expect(200);
+    await authed(testApp, manager.accessToken).get(url).expect(200);
+  });
+
+  it('allows reporting.performance for every approved non-Starter plan and Growth legacy plan', async () => {
+    const url = reportsUrl('services', { branchId: fixture.branchId });
+    for (const plan of ['business', 'pro', 'enterprise', 'growth']) {
+      await setPlan(plan);
+      await authed(testApp, manager.accessToken).get(url).expect(200);
+    }
+  });
+
+  it('denies the Starter trial directly at the API while basic reports remain available', async () => {
+    const performance = await authed(testApp, manager.accessToken)
+      .get(reportsUrl('staff-performance', { branchId: fixture.branchId }))
+      .expect(403);
+    expect(performance.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('overview', { branchId: fixture.branchId }))
+      .expect(200);
+  });
+
+  it('keeps membership, organization, and blocked-subscription enforcement ahead of the plan entitlement', async () => {
+    await setPlan('business');
+
+    await testApp.prisma.organizationMembership.update({
+      where: { id: manager.membershipId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('services', { branchId: fixture.branchId }))
+      .expect(403);
+
+    await testApp.prisma.organizationMembership.update({
+      where: { id: manager.membershipId },
+      data: { status: 'ACTIVE' },
+    });
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('services', { branchId: fixture.branchId }))
+      .expect(403);
+
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'ACTIVE' },
+    });
+    await testApp.prisma.organizationSubscription.delete({
+      where: { organizationId: fixture.organizationId },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('services', { branchId: fixture.branchId }))
+      .expect(403);
   });
 
   it('cash-reconciliation requires both reports.read AND the cash.reconciliation plan entitlement', async () => {
@@ -88,6 +156,7 @@ describe('Owner/manager reports (e2e)', () => {
   });
 
   it('restricts report readers to assigned branches and their organization', async () => {
+    await setPlan('business');
     const reader = await createNoPermissionActor(testApp, fixture);
     const role = await testApp.prisma.membershipRole.findFirstOrThrow({ where: { membershipId: reader.membershipId } });
     const permission = await testApp.prisma.permission.findUniqueOrThrow({ where: { code: 'reports.read' } });
@@ -98,7 +167,7 @@ describe('Owner/manager reports (e2e)', () => {
     } });
     const other = await createBookableFixture(testApp);
     await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
-    for (const route of reportRoutes) {
+    for (const route of [...reportRoutes, ...performanceRoutes]) {
       await authed(testApp, reader.accessToken).get(reportsUrl(route, { branchId: fixture.branchId })).expect(200);
       await authed(testApp, reader.accessToken).get(reportsUrl(route, { branchId: unassigned.id })).expect(403);
       await authed(testApp, reader.accessToken).get(reportsUrl(route).replace(fixture.organizationId, other.organizationId)).expect(403);
@@ -228,6 +297,7 @@ describe('Owner/manager reports (e2e)', () => {
 
   describe('staff-performance, services, payment-methods, commissions', () => {
     it('staff-performance reports revenue and commission for the assigned provider', async () => {
+      await setPlan('business');
       await authed(testApp, manager.accessToken)
         .post(`/v1/organizations/${fixture.organizationId}/commission-rules`)
         .send({ type: 'PERCENTAGE', rateBasisPoints: 1000 })
@@ -242,6 +312,7 @@ describe('Owner/manager reports (e2e)', () => {
     });
 
     it('services reports revenue per service', async () => {
+      await setPlan('business');
       await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
       const response = await authed(testApp, manager.accessToken).get(reportsUrl('services')).expect(200);
       const entry = response.body.data.find((e: { serviceId: string }) => e.serviceId === fixture.serviceId);
@@ -265,6 +336,7 @@ describe('Owner/manager reports (e2e)', () => {
     });
 
     it('supports pagination via cursor/limit', async () => {
+      await setPlan('business');
       await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
       const response = await authed(testApp, manager.accessToken).get(reportsUrl('services', { limit: '1' })).expect(200);
       expect(response.body.data.length).toBeLessThanOrEqual(1);
@@ -360,6 +432,7 @@ describe('Owner/manager reports (e2e)', () => {
     });
 
     it('staff-performance shows refundedRevenue/netRevenue and commissionRefunded/netCommission alongside the unchanged revenue/commissionAccrued fields', async () => {
+      await setPlan('business');
       await authed(testApp, manager.accessToken).post(`/v1/organizations/${fixture.organizationId}/commission-rules`).send({ type: 'PERCENTAGE', rateBasisPoints: 1000 }).expect(201);
       const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
       await refundHalf(posted.transactionId);
@@ -375,6 +448,7 @@ describe('Owner/manager reports (e2e)', () => {
     });
 
     it('services distinguishes sold vs. refunded amounts for the same service', async () => {
+      await setPlan('business');
       const posted = await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
       await refundHalf(posted.transactionId);
       const halfRefund = Math.floor(fixture.servicePriceMinor / 2);

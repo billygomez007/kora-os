@@ -1,5 +1,6 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { CurrentTenant } from '../../common/authorization/decorators/current-tenant.decorator.js';
+import { RequireEntitlement } from '../../common/authorization/decorators/require-entitlement.decorator.js';
 import { RequirePermissions } from '../../common/authorization/decorators/require-permissions.decorator.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
 import { TenantAccessGuard } from '../../common/authorization/tenant-access.guard.js';
@@ -23,11 +24,13 @@ export class ReportsController {
   }
 
   @Get('staff-performance')
+  @RequireEntitlement('reporting.performance')
   async staffPerformance(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {
     return this.reportsService.staffPerformance(tenant, query);
   }
 
   @Get('services')
+  @RequireEntitlement('reporting.performance')
   async services(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {
     return this.reportsService.services(tenant, query);
   }

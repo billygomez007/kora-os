@@ -94,6 +94,8 @@ type ReportList<T> = {
   };
 };
 
+type PerformanceState = "loading" | "ready" | "forbidden" | "unavailable" | "error";
+
 const ranges: Array<{ key: RangeKey; label: string }> = [
   { key: "today", label: "Today" },
   { key: "7d", label: "7 days" },
@@ -170,6 +172,13 @@ function textFrom(
   return fallback;
 }
 
+function isPlanEntitlementError(cause: unknown): boolean {
+  if (!(cause instanceof KoraApiError) || cause.status !== 403) return false;
+  if (!cause.body || typeof cause.body !== "object") return false;
+  const body = cause.body as { error?: { code?: unknown } };
+  return body.error?.code === "PLAN_ENTITLEMENT_REQUIRED";
+}
+
 export default function ReportsPage() {
   const t = useTranslations("Reports");
   const [workspace, setWorkspace] = useState<ActiveWorkspace | null>(null);
@@ -181,6 +190,7 @@ export default function ReportsPage() {
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodEntry[]>([]);
   const [cashReconciliation, setCashReconciliation] = useState<CashReconciliationEntry[]>([]);
   const [cashState, setCashState] = useState<"loading" | "ready" | "forbidden" | "unavailable" | "error">("loading");
+  const [performanceState, setPerformanceState] = useState<PerformanceState>("loading");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [loadState, setLoadState] = useState<
@@ -191,6 +201,7 @@ export default function ReportsPage() {
     setLoading(true);
     setLoadState("loading");
     setCashState("loading");
+    setPerformanceState("loading");
     setError("");
 
     try {
@@ -203,25 +214,34 @@ export default function ReportsPage() {
       const base = `/organizations/${active.organizationId}/reports`;
       const query = buildReportQuery(active, dates);
 
-      const [
-        overviewData,
-        revenueData,
-        staffData,
-        servicesData,
-        paymentData,
-      ] = await Promise.all([
+      const [overviewData, revenueData, paymentData] = await Promise.all([
         koraData<Overview>(`${base}/overview?${query}`),
         koraData<RevenueReport>(`${base}/revenue?${query}`),
-        koraData<ReportList<StaffEntry>>(
-          `${base}/staff-performance?${query}`,
-        ),
-        koraData<ReportList<ServiceEntry>>(
-          `${base}/services?${query}`,
-        ),
         koraData<ReportList<PaymentMethodEntry>>(
           `${base}/payment-methods?${query}`,
         ),
       ]);
+
+      const [staffResult, servicesResult] = await Promise.allSettled([
+        koraData<ReportList<StaffEntry>>(`${base}/staff-performance?${query}`),
+        koraData<ReportList<ServiceEntry>>(`${base}/services?${query}`),
+      ]);
+      const performanceFailures = [staffResult, servicesResult].filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (performanceFailures.length === 0) {
+        setPerformanceState("ready");
+      } else if (performanceFailures.every((result) => isPlanEntitlementError(result.reason))) {
+        setPerformanceState("forbidden");
+      } else if (
+        performanceFailures.every(
+          (cause) => cause.reason instanceof KoraApiError && cause.reason.status === 0,
+        )
+      ) {
+        setPerformanceState("unavailable");
+      } else {
+        setPerformanceState("error");
+      }
 
       let cashData: CashReconciliationEntry[] = [];
       try {
@@ -243,13 +263,14 @@ export default function ReportsPage() {
       setWorkspace(active);
       setOverview(overviewData);
       setRevenue(revenueData);
-      setStaff(staffData.data ?? []);
-      setServices(servicesData.data ?? []);
+      setStaff(staffResult.status === "fulfilled" ? staffResult.value.data ?? [] : []);
+      setServices(servicesResult.status === "fulfilled" ? servicesResult.value.data ?? [] : []);
       setPaymentMethods(paymentData.data ?? []);
       setCashReconciliation(cashData);
       setLoadState("ready");
     } catch (cause) {
       setCashState("unavailable");
+      setPerformanceState("unavailable");
       const message =
         cause instanceof Error
           ? cause.message
@@ -510,8 +531,14 @@ export default function ReportsPage() {
             </div>
           </header>
 
-          {!reportReady ? (
+          {!reportReady || performanceState === "loading" ? (
             <div className="smallEmpty">{t("servicesUnavailable")}</div>
+          ) : performanceState === "forbidden" ? (
+            <div className="smallEmpty">{t("performanceForbidden")}</div>
+          ) : performanceState === "unavailable" ? (
+            <div className="smallEmpty">{t("performanceUnavailable")}</div>
+          ) : performanceState === "error" ? (
+            <div className="smallEmpty">{t("performanceError")}</div>
           ) : services.length ? (
             <div className="ranking">
               {services.slice(0, 6).map((service, index) => {
@@ -562,8 +589,14 @@ export default function ReportsPage() {
             </div>
           </header>
 
-          {!reportReady ? (
+          {!reportReady || performanceState === "loading" ? (
             <div className="smallEmpty">{t("staffUnavailable")}</div>
+          ) : performanceState === "forbidden" ? (
+            <div className="smallEmpty">{t("performanceForbidden")}</div>
+          ) : performanceState === "unavailable" ? (
+            <div className="smallEmpty">{t("performanceUnavailable")}</div>
+          ) : performanceState === "error" ? (
+            <div className="smallEmpty">{t("performanceError")}</div>
           ) : staff.length ? (
             <div className="ranking">
               {staff.slice(0, 6).map((member, index) => (

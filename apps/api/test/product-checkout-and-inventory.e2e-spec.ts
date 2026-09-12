@@ -58,6 +58,14 @@ describe('Product checkout, inventory, and commission isolation (e2e)', () => {
     return orgUrl(`/reports/${path}?${query.toString()}`);
   }
 
+  async function enablePerformanceReporting(): Promise<void> {
+    const plan = await testApp.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code: 'business' } });
+    await testApp.prisma.organizationSubscription.update({
+      where: { organizationId: fixture.organizationId },
+      data: { planId: plan.id },
+    });
+  }
+
   async function createProduct(
     overrides: {
       name?: string;
@@ -317,6 +325,7 @@ describe('Product checkout, inventory, and commission isolation (e2e)', () => {
   });
 
   it('17. a product-only sale never appears in the services report', async () => {
+    await enablePerformanceReporting();
     const { variantId } = await createProduct();
     await receiveStock(variantId, 10);
 
@@ -327,6 +336,7 @@ describe('Product checkout, inventory, and commission isolation (e2e)', () => {
   });
 
   it('18. staff performance counts only the service amount from a mixed sale, never the product amount', async () => {
+    await enablePerformanceReporting();
     const { variantId } = await createProduct({ sellingPriceMinor: 5500 });
     await receiveStock(variantId, 10);
     const { serviceSessionId } = await createCompletedServiceSession(testApp, fixture, extras.receptionistAccessToken);

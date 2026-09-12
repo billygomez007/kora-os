@@ -1,5 +1,7 @@
 import type { WorkspaceEntryState } from "./entry.ts";
 
+export type WorkspaceJourney = "business" | "customer";
+
 /**
  * The unlocalized destination for a workspace-entry state that does not
  * belong on `/app` at all — used by both the post-OTP-verify redirect and
@@ -30,4 +32,24 @@ export function workspaceEntryRedirectPath(
     default:
       return null;
   }
+}
+
+/**
+ * Chooses the post-auth destination without bypassing workspace access
+ * resolution. Customer onboarding remains available for a genuinely new
+ * customer account, while every account with an existing usable business
+ * workspace follows the same `/app` path as ordinary sign-in.
+ */
+export function workspaceEntryRedirectPathForJourney(
+  state: WorkspaceEntryState,
+  journey: WorkspaceJourney,
+): string | null {
+  if (
+    journey === "customer" &&
+    state === "authenticated_new_user_no_business"
+  ) {
+    return "/customer-onboarding";
+  }
+
+  return workspaceEntryRedirectPath(state);
 }

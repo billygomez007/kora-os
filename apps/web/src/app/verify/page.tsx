@@ -11,7 +11,7 @@ import {
 } from "@/lib/auth/session";
 import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
 import { resolveWorkspaceEntry } from "@/lib/workspace/entry";
-import { workspaceEntryRedirectPath } from "@/lib/workspace/routing";
+import { workspaceEntryRedirectPathForJourney } from "@/lib/workspace/routing";
 import { createSingleFlightGuard } from "@/lib/utils/single-flight";
 
 function VerifyContent() {
@@ -110,20 +110,15 @@ function VerifyContent() {
       return;
     }
 
-    if (mode === "signup") {
-      router.replace(
-        journey === "customer"
-          ? localize("/customer-onboarding")
-          : localize("/onboarding"),
-      );
-      return;
-    }
-
-    // An ordinary sign-in must not assume every account has a business
-    // workspace to land in — resolve what this account actually is
-    // before deciding where "signed in" should go (docs task Part B1).
+    // Both sign-in and sign-up must resolve the account's current workspace
+    // state before choosing a destination. Signup mode is not evidence that
+    // this is a new account: an existing owner may have entered through
+    // `/get-started`.
     const entry = await resolveWorkspaceEntry();
-    const redirectPath = workspaceEntryRedirectPath(entry.state);
+    const redirectPath = workspaceEntryRedirectPathForJourney(
+      entry.state,
+      mode === "signup" ? journey : "business",
+    );
     router.replace(localize(redirectPath ?? "/app"));
   }
 

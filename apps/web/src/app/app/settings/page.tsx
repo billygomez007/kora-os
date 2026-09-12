@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import WorkspaceShell from "@/components/workspace/WorkspaceShell";
 import {
   type ActiveWorkspace,
@@ -9,6 +9,7 @@ import {
 } from "@/lib/api/dashboard";
 import { koraApi, koraData } from "@/lib/api/kora-api";
 import { clearKoraSession } from "@/lib/auth/session";
+import { trialDaysRemaining } from "@/lib/subscription/trial";
 
 type Tab =
   | "profile"
@@ -69,6 +70,7 @@ interface SubscriptionDetail {
   planName?: string;
   currentPeriodStart?: string | null;
   currentPeriodEnd?: string | null;
+  trialStartedAt?: string | null;
   trialEndsAt?: string | null;
   entitlements?: Record<string, boolean | number | string | null>;
   usage?: {
@@ -133,6 +135,7 @@ function planLimit(entitlements: SubscriptionCatalogPlan["entitlements"], code: 
 }
 
 export default function SettingsPage() {
+  const locale = useLocale();
   const t = useTranslations("Settings");
   const [tab, setTab] = useState<Tab>("profile");
   const [workspace, setWorkspace] = useState<ActiveWorkspace | null>(null);
@@ -148,6 +151,21 @@ export default function SettingsPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
+
+  const trialDays = trialDaysRemaining(subscription?.trialEndsAt);
+  const trialDateFormatter = useMemo(
+    () => new Intl.DateTimeFormat(locale, { dateStyle: "medium" }),
+    [locale],
+  );
+
+  function formatTrialDate(value: string | null | undefined) {
+    if (!value) return t("subscription.notAvailable");
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? t("subscription.notAvailable")
+      : trialDateFormatter.format(date);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -1174,6 +1192,20 @@ export default function SettingsPage() {
                   <small>{t("subscription.staffLimit")}</small>
                   <strong>{subscription?.usage?.staffMax ?? t("subscription.custom")}</strong>
                 </article>
+                {subscription?.status === "TRIALING" && (
+                  <article className="subscriptionTrialCard">
+                    <small>{t("subscription.trialStatus")}</small>
+                    <strong>{t("subscription.trialActive")}</strong>
+                    <span>
+                      {t("subscription.trialEnds", {
+                        date: formatTrialDate(subscription.trialEndsAt),
+                      })}
+                      {trialDays !== null
+                        ? ` · ${t("subscription.trialDaysRemaining", { count: trialDays })}`
+                        : ""}
+                    </span>
+                  </article>
+                )}
               </div>
 
               {subscriptionPlans.length > 0 ? (
@@ -1710,6 +1742,19 @@ export default function SettingsPage() {
           overflow-wrap: anywhere;
         }
 
+        .subscriptionTrialCard {
+          grid-column: span 2;
+          border-color: rgba(226, 182, 84, 0.42);
+          background: linear-gradient(135deg, rgba(226, 182, 84, 0.12), rgba(18, 25, 38, 0.72));
+        }
+
+        .subscriptionTrialCard span {
+          display: block;
+          margin-top: 7px;
+          color: var(--ws-muted);
+          font-size: 0.78rem;
+        }
+
         .subscriptionCatalog {
           margin-top: 24px;
         }
@@ -1969,6 +2014,10 @@ export default function SettingsPage() {
           .settingsGrid.three,
           .settingsInfoGrid {
             grid-template-columns: 1fr;
+          }
+
+          .subscriptionTrialCard {
+            grid-column: span 1;
           }
 
           .hoursRow {

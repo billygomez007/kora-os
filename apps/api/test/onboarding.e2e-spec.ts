@@ -17,6 +17,7 @@ import { OrganizationsModule } from '../src/modules/organizations/organizations.
 import { EntitlementsService } from '../src/modules/subscriptions/entitlements.service.js';
 import { PLAN_ENTITLEMENTS } from '../src/modules/subscriptions/plan-entitlements.js';
 import { SubscriptionsModule } from '../src/modules/subscriptions/subscriptions.module.js';
+import { DEFAULT_TRIAL_PERIOD_DAYS } from '../src/modules/subscriptions/trial-policy.js';
 
 /**
  * Integration coverage for the internal tenancy/subscription services
@@ -112,6 +113,12 @@ describe('OnboardingService (integration)', () => {
     expect(result.ownerMembership.userId).toBe(ownerUserId);
     expect(result.primaryBranch.organizationId).toBe(result.organization.id);
     expect(result.subscription.status).toBe('TRIALING');
+    expect(result.subscription.trialStartedAt).toBeInstanceOf(Date);
+    expect(result.subscription.trialEndsAt).toBeInstanceOf(Date);
+    expect(
+      result.subscription.trialEndsAt!.getTime() -
+        result.subscription.trialStartedAt!.getTime(),
+    ).toBe(DEFAULT_TRIAL_PERIOD_DAYS * 24 * 60 * 60 * 1000);
     // Compared against the canonical model (apps/api/src/modules/
     // subscriptions/plan-entitlements.ts), not a literal copy of it — this
     // proves the seeded database still matches the current canonical

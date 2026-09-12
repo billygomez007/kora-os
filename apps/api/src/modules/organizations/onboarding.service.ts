@@ -21,11 +21,11 @@ import {
   ResolvedEntitlements,
 } from '../subscriptions/entitlements.service.js';
 import { SubscriptionEventService } from '../subscriptions/subscription-event.service.js';
+import {
+  DEFAULT_TRIAL_PLAN_CODE,
+  trialEndAt,
+} from '../subscriptions/trial-policy.js';
 
-// Trial length is a lifecycle policy placeholder, not a price — final
-// business rules may make this configurable per plan or market.
-const DEFAULT_TRIAL_PERIOD_DAYS = 14;
-const DEFAULT_TRIAL_PLAN_CODE = 'starter';
 const OWNER_SYSTEM_ROLE_CODE = 'owner';
 const SLUG_UNIQUE_CONSTRAINT = 'slug';
 const IDEMPOTENCY_UNIQUE_CONSTRAINT = 'organization_idempotency_keys';
@@ -45,7 +45,11 @@ export interface OnboardOrganizationInput {
     currency?: string;
     countryCode?: string;
   };
-  /** Defaults to the Starter plan when omitted. */
+  /**
+   * Internal-only override used by service-level failure tests. The public
+   * organizations DTO deliberately does not expose plan selection: every
+   * customer-created business receives the canonical Starter trial.
+   */
   trialPlanCode?: string;
   /** Required — a retried request with the same key replays the
    * original result instead of creating a second organization (docs
@@ -213,10 +217,7 @@ export class OnboardingService {
         });
 
         const trialStartedAt = new Date();
-        const trialEndsAt = new Date(
-          trialStartedAt.getTime() +
-            DEFAULT_TRIAL_PERIOD_DAYS * 24 * 60 * 60 * 1000,
-        );
+        const trialEndsAt = trialEndAt(trialStartedAt);
 
         const subscription = await tx.organizationSubscription.create({
           data: {

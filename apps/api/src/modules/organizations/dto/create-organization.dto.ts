@@ -1,6 +1,5 @@
 import { Type } from 'class-transformer';
 import {
-  IsOptional,
   IsString,
   Length,
   Matches,
@@ -51,9 +50,4 @@ export class CreateOrganizationDto {
   @ValidateNested()
   @Type(() => PrimaryBranchDto)
   primaryBranch!: PrimaryBranchDto;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(40)
-  trialPlanCode?: string;
 }

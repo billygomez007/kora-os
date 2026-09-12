@@ -22,6 +22,7 @@ export interface SubscriptionDetailView {
   planName: string;
   status: SubscriptionStatus;
   accessMode: SubscriptionAccessMode;
+  trialStartedAt: Date | null;
   trialEndsAt: Date | null;
   currentPeriodEndsAt: Date | null;
   entitlements: ResolvedEntitlements;
@@ -87,6 +88,7 @@ export class SubscriptionDetailService {
       planName: subscription.plan.name,
       status: subscription.status,
       accessMode: this.subscriptionAccessService.resolveAccessMode(subscription.status),
+      trialStartedAt: subscription.trialStartedAt,
       trialEndsAt: subscription.trialEndsAt,
       currentPeriodEndsAt: subscription.currentPeriodEndsAt,
       entitlements,

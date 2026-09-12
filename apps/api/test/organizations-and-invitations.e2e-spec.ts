@@ -848,7 +848,12 @@ describe('Organizations, authorization, and staff invitations (e2e)', () => {
         usage: { branchesUsed: 1, staffUsed: 1 },
       });
       expect(detail.body.data.entitlements['staff.max']).toBe(5);
+      expect(detail.body.data.trialStartedAt).toEqual(expect.any(String));
       expect(detail.body.data.trialEndsAt).toEqual(expect.any(String));
+      expect(
+        new Date(detail.body.data.trialEndsAt).getTime() -
+          new Date(detail.body.data.trialStartedAt).getTime(),
+      ).toBe(30 * 24 * 60 * 60 * 1000);
     });
 
     it('reflects a BLOCKED subscription in the exposed access mode', async () => {

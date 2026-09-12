@@ -38,6 +38,17 @@ pnpm prisma:migrate:deploy
 pnpm prisma:seed
 ```
 
+For an existing environment that needs the platform reference catalogue
+reconciled after migrations, use the explicitly named idempotent command:
+
+```bash
+pnpm prisma:sync-reference-data
+```
+
+It runs the same reference-only seed and does not create tenant data. Review a
+read-only production comparison before running it against production; never
+use the marketplace demo fixture or a reset command for this purpose.
+
 ## Development marketplace fixture
 
 `pnpm prisma:seed` above seeds only platform-level reference data — no

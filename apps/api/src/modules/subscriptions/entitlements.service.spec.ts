@@ -125,6 +125,30 @@ describe('EntitlementsService', () => {
     });
   });
 
+  it('fails closed when a required entitlement is missing or malformed', async () => {
+    const { service: missingService } = createServiceWithStub([], { planId: 'starter' });
+    await expect(
+      missingService.requireForOrganization('org-1', 'reporting.performance'),
+    ).rejects.toMatchObject({
+      response: { code: 'PLAN_ENTITLEMENT_REQUIRED' },
+    });
+
+    const { service: malformedService } = createServiceWithStub([
+      {
+        value: 'enabled',
+        entitlement: {
+          code: 'reporting.performance',
+          valueType: EntitlementValueType.BOOLEAN,
+        },
+      },
+    ], { planId: 'starter' });
+    await expect(
+      malformedService.requireForOrganization('org-1', 'reporting.performance'),
+    ).rejects.toMatchObject({
+      response: { code: 'PLAN_ENTITLEMENT_REQUIRED' },
+    });
+  });
+
   it('rejects a write that would exceed a numeric plan limit', async () => {
     const { service } = createServiceWithStub([
       {

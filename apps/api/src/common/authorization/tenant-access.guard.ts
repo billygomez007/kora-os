@@ -3,15 +3,18 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  Optional,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { SubscriptionAccessMode } from '../../generated/prisma/client.js';
 import { ALLOW_READ_ONLY_ACCESS_KEY } from './decorators/allow-read-only-access.decorator.js';
 import { ANY_PERMISSIONS_KEY } from './decorators/require-any-permission.decorator.js';
 import { BRANCH_PARAM_KEY } from './decorators/require-branch-param.decorator.js';
+import { ENTITLEMENTS_KEY } from './decorators/require-entitlement.decorator.js';
 import { PERMISSIONS_KEY } from './decorators/require-permissions.decorator.js';
 import type { TenantScopedRequest } from './interfaces/tenant-context.interface.js';
 import { TenantContextService } from './tenant-context.service.js';
+import { EntitlementsService } from '../../modules/subscriptions/entitlements.service.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const ORGANIZATION_ID_HEADER = 'x-kora-organization-id';
@@ -40,6 +43,9 @@ const BROAD_BRANCH_ACCESS_PERMISSION = 'branches.manage';
  * 5. Branch scope — when @RequireBranchParam names a route param, the
  *    membership must either have that branch explicitly assigned or hold
  *    the broad `branches.manage` permission.
+ * 6. Plan entitlements — when @RequireEntitlement names one or more
+ *    feature entitlements, every one must be enabled by the organization's
+ *    current subscription plan.
  *
  * The organization ID is read from the `:organizationId` route param
  * (falling back to the X-Kora-Organization-Id header) and is only ever a
@@ -52,6 +58,8 @@ export class TenantAccessGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly tenantContextService: TenantContextService,
+    @Optional()
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -138,6 +146,24 @@ export class TenantAccessGuard implements CanActivate {
       ) {
         throw new ForbiddenException('You do not have access to this branch');
       }
+    }
+
+    const requiredEntitlements = this.reflector.getAllAndOverride<string[]>(
+      ENTITLEMENTS_KEY,
+      [context.getHandler(), context.getClass()],
+    ) ?? [];
+    for (const code of requiredEntitlements) {
+      if (!this.entitlementsService) {
+        throw new ForbiddenException({
+          code: 'PLAN_ENTITLEMENT_REQUIRED',
+          entitlement: code,
+          message: `The current plan does not include ${code}. Upgrade the plan to continue.`,
+        });
+      }
+      await this.entitlementsService.requireForOrganization(
+        tenantContext.organizationId,
+        code,
+      );
     }
 
     request.tenantContext = tenantContext;

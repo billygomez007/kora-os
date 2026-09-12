@@ -38,30 +38,40 @@ function baseTenantContext(overrides: Partial<TenantContext> = {}): TenantContex
 
 function createGuard(tenantContext: TenantContext | null, metadata: Record<string, unknown> = {}) {
   const tenantContextService = { resolve: vi.fn().mockResolvedValue(tenantContext) };
+  const entitlementsService = {
+    requireForOrganization: vi.fn().mockResolvedValue(undefined),
+  };
   const reflector = new Reflector();
   vi.spyOn(reflector, 'getAllAndOverride').mockImplementation(
     (key: unknown) => metadata[key as string],
   );
-  return new TenantAccessGuard(reflector, tenantContextService as never);
+  return {
+    guard: new TenantAccessGuard(
+      reflector,
+      tenantContextService as never,
+      entitlementsService as never,
+    ),
+    entitlementsService,
+  };
 }
 
 describe('TenantAccessGuard', () => {
   it('denies when no organization context is supplied', async () => {
-    const guard = createGuard(baseTenantContext());
+    const { guard } = createGuard(baseTenantContext());
     await expect(
       guard.canActivate(createContext({ params: {} })),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('denies when the user has no active membership in the organization', async () => {
-    const guard = createGuard(null);
+    const { guard } = createGuard(null);
     await expect(
       guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('denies every request when the subscription access mode is BLOCKED', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ accessMode: SubscriptionAccessMode.BLOCKED }),
     );
     await expect(
@@ -72,7 +82,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('denies a mutating request when the subscription access mode is READ_ONLY', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ accessMode: SubscriptionAccessMode.READ_ONLY }),
     );
     await expect(
@@ -83,7 +93,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('allows a read under READ_ONLY access mode', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ accessMode: SubscriptionAccessMode.READ_ONLY }),
     );
     await expect(
@@ -94,7 +104,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('allows a mutation under READ_ONLY when explicitly marked safe', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ accessMode: SubscriptionAccessMode.READ_ONLY }),
       { allowReadOnlyAccess: true },
     );
@@ -106,7 +116,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('denies when a required permission is missing', async () => {
-    const guard = createGuard(baseTenantContext({ permissionCodes: new Set(['staff.read']) }), {
+    const { guard } = createGuard(baseTenantContext({ permissionCodes: new Set(['staff.read']) }), {
       requiredPermissions: ['staff.manage'],
     });
     await expect(
@@ -115,7 +125,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('allows when every required permission is present', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ permissionCodes: new Set(['staff.read', 'staff.manage']) }),
       { requiredPermissions: ['staff.manage'] },
     );
@@ -125,7 +135,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('denies branch-scoped access when the branch is not assigned', async () => {
-    const guard = createGuard(baseTenantContext({ branchIds: ['branch-a'] }), {
+    const { guard } = createGuard(baseTenantContext({ branchIds: ['branch-a'] }), {
       requireBranchParam: 'branchId',
     });
     await expect(
@@ -136,7 +146,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('allows branch-scoped access when the branch is explicitly assigned', async () => {
-    const guard = createGuard(baseTenantContext({ branchIds: ['branch-a'] }), {
+    const { guard } = createGuard(baseTenantContext({ branchIds: ['branch-a'] }), {
       requireBranchParam: 'branchId',
     });
     await expect(
@@ -147,7 +157,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('allows branch-scoped access without an explicit assignment when the membership holds branches.manage', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ branchIds: [], permissionCodes: new Set(['branches.manage']) }),
       { requireBranchParam: 'branchId' },
     );
@@ -159,7 +169,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('denies when none of an any-of permission list is present', async () => {
-    const guard = createGuard(baseTenantContext({ permissionCodes: new Set(['staff.read']) }), {
+    const { guard } = createGuard(baseTenantContext({ permissionCodes: new Set(['staff.read']) }), {
       requireAnyPermission: ['service_sessions.start', 'service_sessions.perform', 'service_sessions.manage'],
     });
     await expect(
@@ -168,7 +178,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('allows when exactly one of an any-of permission list is present', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ permissionCodes: new Set(['service_sessions.start']) }),
       { requireAnyPermission: ['service_sessions.start', 'service_sessions.perform', 'service_sessions.manage'] },
     );
@@ -178,7 +188,7 @@ describe('TenantAccessGuard', () => {
   });
 
   it('allows when every AND-required permission is present and at least one OR permission is present', async () => {
-    const guard = createGuard(
+    const { guard } = createGuard(
       baseTenantContext({ permissionCodes: new Set(['queue.read', 'service_sessions.perform']) }),
       {
         requiredPermissions: ['queue.read'],
@@ -188,5 +198,83 @@ describe('TenantAccessGuard', () => {
     await expect(
       guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
     ).resolves.toBe(true);
+  });
+
+  it('allows a route when the required entitlement and RBAC permission are present', async () => {
+    const { guard, entitlementsService } = createGuard(
+      baseTenantContext({ permissionCodes: new Set(['reports.read']) }),
+      {
+        requiredPermissions: ['reports.read'],
+        requiredEntitlements: ['reporting.performance'],
+      },
+    );
+
+    await expect(
+      guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
+    ).resolves.toBe(true);
+    expect(entitlementsService.requireForOrganization).toHaveBeenCalledWith(
+      'org-1',
+      'reporting.performance',
+    );
+  });
+
+  it('returns PLAN_ENTITLEMENT_REQUIRED when a required entitlement is disabled', async () => {
+    const { guard, entitlementsService } = createGuard(
+      baseTenantContext({ permissionCodes: new Set(['reports.read']) }),
+      {
+        requiredPermissions: ['reports.read'],
+        requiredEntitlements: ['reporting.performance'],
+      },
+    );
+    entitlementsService.requireForOrganization.mockRejectedValue(
+      new ForbiddenException({
+        code: 'PLAN_ENTITLEMENT_REQUIRED',
+        entitlement: 'reporting.performance',
+      }),
+    );
+
+    await expect(
+      guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
+    ).rejects.toMatchObject({
+      response: { code: 'PLAN_ENTITLEMENT_REQUIRED' },
+    });
+  });
+
+  it('checks RBAC before plan entitlement access', async () => {
+    const { guard, entitlementsService } = createGuard(
+      baseTenantContext({ permissionCodes: new Set(['staff.read']) }),
+      {
+        requiredPermissions: ['reports.read'],
+        requiredEntitlements: ['reporting.performance'],
+      },
+    );
+
+    await expect(
+      guard.canActivate(createContext({ params: { organizationId: 'org-1' } })),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(entitlementsService.requireForOrganization).not.toHaveBeenCalled();
+  });
+
+  it('checks branch authorization before plan entitlement access', async () => {
+    const { guard, entitlementsService } = createGuard(
+      baseTenantContext({
+        permissionCodes: new Set(['reports.read']),
+        branchIds: ['branch-a'],
+      }),
+      {
+        requiredPermissions: ['reports.read'],
+        requireBranchParam: 'branchId',
+        requiredEntitlements: ['reporting.performance'],
+      },
+    );
+
+    await expect(
+      guard.canActivate(
+        createContext({
+          params: { organizationId: 'org-1', branchId: 'branch-b' },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(entitlementsService.requireForOrganization).not.toHaveBeenCalled();
   });
 });

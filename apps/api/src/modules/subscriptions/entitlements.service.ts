@@ -65,7 +65,13 @@ export class EntitlementsService {
     code: string,
     client: TransactionClient = this.prisma,
   ): Promise<void> {
-    if (await this.hasForOrganization(organizationId, code, client)) return;
+    try {
+      if (await this.hasForOrganization(organizationId, code, client)) return;
+    } catch {
+      // A required feature must fail closed when its subscription or stored
+      // entitlement data is missing or malformed. Do not expose plan or
+      // reference-data internals through the authorization response.
+    }
 
     throw new ForbiddenException({
       code: 'PLAN_ENTITLEMENT_REQUIRED',

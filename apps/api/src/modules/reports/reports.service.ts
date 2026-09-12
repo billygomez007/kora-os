@@ -36,6 +36,7 @@ import {
 
 const BROAD_BRANCH_ACCESS_PERMISSION = 'branches.manage';
 const REFUND_REPORTING_ENTITLEMENT = 'reporting.refunds';
+const MULTI_BRANCH_REPORTING_ENTITLEMENT = 'reporting.multi_branch';
 const DEFAULT_PAGE_SIZE = 20;
 
 interface ReportQuery {
@@ -216,6 +217,209 @@ export class ReportsService {
       branchId: query.branchId ?? null,
       timeZone: scope.timeZone,
       buckets,
+    };
+  }
+
+  /**
+   * Advanced reporting is a deliberate, higher-tier composite view over
+   * already-posted records. It does not change the meaning of any existing
+   * report field or read live payment claims. A branch-scoped request stays
+   * branch-scoped; an organization-wide request also requires the
+   * multi-branch entitlement when the caller can actually see more than one
+   * branch.
+   */
+  async advanced(tenant: TenantContext, query: ReportQuery) {
+    const range = parseReportDateRange(query.from, query.to);
+    const scope = await this.resolveScope(
+      tenant,
+      query.branchId,
+      query.timezone,
+    );
+    if (!query.branchId) {
+      await this.requireMultiBranchEntitlementWhenNeeded(tenant);
+    }
+
+    const [transactions, lineItems, accruals, paymentSummaries] =
+      await Promise.all([
+        this.prisma.transaction.findMany({
+          where: {
+            organizationId: tenant.organizationId,
+            ...scope.branchFilter,
+            postedAt: { gte: range.from, lte: range.to },
+          },
+          select: { kind: true, totalMinor: true, currency: true },
+        }),
+        this.prisma.transactionLineItem.findMany({
+          where: {
+            organizationId: tenant.organizationId,
+            kind: 'SERVICE',
+            serviceId: { not: null },
+            serviceNameSnapshot: { not: null },
+            transaction: {
+              postedAt: { gte: range.from, lte: range.to },
+              ...scope.branchFilter,
+            },
+          },
+          select: {
+            staffProfileId: true,
+            serviceId: true,
+            serviceNameSnapshot: true,
+            priceMinorSnapshot: true,
+            currencySnapshot: true,
+            transaction: { select: { kind: true } },
+          },
+        }),
+        this.prisma.commissionAccrual.findMany({
+          where: {
+            organizationId: tenant.organizationId,
+            transaction: {
+              postedAt: { gte: range.from, lte: range.to },
+              ...scope.branchFilter,
+            },
+          },
+          select: {
+            staffProfileId: true,
+            calculatedAmountMinor: true,
+            currency: true,
+            kind: true,
+          },
+        }),
+        this.prisma.receiptPaymentSummary.findMany({
+          where: {
+            organizationId: tenant.organizationId,
+            receipt: {
+              issuedAt: { gte: range.from, lte: range.to },
+              ...scope.branchFilter,
+            },
+          },
+          select: {
+            method: true,
+            amountMinorSnapshot: true,
+            currencySnapshot: true,
+            receipt: { select: { kind: true } },
+          },
+        }),
+      ]);
+
+    const kindTotals = summarizeTransactionKinds(transactions);
+    const saleTransactions = transactions.filter((transaction) => transaction.kind === 'SALE');
+    const summary = summarizeByCurrency(
+      saleTransactions.map((transaction) => ({
+        currency: transaction.currency,
+        amountMinor: transaction.totalMinor,
+      })),
+    );
+    const serviceEntries = aggregateServicePerformance(
+      lineItems.map((item) => ({
+        serviceId: item.serviceId!,
+        serviceNameSnapshot: item.serviceNameSnapshot!,
+        priceMinorSnapshot: item.priceMinorSnapshot,
+        currencySnapshot: item.currencySnapshot,
+        transactionKind: item.transaction.kind,
+      })),
+    );
+    const staffEntries = aggregateStaffPerformance(
+      lineItems
+        .filter((item) => item.staffProfileId !== null)
+        .map((item) => ({
+          staffProfileId: item.staffProfileId!,
+          priceMinorSnapshot: item.priceMinorSnapshot,
+          currencySnapshot: item.currencySnapshot,
+          transactionKind: item.transaction.kind,
+        })),
+      accruals,
+    );
+    const paymentEntries = aggregatePaymentMethods(
+      paymentSummaries.map((summaryEntry) => ({
+        method: summaryEntry.method,
+        amountMinorSnapshot: summaryEntry.amountMinorSnapshot,
+        currencySnapshot: summaryEntry.currencySnapshot,
+        receiptKind: summaryEntry.receipt.kind,
+      })),
+    );
+
+    return {
+      from: query.from,
+      to: query.to,
+      branchId: query.branchId ?? null,
+      grossPostedSales: kindTotals.grossPostedSales,
+      refundAmount: kindTotals.refundAmount,
+      reversalAmount: kindTotals.reversalAmount,
+      netPostedRevenue: kindTotals.netPostedRevenue,
+      transactionCount: saleTransactions.length,
+      averageTransactionValue: summary.averages,
+      serviceMix: serviceEntries,
+      staffMix: staffEntries,
+      paymentMix: paymentEntries,
+    };
+  }
+
+  /**
+   * Cross-branch comparison is intentionally a separate route. The branch
+   * list is derived from the caller's current membership scope (or the
+   * broad branches.manage permission), never from client-supplied IDs.
+   */
+  async multiBranch(tenant: TenantContext, query: ReportQuery) {
+    const range = parseReportDateRange(query.from, query.to);
+    const branchIds = await this.resolveAuthorizedBranchIds(tenant);
+    if (branchIds.length === 0) {
+      return {
+        from: query.from,
+        to: query.to,
+        data: [],
+      };
+    }
+
+    const [branches, transactions] = await Promise.all([
+      this.prisma.branch.findMany({
+        where: {
+          organizationId: tenant.organizationId,
+          id: { in: branchIds },
+        },
+        select: { id: true, name: true, code: true, currency: true },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      }),
+      this.prisma.transaction.findMany({
+        where: {
+          organizationId: tenant.organizationId,
+          branchId: { in: branchIds },
+          postedAt: { gte: range.from, lte: range.to },
+        },
+        select: {
+          branchId: true,
+          kind: true,
+          totalMinor: true,
+          currency: true,
+        },
+      }),
+    ]);
+
+    const transactionsByBranch = new Map<string, typeof transactions>();
+    for (const transaction of transactions) {
+      const branchTransactions = transactionsByBranch.get(transaction.branchId) ?? [];
+      branchTransactions.push(transaction);
+      transactionsByBranch.set(transaction.branchId, branchTransactions);
+    }
+
+    return {
+      from: query.from,
+      to: query.to,
+      data: branches.map((branch) => {
+        const totals = summarizeTransactionKinds(
+          transactionsByBranch.get(branch.id) ?? [],
+        );
+        return {
+          branchId: branch.id,
+          branchName: branch.name,
+          branchCode: branch.code,
+          currency: branch.currency,
+          transactionCount: totals.saleCount,
+          grossPostedSales: totals.grossPostedSales,
+          refundAmount: totals.refundAmount,
+          reversalAmount: totals.reversalAmount,
+          netPostedRevenue: totals.netPostedRevenue,
+        };
+      }),
     };
   }
 
@@ -611,5 +815,37 @@ export class ReportsService {
     } catch {
       return false;
     }
+  }
+
+  private async requireMultiBranchEntitlementWhenNeeded(
+    tenant: TenantContext,
+  ): Promise<void> {
+    const branchIds = await this.resolveAuthorizedBranchIds(tenant);
+    if (branchIds.length <= 1) return;
+
+    await this.entitlementsService.requireForOrganization(
+      tenant.organizationId,
+      MULTI_BRANCH_REPORTING_ENTITLEMENT,
+    );
+  }
+
+  private async resolveAuthorizedBranchIds(tenant: TenantContext): Promise<string[]> {
+    if (tenant.permissionCodes.has(BROAD_BRANCH_ACCESS_PERMISSION)) {
+      const branches = await this.prisma.branch.findMany({
+        where: { organizationId: tenant.organizationId },
+        select: { id: true },
+      });
+      return branches.map((branch) => branch.id);
+    }
+
+    if (tenant.branchIds.length === 0) return [];
+    const branches = await this.prisma.branch.findMany({
+      where: {
+        organizationId: tenant.organizationId,
+        id: { in: tenant.branchIds },
+      },
+      select: { id: true },
+    });
+    return branches.map((branch) => branch.id);
   }
 }

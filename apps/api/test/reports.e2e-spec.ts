@@ -58,6 +58,9 @@ describe('Owner/manager reports (e2e)', () => {
   const reportRoutes = ['overview', 'revenue', 'payment-methods', 'commissions'];
   const performanceRoutes = ['staff-performance', 'services'];
 
+  const advancedReportUrl = () => reportsUrl('advanced', { branchId: fixture.branchId });
+  const multiBranchReportUrl = () => reportsUrl('multi-branch');
+
   it.each(reportRoutes)('%s preserves Cashier denial and Owner/Manager access', async (route) => {
     const organizations = await authed(testApp, cashier.accessToken).get('/v1/organizations').expect(200);
     const membership = organizations.body.data.find((org: { id: string }) => org.id === fixture.organizationId);
@@ -96,6 +99,124 @@ describe('Owner/manager reports (e2e)', () => {
     await authed(testApp, manager.accessToken)
       .get(reportsUrl('overview', { branchId: fixture.branchId }))
       .expect(200);
+  });
+
+  it.each(['starter', 'business', 'growth'])(
+    'denies advanced reporting for the %s plan while preserving reports.read RBAC',
+    async (planCode) => {
+      await setPlan(planCode);
+      const denied = await authed(testApp, manager.accessToken)
+        .get(advancedReportUrl())
+        .expect(403);
+      expect(denied.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
+      await authed(testApp, cashier.accessToken).get(advancedReportUrl()).expect(403);
+    },
+  );
+
+  it.each(['pro', 'enterprise'])('allows advanced reporting for the %s plan', async (planCode) => {
+    await setPlan(planCode);
+    await authed(testApp, fixture.ownerAccessToken).get(advancedReportUrl()).expect(200);
+    await authed(testApp, manager.accessToken).get(advancedReportUrl()).expect(200);
+  });
+
+  it.each(['starter', 'business', 'growth'])(
+    'denies multi-branch reporting for the %s plan',
+    async (planCode) => {
+      await setPlan(planCode);
+      const denied = await authed(testApp, fixture.ownerAccessToken)
+        .get(multiBranchReportUrl())
+        .expect(403);
+      expect(denied.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
+    },
+  );
+
+  it.each(['pro', 'enterprise'])('allows multi-branch reporting for the %s plan', async (planCode) => {
+    await setPlan(planCode);
+    await authed(testApp, fixture.ownerAccessToken).get(multiBranchReportUrl()).expect(200);
+  });
+
+  it('denies both higher reporting surfaces during the Starter TRIALING period', async () => {
+    const subscription = await testApp.prisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: fixture.organizationId },
+    });
+    expect(subscription.status).toBe('TRIALING');
+    await authed(testApp, fixture.ownerAccessToken).get(advancedReportUrl()).expect(403);
+    await authed(testApp, fixture.ownerAccessToken).get(multiBranchReportUrl()).expect(403);
+  });
+
+  it('keeps reports.read ahead of advanced and multi-branch entitlements', async () => {
+    await setPlan('pro');
+    const noPermission = await createNoPermissionActor(testApp, fixture);
+    await authed(testApp, noPermission.accessToken).get(advancedReportUrl()).expect(403);
+    await authed(testApp, noPermission.accessToken).get(multiBranchReportUrl()).expect(403);
+  });
+
+  it('keeps membership, organization, and blocked-subscription checks ahead of higher reporting entitlements', async () => {
+    await setPlan('pro');
+
+    await testApp.prisma.organizationMembership.update({
+      where: { id: manager.membershipId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken).get(advancedReportUrl()).expect(403);
+    await authed(testApp, manager.accessToken).get(multiBranchReportUrl()).expect(403);
+
+    await testApp.prisma.organizationMembership.update({
+      where: { id: manager.membershipId },
+      data: { status: 'ACTIVE' },
+    });
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken).get(advancedReportUrl()).expect(403);
+    await authed(testApp, manager.accessToken).get(multiBranchReportUrl()).expect(403);
+
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'ACTIVE' },
+    });
+    await testApp.prisma.organizationSubscription.delete({
+      where: { organizationId: fixture.organizationId },
+    });
+    await authed(testApp, manager.accessToken).get(advancedReportUrl()).expect(403);
+    await authed(testApp, manager.accessToken).get(multiBranchReportUrl()).expect(403);
+  });
+
+  it('does not let advanced reporting broaden a restricted report reader beyond the assigned branch', async () => {
+    await setPlan('pro');
+    const restrictedReader = await createNoPermissionActor(testApp, fixture);
+    const restrictedRole = await testApp.prisma.membershipRole.findFirstOrThrow({
+      where: { membershipId: restrictedReader.membershipId },
+    });
+    const reportsRead = await testApp.prisma.permission.findUniqueOrThrow({
+      where: { code: 'reports.read' },
+    });
+    await testApp.prisma.rolePermission.create({
+      data: { roleId: restrictedRole.roleId, permissionId: reportsRead.id },
+    });
+    const otherBranch = await testApp.prisma.branch.create({
+      data: {
+        organizationId: fixture.organizationId,
+        name: 'Restricted comparison branch',
+        code: `REST-${randomUUID().slice(0, 6)}`,
+        countryCode: 'GH',
+        currency: 'GHS',
+        timeZone: 'Africa/Accra',
+      },
+    });
+    const ownAdvanced = await authed(testApp, restrictedReader.accessToken)
+      .get(advancedReportUrl())
+      .expect(200);
+    expect(ownAdvanced.body.data.branchId).toBe(fixture.branchId);
+
+    const crossBranch = await authed(testApp, restrictedReader.accessToken)
+      .get(multiBranchReportUrl())
+      .expect(200);
+    expect(crossBranch.body.data.data.map((entry: { branchId: string }) => entry.branchId)).toEqual([
+      fixture.branchId,
+    ]);
+    expect(crossBranch.body.data.data.map((entry: { branchId: string }) => entry.branchId)).not.toContain(otherBranch.id);
   });
 
   it('keeps membership, organization, and blocked-subscription enforcement ahead of the plan entitlement', async () => {

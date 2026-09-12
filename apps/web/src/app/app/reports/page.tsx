@@ -55,6 +55,36 @@ type RevenueReport = {
   buckets: RevenueBucket[];
 };
 
+type AdvancedReport = {
+  grossPostedSales: MoneyTotal[];
+  refundAmount: MoneyTotal[];
+  reversalAmount: MoneyTotal[];
+  netPostedRevenue: MoneyTotal[];
+  transactionCount: number;
+  averageTransactionValue: MoneyTotal[];
+  serviceMix: Array<{ serviceId: string; serviceName: string; serviceCount: number }>;
+  staffMix: Array<{ staffProfileId: string; serviceCount: number }>;
+  paymentMix: Array<{ method: string; count: number }>;
+};
+
+type MultiBranchEntry = {
+  branchId: string;
+  branchName: string;
+  branchCode: string;
+  currency: string;
+  transactionCount: number;
+  grossPostedSales: MoneyTotal[];
+  refundAmount: MoneyTotal[];
+  reversalAmount: MoneyTotal[];
+  netPostedRevenue: MoneyTotal[];
+};
+
+type MultiBranchReport = {
+  from: string;
+  to: string;
+  data: MultiBranchEntry[];
+};
+
 type StaffEntry = {
   staffProfileId: string;
   [key: string]: unknown;
@@ -96,6 +126,7 @@ type ReportList<T> = {
 };
 
 type PerformanceState = "loading" | "ready" | "forbidden" | "unavailable" | "error";
+type ReportCapabilityState = "loading" | "ready" | "forbidden" | "unavailable" | "error";
 
 const ranges: Array<{ key: RangeKey; label: string }> = [
   { key: "today", label: "Today" },
@@ -180,12 +211,22 @@ function isPlanEntitlementError(cause: unknown): boolean {
   return body.error?.code === "PLAN_ENTITLEMENT_REQUIRED";
 }
 
+function capabilityStateForFailure(cause: unknown): ReportCapabilityState {
+  if (isPlanEntitlementError(cause)) return "forbidden";
+  if (cause instanceof KoraApiError && cause.status === 0) return "unavailable";
+  return "error";
+}
+
 export default function ReportsPage() {
   const t = useTranslations("Reports");
   const [workspace, setWorkspace] = useState<ActiveWorkspace | null>(null);
   const [range, setRange] = useState<RangeKey>("7d");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [revenue, setRevenue] = useState<RevenueReport | null>(null);
+  const [advanced, setAdvanced] = useState<AdvancedReport | null>(null);
+  const [multiBranch, setMultiBranch] = useState<MultiBranchReport | null>(null);
+  const [advancedState, setAdvancedState] = useState<ReportCapabilityState>("loading");
+  const [multiBranchState, setMultiBranchState] = useState<ReportCapabilityState>("loading");
   const [staff, setStaff] = useState<StaffEntry[]>([]);
   const [services, setServices] = useState<ServiceEntry[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodEntry[]>([]);
@@ -203,6 +244,10 @@ export default function ReportsPage() {
     setLoadState("loading");
     setCashState("loading");
     setPerformanceState("loading");
+    setAdvancedState("loading");
+    setMultiBranchState("loading");
+    setAdvanced(null);
+    setMultiBranch(null);
     setError("");
 
     try {
@@ -214,6 +259,12 @@ export default function ReportsPage() {
 
       const base = `/organizations/${active.organizationId}/reports`;
       const query = buildReportQuery(active, dates);
+      const multiBranchQuery = new URLSearchParams({
+        from: dates.from,
+        to: dates.to,
+        timezone: active.timeZone,
+        limit: "100",
+      }).toString();
 
       const [overviewData, revenueData, paymentData] = await Promise.all([
         koraData<Overview>(`${base}/overview?${query}`),
@@ -244,6 +295,23 @@ export default function ReportsPage() {
         setPerformanceState("error");
       }
 
+      const [advancedResult, multiBranchResult] = await Promise.allSettled([
+        koraData<AdvancedReport>(`${base}/advanced?${query}`),
+        koraData<MultiBranchReport>(`${base}/multi-branch?${multiBranchQuery}`),
+      ]);
+      if (advancedResult.status === "fulfilled") {
+        setAdvanced(advancedResult.value);
+        setAdvancedState("ready");
+      } else {
+        setAdvancedState(capabilityStateForFailure(advancedResult.reason));
+      }
+      if (multiBranchResult.status === "fulfilled") {
+        setMultiBranch(multiBranchResult.value);
+        setMultiBranchState("ready");
+      } else {
+        setMultiBranchState(capabilityStateForFailure(multiBranchResult.reason));
+      }
+
       let cashData: CashReconciliationEntry[] = [];
       try {
         const cashReport = await koraData<ReportList<CashReconciliationEntry>>(
@@ -272,6 +340,8 @@ export default function ReportsPage() {
     } catch (cause) {
       setCashState("unavailable");
       setPerformanceState("unavailable");
+      setAdvancedState("unavailable");
+      setMultiBranchState("unavailable");
       const message =
         cause instanceof Error
           ? cause.message
@@ -651,6 +721,82 @@ export default function ReportsPage() {
             <div className="smallEmpty">
               No posted staff activity for this period.
             </div>
+          )}
+        </article>
+      </section>
+
+      <section className="grid advancedGrid">
+        <article className="panel">
+          <header>
+            <div>
+              <span className="sectionLabel">{t("advancedKicker")}</span>
+              <h2>{t("advancedTitle")}</h2>
+            </div>
+          </header>
+
+          {advancedState === "forbidden" ? (
+            <div className="smallEmpty">{t("advancedForbidden")}</div>
+          ) : advancedState === "unavailable" ? (
+            <div className="smallEmpty">{t("advancedUnavailable")}</div>
+          ) : advancedState === "error" ? (
+            <div className="smallEmpty">{t("advancedError")}</div>
+          ) : advancedState === "loading" || !reportReady ? (
+            <div className="smallEmpty">{t("unavailable")}</div>
+          ) : advanced?.transactionCount ? (
+            <div className="advancedSummary">
+              <div>
+                <span>{t("advancedSales")}</span>
+                <strong>{advanced.transactionCount}</strong>
+              </div>
+              <div>
+                <span>{t("advancedServices")}</span>
+                <strong>{advanced.serviceMix.length}</strong>
+              </div>
+              <div>
+                <span>{t("advancedTeam")}</span>
+                <strong>{advanced.staffMix.length}</strong>
+              </div>
+              <div>
+                <span>{t("advancedPaymentMethods")}</span>
+                <strong>{advanced.paymentMix.length}</strong>
+              </div>
+            </div>
+          ) : (
+            <div className="smallEmpty">{t("advancedNoData")}</div>
+          )}
+        </article>
+
+        <article className="panel">
+          <header>
+            <div>
+              <span className="sectionLabel">{t("multiBranchKicker")}</span>
+              <h2>{t("multiBranchTitle")}</h2>
+            </div>
+          </header>
+
+          {multiBranchState === "forbidden" ? (
+            <div className="smallEmpty">{t("multiBranchForbidden")}</div>
+          ) : multiBranchState === "unavailable" ? (
+            <div className="smallEmpty">{t("multiBranchUnavailable")}</div>
+          ) : multiBranchState === "error" ? (
+            <div className="smallEmpty">{t("multiBranchError")}</div>
+          ) : multiBranchState === "loading" || !reportReady ? (
+            <div className="smallEmpty">{t("unavailable")}</div>
+          ) : multiBranch?.data.length ? (
+            <div className="branchComparison">
+              {multiBranch.data.map((branch) => (
+                <div className="branchComparisonRow" key={branch.branchId}>
+                  <div>
+                    <strong>{branch.branchName}</strong>
+                    <span>{branch.branchCode}</span>
+                  </div>
+                  <span>{branch.transactionCount} {t("advancedSalesLabel")}</span>
+                  <b>{money(amountForCurrency(branch.grossPostedSales, branch.currency), branch.currency)}</b>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="smallEmpty">{t("multiBranchNoData")}</div>
           )}
         </article>
       </section>
@@ -1067,6 +1213,62 @@ export default function ReportsPage() {
           font-size: 15px;
         }
 
+        .advancedSummary {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .advancedSummary div {
+          display: grid;
+          gap: 5px;
+          padding: 14px;
+          border: 1px solid var(--ws-border);
+          border-radius: 12px;
+          background: var(--ws-surface-2);
+        }
+
+        .advancedSummary span,
+        .branchComparisonRow span {
+          color: var(--ws-text-muted);
+          font-size: 10px;
+        }
+
+        .advancedSummary strong {
+          color: var(--ws-text);
+          font-size: 20px;
+        }
+
+        .branchComparison {
+          display: grid;
+          gap: 4px;
+        }
+
+        .branchComparisonRow {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto auto;
+          align-items: center;
+          gap: 14px;
+          padding: 13px 0;
+          border-bottom: 1px solid var(--ws-border);
+        }
+
+        .branchComparisonRow > div {
+          display: grid;
+          gap: 3px;
+        }
+
+        .branchComparisonRow strong {
+          color: var(--ws-text);
+          font-size: 13px;
+        }
+
+        .branchComparisonRow b {
+          color: var(--ws-gold);
+          font-size: 12px;
+          white-space: nowrap;
+        }
+
         .ranking {
           display: grid;
         }
@@ -1247,6 +1449,19 @@ export default function ReportsPage() {
 
           .methods {
             grid-template-columns: 1fr;
+          }
+
+          .advancedSummary {
+            grid-template-columns: 1fr 1fr;
+          }
+
+          .branchComparisonRow {
+            grid-template-columns: minmax(0, 1fr) auto;
+          }
+
+          .branchComparisonRow b {
+            grid-column: 2;
+            grid-row: 1 / span 2;
           }
 
           .error {

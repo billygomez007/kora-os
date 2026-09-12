@@ -23,6 +23,18 @@ export class ReportsController {
     return this.reportsService.revenue(tenant, query);
   }
 
+  @Get('advanced')
+  @RequireEntitlement('reporting.advanced')
+  async advanced(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {
+    return this.reportsService.advanced(tenant, query);
+  }
+
+  @Get('multi-branch')
+  @RequireEntitlement('reporting.multi_branch')
+  async multiBranch(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {
+    return this.reportsService.multiBranch(tenant, query);
+  }
+
   @Get('staff-performance')
   @RequireEntitlement('reporting.performance')
   async staffPerformance(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {

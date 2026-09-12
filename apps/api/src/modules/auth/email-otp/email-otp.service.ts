@@ -114,7 +114,7 @@ export class EmailOtpService {
       code,
     });
 
-    await this.prisma.emailOtpChallenge.create({
+    const createdChallenge = await this.prisma.emailOtpChallenge.create({
       data: {
         id: challengeId,
         emailNormalized,
@@ -126,6 +126,27 @@ export class EmailOtpService {
         requestUserAgent: input.userAgent,
         replacesChallengeId: existingActive?.id,
       },
+    });
+
+    // Recomputes the digest independently and compares it against what
+    // Postgres actually stored and returned — not the in-memory
+    // `codeDigest` constant, which would trivially match itself. This is
+    // the one place that can catch a round-trip issue (encoding,
+    // truncation, collation) between "the code we generated" and "the
+    // digest now sitting in the database", without ever logging either.
+    const selfCheckDigest = computeOtpDigest({
+      pepper,
+      challengeId,
+      emailNormalized,
+      code,
+    });
+    this.logSimpleDiagnostic('request_digest_self_check', {
+      challengeId,
+      storedDigestMatchesGeneratedCode: digestsMatch(
+        selfCheckDigest,
+        createdChallenge.codeDigest,
+      ),
+      generatedCodeLength: code.length,
     });
 
     this.logDiagnostic('request_persisted', {
@@ -144,6 +165,10 @@ export class EmailOtpService {
     });
 
     try {
+      this.logSimpleDiagnostic('email_payload_prepared', {
+        challengeId,
+        codeLength: code.length,
+      });
       await this.sender.send({ emailNormalized, code, expiresAt, expiryMinutes });
       this.logDiagnostic('delivery_succeeded', {
         challengeId,
@@ -256,12 +281,13 @@ export class EmailOtpService {
       throw new UnauthorizedException(OTP_ERROR_BODY);
     }
 
+    const normalizedSubmittedCode = normalizeOtpCode(input.code);
     const pepper = this.config.getOrThrow<string>('OTP_PEPPER');
     const expectedDigest = computeOtpDigest({
       pepper,
       challengeId: challenge.id,
       emailNormalized: challenge.emailNormalized,
-      code: normalizeOtpCode(input.code),
+      code: normalizedSubmittedCode,
     });
     const codeIsCorrect = digestsMatch(expectedDigest, challenge.codeDigest);
 
@@ -276,6 +302,10 @@ export class EmailOtpService {
         attempts: failedAttempt.attempts,
         hashMatched: false,
         pepper,
+      });
+      this.logSimpleDiagnostic('verify_submitted_code_shape', {
+        challengeId: challenge.id,
+        submittedCodeLength: normalizedSubmittedCode.length,
       });
       await this.recordRejection(
         challenge,
@@ -468,6 +498,29 @@ export class EmailOtpService {
     this.logger.warn(
       `OTP diagnostic event=${event} challengeId=${safeDiagnosticToken(input.challengeId)} status=${safeDiagnosticToken(input.status)} expired=${formatDiagnosticBoolean(input.expired)} consumed=${formatDiagnosticBoolean(input.consumed)} invalidated=${formatDiagnosticBoolean(input.invalidated)} attempts=${formatDiagnosticAttempts(input.attempts)} hashMatched=${formatDiagnosticBoolean(input.hashMatched)} pepperFingerprint=${pepperFingerprint} replicaId=${safeDiagnosticToken(process.env.RAILWAY_REPLICA_ID ?? 'unknown')} deploymentId=${safeDiagnosticToken(process.env.RAILWAY_DEPLOYMENT_ID ?? 'unknown')}`,
     );
+  }
+
+  /**
+   * A narrower diagnostic line for events that don't fit
+   * `logDiagnostic`'s challenge-status shape — a lifecycle checkpoint
+   * (has the code reached this point, and with what length?) rather than
+   * a rejection reason. Every value here is a boolean, an integer, or a
+   * short allowlisted token; the OTP itself is never one of the accepted
+   * value types, so it cannot be passed in even by mistake.
+   */
+  private logSimpleDiagnostic(
+    event: string,
+    fields: Record<string, string | number | boolean>,
+  ): void {
+    const diagnostics = this.config.get<boolean | string>('OTP_DIAGNOSTICS');
+    if (diagnostics !== true && diagnostics !== 'true') return;
+
+    const parts = Object.entries(fields).map(([key, value]) => {
+      if (typeof value === 'string') return `${key}=${safeDiagnosticToken(value)}`;
+      if (typeof value === 'boolean') return `${key}=${value ? 'yes' : 'no'}`;
+      return `${key}=${Number.isInteger(value) && value >= 0 ? value : 'unknown'}`;
+    });
+    this.logger.warn(`OTP diagnostic event=${event} ${parts.join(' ')}`);
   }
 
   private async recordRejection(

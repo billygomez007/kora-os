@@ -20,7 +20,7 @@ function createServiceWithStubs(
       findFirst: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      create: vi.fn().mockResolvedValue({}),
+      create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => data),
       count: vi.fn().mockResolvedValue(0),
     },
     user: {
@@ -61,7 +61,7 @@ describe('EmailOtpService — expiry wording stays tied to configuration', () =>
         findFirst: vi.fn().mockResolvedValue(null),
         update: vi.fn().mockResolvedValue({}),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        create: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => data),
         count: vi.fn().mockResolvedValue(0),
       },
       user: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -99,7 +99,7 @@ describe('EmailOtpService — safe diagnostics', () => {
         findFirst: vi.fn().mockResolvedValue(null),
         update: vi.fn().mockResolvedValue({}),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        create: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => data),
         count: vi.fn().mockResolvedValue(0),
       },
       user: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -134,13 +134,58 @@ describe('EmailOtpService — safe diagnostics', () => {
     loggerWarn.mockRestore();
   });
 
+  it('proves the stored digest matches the generated code via an in-process self-check, and confirms the email payload checkpoint fires with the right length', async () => {
+    const prismaStub = {
+      emailOtpChallenge: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => data),
+        count: vi.fn().mockResolvedValue(0),
+      },
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+    };
+    const config = new ConfigService({
+      OTP_CODE_LENGTH: 6,
+      OTP_EXPIRY_MINUTES: 10,
+      OTP_MAX_ATTEMPTS: 5,
+      OTP_PEPPER: 'p'.repeat(32),
+      OTP_RESEND_COOLDOWN_SECONDS: 60,
+      OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
+      OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
+      OTP_DIAGNOSTICS: true,
+    });
+    const sender = { send: vi.fn().mockResolvedValue(undefined) };
+    const auditService = { record: vi.fn().mockResolvedValue(undefined) };
+    const loggerWarn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const service = new EmailOtpService(
+      prismaStub as never,
+      config,
+      sender as never,
+      auditService as never,
+    );
+
+    await service.requestChallenge({ email: 'new@example.test', requestId: 'req-selfcheck' });
+
+    const logs = loggerWarn.mock.calls.flat().map(String);
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          /event=request_digest_self_check .*storedDigestMatchesGeneratedCode=yes.*generatedCodeLength=6/,
+        ),
+        expect.stringMatching(/event=email_payload_prepared .*codeLength=6/),
+      ]),
+    );
+    loggerWarn.mockRestore();
+  });
+
   it('tags each diagnostic line with a replica/deployment identity, never the pepper itself', async () => {
     const prismaStub = {
       emailOtpChallenge: {
         findFirst: vi.fn().mockResolvedValue(null),
         update: vi.fn().mockResolvedValue({}),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        create: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => data),
         count: vi.fn().mockResolvedValue(0),
       },
       user: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -199,13 +244,13 @@ describe('EmailOtpService — cross-instance OTP_PEPPER consistency', () => {
    * different secret" hypothesis from the production OTP incident,
    * reproduced deterministically without any real infrastructure.
    */
-  function buildServiceWithPepper(pepper: string) {
+  function buildServiceWithPepper(pepper: string, options: { diagnostics?: boolean } = {}) {
     const prismaStub = {
       emailOtpChallenge: {
         findFirst: vi.fn().mockResolvedValue(null),
         update: vi.fn().mockResolvedValue({}),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        create: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => data),
         findUnique: vi.fn(),
         count: vi.fn().mockResolvedValue(0),
       },
@@ -223,6 +268,7 @@ describe('EmailOtpService — cross-instance OTP_PEPPER consistency', () => {
       OTP_RESEND_COOLDOWN_SECONDS: 60,
       OTP_MAX_REQUESTS_PER_EMAIL_PER_HOUR: 5,
       OTP_MAX_REQUESTS_PER_IP_PER_HOUR: 20,
+      OTP_DIAGNOSTICS: options.diagnostics ?? false,
     });
     const sender = { send: vi.fn().mockResolvedValue(undefined) };
     const auditService = { record: vi.fn().mockResolvedValue(undefined) };
@@ -285,6 +331,33 @@ describe('EmailOtpService — cross-instance OTP_PEPPER consistency', () => {
         requestId: 'req-b',
       }),
     ).resolves.toMatchObject({ emailNormalized: 'user@example.test' });
+  });
+
+  it('logs the submitted code length (never the code) alongside a hash-mismatch rejection', async () => {
+    const pepper = 'a'.repeat(32);
+    const { storedChallenge } = await requestThenBuildStoredChallenge(pepper);
+
+    const verifier = buildServiceWithPepper(pepper, { diagnostics: true });
+    verifier.prismaStub.emailOtpChallenge.findUnique.mockResolvedValue(storedChallenge);
+    const loggerWarn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    const wrongCode = '999999';
+    await expect(
+      verifier.service.verifyChallenge({
+        challengeId: storedChallenge.id,
+        code: wrongCode,
+        requestId: 'req-wrong',
+      }),
+    ).rejects.toMatchObject({ response: { code: 'OTP_INVALID' } });
+
+    const logs = loggerWarn.mock.calls.flat().map(String);
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/event=verify_submitted_code_shape .*submittedCodeLength=6/),
+      ]),
+    );
+    expect(logs.join('\n')).not.toContain(wrongCode);
+    loggerWarn.mockRestore();
   });
 });
 

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../../database/prisma.service.js';
+import { isUserAllowedAccess } from '../../../common/authorization/status-policy.js';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator.js';
 import type { AuthenticatedRequest } from '../interfaces/authenticated-request.interface.js';
 import { TokenService } from '../token.service.js';
@@ -27,10 +28,10 @@ export class JwtAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const isPublic = this.reflector.getAllAndOverride<boolean>(
-      IS_PUBLIC_KEY,
-      [context.getHandler(), context.getClass()],
-    );
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
     if (isPublic) {
       return true;
     }
@@ -50,13 +51,21 @@ export class JwtAuthGuard implements CanActivate {
 
     const session = await this.prisma.session.findUnique({
       where: { id: claims.sid },
-      select: { id: true, userId: true, revokedAt: true, expiresAt: true },
+      select: {
+        id: true,
+        userId: true,
+        revokedAt: true,
+        expiresAt: true,
+        user: { select: { status: true } },
+      },
     });
     if (
       !session ||
       session.userId !== claims.sub ||
       session.revokedAt !== null ||
-      session.expiresAt.getTime() <= Date.now()
+      session.expiresAt.getTime() <= Date.now() ||
+      !session.user ||
+      !isUserAllowedAccess(session.user.status)
     ) {
       throw new UnauthorizedException('Authentication is required');
     }

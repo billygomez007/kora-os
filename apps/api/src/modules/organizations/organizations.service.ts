@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { MembershipStatus } from '../../generated/prisma/client.js';
+import {
+  MembershipStatus,
+  OrganizationStatus,
+} from '../../generated/prisma/client.js';
 
 /** Read-only organization queries — atomic writes live in OnboardingService. */
 @Injectable()
@@ -10,7 +13,11 @@ export class OrganizationsService {
   /** Every organization the user holds an active membership in. */
   async listForUser(userId: string) {
     const memberships = await this.prisma.organizationMembership.findMany({
-      where: { userId, status: MembershipStatus.ACTIVE },
+      where: {
+        userId,
+        status: MembershipStatus.ACTIVE,
+        organization: { status: OrganizationStatus.ACTIVE },
+      },
       include: {
         organization: true,
         membershipRoles: {

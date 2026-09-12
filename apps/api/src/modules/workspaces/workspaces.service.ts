@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { BranchStatus, MembershipStatus, SubscriptionAccessMode } from '../../generated/prisma/client.js';
+import {
+  BranchStatus,
+  MembershipStatus,
+  OrganizationStatus,
+  SubscriptionAccessMode,
+} from '../../generated/prisma/client.js';
 import { SubscriptionAccessService } from '../subscriptions/subscription-access.service.js';
 
 const BROAD_BRANCH_ACCESS_PERMISSION = 'branches.manage';
@@ -69,7 +74,11 @@ export class WorkspacesService {
 
   async getMyWorkspaces(userId: string): Promise<MyWorkspacesView> {
     const memberships = await this.prisma.organizationMembership.findMany({
-      where: { userId, status: MembershipStatus.ACTIVE },
+      where: {
+        userId,
+        status: MembershipStatus.ACTIVE,
+        organization: { status: OrganizationStatus.ACTIVE },
+      },
       include: {
         organization: { include: { publicProfile: { select: { logoImageUrl: true } } } },
         membershipRoles: {
@@ -145,7 +154,11 @@ export class WorkspacesService {
    */
   async getAccessStatus(userId: string): Promise<AccessStatusView> {
     const activeCount = await this.prisma.organizationMembership.count({
-      where: { userId, status: MembershipStatus.ACTIVE },
+      where: {
+        userId,
+        status: MembershipStatus.ACTIVE,
+        organization: { status: OrganizationStatus.ACTIVE },
+      },
     });
     if (activeCount > 0) {
       return { hasInactiveMembership: false };
@@ -154,7 +167,13 @@ export class WorkspacesService {
     const inactiveCount = await this.prisma.organizationMembership.count({
       where: {
         userId,
-        status: { in: [MembershipStatus.SUSPENDED, MembershipStatus.REMOVED] },
+        OR: [
+          { status: { in: [MembershipStatus.SUSPENDED, MembershipStatus.REMOVED] } },
+          {
+            status: MembershipStatus.ACTIVE,
+            organization: { status: { not: OrganizationStatus.ACTIVE } },
+          },
+        ],
       },
     });
 

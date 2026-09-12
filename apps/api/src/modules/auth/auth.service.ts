@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service.js';
+import { isUserAllowedAccess } from '../../common/authorization/status-policy.js';
 import { SessionRevokedReason, UserStatus } from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { TokenService } from './token.service.js';
@@ -55,6 +56,9 @@ export class AuthService {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
     });
+    if (!isUserAllowedAccess(user.status)) {
+      throw new UnauthorizedException(GENERIC_AUTH_ERROR);
+    }
 
     const result = await this.issueSession(
       user.id,
@@ -83,6 +87,10 @@ export class AuthService {
     });
 
     if (!existing) {
+      throw new UnauthorizedException(GENERIC_AUTH_ERROR);
+    }
+
+    if (!isUserAllowedAccess(existing.session.user.status)) {
       throw new UnauthorizedException(GENERIC_AUTH_ERROR);
     }
 

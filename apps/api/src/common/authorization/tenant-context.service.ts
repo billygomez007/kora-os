@@ -4,6 +4,7 @@ import {
   MembershipStatus,
   SubscriptionAccessMode,
 } from '../../generated/prisma/client.js';
+import { isOrganizationAllowedAccess } from './status-policy.js';
 import { SubscriptionAccessService } from '../../modules/subscriptions/subscription-access.service.js';
 import type { TenantContext } from './interfaces/tenant-context.interface.js';
 
@@ -27,6 +28,7 @@ export class TenantContextService {
     const membership = await this.prisma.organizationMembership.findFirst({
       where: { userId, organizationId, status: MembershipStatus.ACTIVE },
       include: {
+        organization: { select: { status: true } },
         membershipRoles: {
           include: {
             role: {
@@ -38,6 +40,9 @@ export class TenantContextService {
       },
     });
     if (!membership) {
+      return null;
+    }
+    if (!isOrganizationAllowedAccess(membership.organization.status)) {
       return null;
     }
 

@@ -99,6 +99,16 @@ describe('My workspaces (e2e)', () => {
     expect(response.body.data.organizations.find((o: { organizationId: string }) => o.organizationId === fixture.organizationId)).toBeUndefined();
   });
 
+  it('excludes an active membership for a suspended organization from usable workspaces', async () => {
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'SUSPENDED' },
+    });
+
+    const response = await authed(testApp, fixture.ownerAccessToken).get(workspacesUrl()).expect(200);
+    expect(response.body.data.organizations).toEqual([]);
+  });
+
   it('never leaks another organization the caller does not belong to', async () => {
     const other = await createBookableFixture(testApp);
     const response = await authed(testApp, fixture.ownerAccessToken).get(workspacesUrl()).expect(200);
@@ -167,6 +177,15 @@ describe('My access status (e2e)', () => {
     await testApp.prisma.organizationMembership.updateMany({
       where: { organizationId: fixture.organizationId, userId: fixture.ownerUserId },
       data: { status: 'REMOVED' },
+    });
+    const response = await authed(testApp, fixture.ownerAccessToken).get(accessStatusUrl()).expect(200);
+    expect(response.body.data).toEqual({ hasInactiveMembership: true });
+  });
+
+  it('reports an inactive membership when the only active membership belongs to a suspended organization', async () => {
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'SUSPENDED' },
     });
     const response = await authed(testApp, fixture.ownerAccessToken).get(accessStatusUrl()).expect(200);
     expect(response.body.data).toEqual({ hasInactiveMembership: true });

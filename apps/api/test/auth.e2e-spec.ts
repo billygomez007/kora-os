@@ -242,6 +242,44 @@ describe('Passwordless email OTP auth (e2e)', () => {
       expect(userCount).toBe(1);
     });
 
+    it('denies existing access tokens and refresh tokens after the user is suspended', async () => {
+      const email = uniqueEmail();
+      const signedIn = await signInWithEmailOtp(testApp, email);
+      await trackUser(email);
+      await prisma.user.update({
+        where: { id: signedIn.userId },
+        data: { status: 'SUSPENDED' },
+      });
+
+      await authed(testApp, signedIn.accessToken).get('/v1/auth/me').expect(401);
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: signedIn.refreshToken })
+        .expect(401);
+    });
+
+    it('does not issue a fresh OTP session for an existing suspended user', async () => {
+      const email = uniqueEmail();
+      const signedIn = await signInWithEmailOtp(testApp, email);
+      await trackUser(email);
+      await prisma.user.update({
+        where: { id: signedIn.userId },
+        data: { status: 'SUSPENDED' },
+      });
+
+      await bypassOtpResendCooldown(testApp, signedIn.emailNormalized);
+      const challenge = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(signedIn.emailNormalized);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .send({ challengeId: challenge.body.data.challengeId, code })
+        .expect(401);
+    });
+
     it('normalizes email case, so two different-case requests resolve to the same account', async () => {
       const baseEmail = uniqueEmail();
       const lower = baseEmail.toLowerCase();

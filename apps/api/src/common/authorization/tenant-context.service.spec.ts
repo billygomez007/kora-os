@@ -1,4 +1,8 @@
-import { MembershipStatus, SubscriptionStatus } from '../../generated/prisma/client.js';
+import {
+  MembershipStatus,
+  OrganizationStatus,
+  SubscriptionStatus,
+} from '../../generated/prisma/client.js';
 import { SubscriptionAccessService } from '../../modules/subscriptions/subscription-access.service.js';
 import { TenantContextService } from './tenant-context.service.js';
 
@@ -21,9 +25,12 @@ function createServiceWithStub(options: {
   return { service, prismaStub };
 }
 
-function membershipFixture(roles: Array<{ code: string; permissionCodes: string[] }>) {
+function membershipFixture(
+  roles: Array<{ code: string; permissionCodes: string[] }>,
+) {
   return {
     id: 'membership-1',
+    organization: { status: OrganizationStatus.ACTIVE },
     membershipRoles: roles.map((role, index) => ({
       role: {
         code: role.code,
@@ -43,10 +50,26 @@ describe('TenantContextService', () => {
     await expect(service.resolve('user-1', 'org-1')).resolves.toBeNull();
   });
 
+  it('returns null when an active membership belongs to a suspended organization', async () => {
+    const { service } = createServiceWithStub({
+      membership: {
+        ...membershipFixture([
+          { code: 'owner', permissionCodes: ['organization.read'] },
+        ]),
+        organization: { status: OrganizationStatus.SUSPENDED },
+      },
+    });
+
+    await expect(service.resolve('user-1', 'org-1')).resolves.toBeNull();
+  });
+
   it('unions permissions across every role the membership holds', async () => {
     const { service } = createServiceWithStub({
       membership: membershipFixture([
-        { code: 'cashier', permissionCodes: ['transactions.read', 'payments.record'] },
+        {
+          code: 'cashier',
+          permissionCodes: ['transactions.read', 'payments.record'],
+        },
         { code: 'receptionist', permissionCodes: ['appointments.manage'] },
       ]),
       subscription: { status: SubscriptionStatus.ACTIVE },
@@ -62,7 +85,9 @@ describe('TenantContextService', () => {
 
   it('marks the membership as owner when it holds the owner role', async () => {
     const { service } = createServiceWithStub({
-      membership: membershipFixture([{ code: 'owner', permissionCodes: ['organization.read'] }]),
+      membership: membershipFixture([
+        { code: 'owner', permissionCodes: ['organization.read'] },
+      ]),
       subscription: { status: SubscriptionStatus.TRIALING },
     });
 
@@ -99,7 +124,11 @@ describe('TenantContextService', () => {
     await service.resolve('user-1', 'org-1');
     expect(prismaStub.organizationMembership.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { userId: 'user-1', organizationId: 'org-1', status: MembershipStatus.ACTIVE },
+        where: {
+          userId: 'user-1',
+          organizationId: 'org-1',
+          status: MembershipStatus.ACTIVE,
+        },
       }),
     );
   });

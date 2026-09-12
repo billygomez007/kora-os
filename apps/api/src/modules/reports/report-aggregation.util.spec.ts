@@ -6,6 +6,10 @@ import {
   aggregateStaffPerformance,
   netByCurrency,
   paginateInMemory,
+  redactCommissionRefundAnalytics,
+  redactPaymentMethodRefundAnalytics,
+  redactServiceRefundAnalytics,
+  redactStaffRefundAnalytics,
   summarizeByCurrency,
   summarizeTransactionKinds,
   sumByCurrency,
@@ -136,6 +140,96 @@ describe('aggregateStaffPerformance', () => {
     const result = aggregateStaffPerformance([], [{ staffProfileId: 'staff-z', calculatedAmountMinor: 10, currency: 'GHS', kind: 'EARNED' }]);
     expect(result).toHaveLength(1);
     expect(result[0].serviceCount).toBe(0);
+  });
+});
+
+describe('refund analytics redaction', () => {
+  it('keeps basic staff/service/commission values but removes refund-derived fields', () => {
+    const staff = aggregateStaffPerformance(
+      [
+        { staffProfileId: 'staff-a', priceMinorSnapshot: 1000, currencySnapshot: 'GHS', transactionKind: 'SALE' },
+        { staffProfileId: 'staff-a', priceMinorSnapshot: 300, currencySnapshot: 'GHS', transactionKind: 'REFUND' },
+        { staffProfileId: 'staff-refund-only', priceMinorSnapshot: 300, currencySnapshot: 'GHS', transactionKind: 'REFUND' },
+      ],
+      [
+        { staffProfileId: 'staff-a', calculatedAmountMinor: 100, currency: 'GHS', kind: 'EARNED' },
+        { staffProfileId: 'staff-a', calculatedAmountMinor: 30, currency: 'GHS', kind: 'REFUNDED' },
+      ],
+    );
+    const redactedStaff = redactStaffRefundAnalytics(staff);
+    expect(redactedStaff).toHaveLength(1);
+    expect(redactedStaff[0]).toMatchObject({
+      revenue: [{ currency: 'GHS', amountMinor: 1000 }],
+      commissionAccrued: [{ currency: 'GHS', amountMinor: 100 }],
+      refundedRevenue: [],
+      reversedRevenue: [],
+      netRevenue: [],
+      commissionRefunded: [],
+      commissionReversed: [],
+      netCommission: [],
+    });
+
+    const services = aggregateServicePerformance([
+      { serviceId: 'service-a', serviceNameSnapshot: 'Haircut', priceMinorSnapshot: 1000, currencySnapshot: 'GHS', transactionKind: 'SALE' },
+      { serviceId: 'service-a', serviceNameSnapshot: 'Haircut', priceMinorSnapshot: 300, currencySnapshot: 'GHS', transactionKind: 'REFUND' },
+      { serviceId: 'service-refund-only', serviceNameSnapshot: 'Old service', priceMinorSnapshot: 300, currencySnapshot: 'GHS', transactionKind: 'REFUND' },
+    ]);
+    expect(redactServiceRefundAnalytics(services)).toEqual([
+      expect.objectContaining({
+        serviceId: 'service-a',
+        revenue: [{ currency: 'GHS', amountMinor: 1000 }],
+        refundedAmount: [],
+        reversedAmount: [],
+        netAmount: [],
+      }),
+    ]);
+
+    const commissions = redactCommissionRefundAnalytics([
+      {
+        staffProfileId: 'staff-a',
+        policyAccrued: [{ currency: 'GHS', amountMinor: 100 }],
+        noPolicyAccrued: [],
+        refunded: [{ currency: 'GHS', amountMinor: 30 }],
+        reversed: [],
+        net: [{ currency: 'GHS', amountMinor: 70 }],
+      },
+      {
+        staffProfileId: 'staff-refund-only',
+        policyAccrued: [],
+        noPolicyAccrued: [],
+        refunded: [{ currency: 'GHS', amountMinor: 30 }],
+        reversed: [],
+        net: [{ currency: 'GHS', amountMinor: -30 }],
+      },
+    ]);
+    expect(commissions).toEqual([
+      {
+        staffProfileId: 'staff-a',
+        policyAccrued: [{ currency: 'GHS', amountMinor: 100 }],
+        noPolicyAccrued: [],
+        refunded: [],
+        reversed: [],
+        net: [],
+      },
+    ]);
+  });
+
+  it('keeps posted payment collections while withholding returned and net totals', () => {
+    const entries = aggregatePaymentMethods([
+      { method: 'CASH', amountMinorSnapshot: 1000, currencySnapshot: 'GHS', receiptKind: 'SALE_RECEIPT' },
+      { method: 'CASH', amountMinorSnapshot: 300, currencySnapshot: 'GHS', receiptKind: 'REFUND_RECEIPT' },
+      { method: 'MOBILE_MONEY', amountMinorSnapshot: 300, currencySnapshot: 'GHS', receiptKind: 'REFUND_RECEIPT' },
+    ]);
+    expect(redactPaymentMethodRefundAnalytics(entries)).toEqual([
+      {
+        method: 'CASH',
+        total: [{ currency: 'GHS', amountMinor: 1000 }],
+        count: 1,
+        returnedTotal: [],
+        returnedCount: 0,
+        netTotal: [],
+      },
+    ]);
   });
 });
 

@@ -165,6 +165,7 @@ export interface OverviewReport {
   pendingPaymentClaimCount: number;
   disputedPaymentClaimCount: number;
   grossPostedSales: CurrencyAmount[];
+  refundReportingAvailable: boolean;
   refundAmount: CurrencyAmount[];
   reversalAmount: CurrencyAmount[];
   netPostedRevenue: CurrencyAmount[];

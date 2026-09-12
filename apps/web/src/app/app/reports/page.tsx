@@ -32,6 +32,7 @@ type Overview = {
   pendingPaymentClaimCount: number;
   disputedPaymentClaimCount: number;
   grossPostedSales: MoneyTotal[];
+  refundReportingAvailable: boolean;
   refundAmount: MoneyTotal[];
   reversalAmount: MoneyTotal[];
   netPostedRevenue: MoneyTotal[];
@@ -296,11 +297,15 @@ export default function ReportsPage() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
+  const reportReady = loadState === "ready";
   const currency =
-    overview?.netPostedRevenue?.[0]?.currency ??
     overview?.grossPostedSales?.[0]?.currency ??
+    overview?.netPostedRevenue?.[0]?.currency ??
     workspace?.currency ??
     "GHS";
+
+  const refundReportingAvailable =
+    reportReady && overview?.refundReportingAvailable === true;
 
   const gross = amountForCurrency(
     overview?.grossPostedSales,
@@ -331,7 +336,6 @@ export default function ReportsPage() {
     1,
     ...(revenue?.buckets ?? []).map((item) => item.amountMinor),
   );
-  const reportReady = loadState === "ready";
 
   return (
     <WorkspaceShell
@@ -413,8 +417,14 @@ export default function ReportsPage() {
       <section className="metrics">
         <article className="metric primary">
           <span>Net revenue</span>
-          <strong>{reportReady ? money(net, currency) : "—"}</strong>
-          <small>{reportReady ? "Sales less refunds and reversals" : t("unavailable")}</small>
+          <strong>{refundReportingAvailable ? money(net, currency) : "—"}</strong>
+          <small>
+            {!reportReady
+              ? t("unavailable")
+              : refundReportingAvailable
+                ? "Sales less refunds and reversals"
+                : t("refundReportingUnavailable")}
+          </small>
         </article>
 
         <article className="metric">
@@ -425,11 +435,13 @@ export default function ReportsPage() {
 
         <article className="metric">
           <span>Refunds &amp; reversals</span>
-          <strong>{reportReady ? money(refunds + reversals, currency) : "—"}</strong>
+          <strong>{refundReportingAvailable ? money(refunds + reversals, currency) : "—"}</strong>
           <small>
-            {reportReady
+            {!reportReady
+              ? t("unavailable")
+              : refundReportingAvailable
               ? `${(overview?.refundTransactionCount ?? 0) + (overview?.reversalTransactionCount ?? 0)} corrections`
-              : t("unavailable")}
+              : t("refundReportingUnavailable")}
           </small>
         </article>
 

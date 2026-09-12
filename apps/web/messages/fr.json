@@ -177,6 +177,7 @@
     "performanceForbidden": "Les rapports de performance ne sont pas inclus dans le forfait actuel.",
     "performanceUnavailable": "Les rapports de performance sont momentanément indisponibles.",
     "performanceError": "Les rapports de performance n’ont pas pu être chargés en raison d’une erreur de l’API.",
+    "refundReportingUnavailable": "Les rapports de remboursements et d’annulations ne sont pas inclus dans le forfait actuel.",
     "paymentsUnavailable": "Activité des paiements indisponible.",
     "cashKicker": "CONTRÔLE DES ESPÈCES",
     "cashTitle": "Rapprochement des espèces",

@@ -177,6 +177,7 @@
     "performanceForbidden": "Performance reporting is not included in the current plan.",
     "performanceUnavailable": "Performance reporting is temporarily unavailable.",
     "performanceError": "Performance reporting could not be loaded because of an API error.",
+    "refundReportingUnavailable": "Refund and reversal reporting is not included in the current plan.",
     "paymentsUnavailable": "Payment activity unavailable.",
     "cashKicker": "CASH CONTROL",
     "cashTitle": "Cash reconciliation",

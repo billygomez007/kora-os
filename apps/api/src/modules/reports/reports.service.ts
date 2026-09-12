@@ -13,6 +13,10 @@ import {
   aggregateServicePerformance,
   aggregateStaffPerformance,
   paginateInMemory,
+  redactCommissionRefundAnalytics,
+  redactPaymentMethodRefundAnalytics,
+  redactServiceRefundAnalytics,
+  redactStaffRefundAnalytics,
   summarizeByCurrency,
   summarizeTransactionKinds,
   sumByCurrency,
@@ -31,6 +35,7 @@ import {
 } from './report-grouping.util.js';
 
 const BROAD_BRANCH_ACCESS_PERMISSION = 'branches.manage';
+const REFUND_REPORTING_ENTITLEMENT = 'reporting.refunds';
 const DEFAULT_PAGE_SIZE = 20;
 
 interface ReportQuery {
@@ -67,6 +72,9 @@ export class ReportsService {
   ) {}
 
   async overview(tenant: TenantContext, query: ReportQuery) {
+    const refundReportingAvailable = await this.hasRefundReporting(
+      tenant.organizationId,
+    );
     const range = parseReportDateRange(query.from, query.to);
     const scope = await this.resolveScope(
       tenant,
@@ -151,11 +159,18 @@ export class ReportsService {
       pendingPaymentClaimCount,
       disputedPaymentClaimCount,
       grossPostedSales: kindTotals.grossPostedSales,
-      refundAmount: kindTotals.refundAmount,
-      reversalAmount: kindTotals.reversalAmount,
-      netPostedRevenue: kindTotals.netPostedRevenue,
-      refundTransactionCount: kindTotals.refundTransactionCount,
-      reversalTransactionCount: kindTotals.reversalTransactionCount,
+      refundReportingAvailable,
+      refundAmount: refundReportingAvailable ? kindTotals.refundAmount : [],
+      reversalAmount: refundReportingAvailable ? kindTotals.reversalAmount : [],
+      netPostedRevenue: refundReportingAvailable
+        ? kindTotals.netPostedRevenue
+        : [],
+      refundTransactionCount: refundReportingAvailable
+        ? kindTotals.refundTransactionCount
+        : 0,
+      reversalTransactionCount: refundReportingAvailable
+        ? kindTotals.reversalTransactionCount
+        : 0,
     };
   }
 
@@ -208,6 +223,9 @@ export class ReportsService {
     tenant: TenantContext,
     query: ReportQuery & { cursor?: string; limit?: number },
   ) {
+    const refundReportingAvailable = await this.hasRefundReporting(
+      tenant.organizationId,
+    );
     const range = parseReportDateRange(query.from, query.to);
     const scope = await this.resolveScope(
       tenant,
@@ -258,8 +276,11 @@ export class ReportsService {
       })),
       accruals,
     );
+    const visibleEntries = refundReportingAvailable
+      ? entries
+      : redactStaffRefundAnalytics(entries);
     const page = paginateInMemory<StaffPerformanceEntry>(
-      entries,
+      visibleEntries,
       query.cursor,
       query.limit ?? DEFAULT_PAGE_SIZE,
       (e) => e.staffProfileId,
@@ -278,6 +299,9 @@ export class ReportsService {
     tenant: TenantContext,
     query: ReportQuery & { cursor?: string; limit?: number },
   ) {
+    const refundReportingAvailable = await this.hasRefundReporting(
+      tenant.organizationId,
+    );
     const range = parseReportDateRange(query.from, query.to);
     const scope = await this.resolveScope(
       tenant,
@@ -313,8 +337,11 @@ export class ReportsService {
         transactionKind: item.transaction.kind,
       })),
     );
+    const visibleEntries = refundReportingAvailable
+      ? entries
+      : redactServiceRefundAnalytics(entries);
     const page = paginateInMemory<ServicePerformanceEntry>(
-      entries,
+      visibleEntries,
       query.cursor,
       query.limit ?? DEFAULT_PAGE_SIZE,
       (e) => e.serviceId,
@@ -333,6 +360,9 @@ export class ReportsService {
     tenant: TenantContext,
     query: ReportQuery & { cursor?: string; limit?: number },
   ) {
+    const refundReportingAvailable = await this.hasRefundReporting(
+      tenant.organizationId,
+    );
     const range = parseReportDateRange(query.from, query.to);
     const scope = await this.resolveScope(
       tenant,
@@ -359,8 +389,11 @@ export class ReportsService {
     const entries = aggregatePaymentMethods(
       summaries.map((s) => ({ ...s, receiptKind: s.receipt.kind })),
     );
+    const visibleEntries = refundReportingAvailable
+      ? entries
+      : redactPaymentMethodRefundAnalytics(entries);
     const page = paginateInMemory<PaymentMethodEntry>(
-      entries,
+      visibleEntries,
       query.cursor,
       query.limit ?? DEFAULT_PAGE_SIZE,
       (e) => e.method,
@@ -379,6 +412,9 @@ export class ReportsService {
     tenant: TenantContext,
     query: ReportQuery & { cursor?: string; limit?: number },
   ) {
+    const refundReportingAvailable = await this.hasRefundReporting(
+      tenant.organizationId,
+    );
     const range = parseReportDateRange(query.from, query.to);
     const scope = await this.resolveScope(
       tenant,
@@ -404,8 +440,11 @@ export class ReportsService {
     });
 
     const entries = aggregateCommissionsBySource(accruals);
+    const visibleEntries = refundReportingAvailable
+      ? entries
+      : redactCommissionRefundAnalytics(entries);
     const page = paginateInMemory<CommissionReportEntry>(
-      entries,
+      visibleEntries,
       query.cursor,
       query.limit ?? DEFAULT_PAGE_SIZE,
       (e) => e.staffProfileId,
@@ -556,5 +595,21 @@ export class ReportsService {
       branchFilter,
       timeZone: resolveReportTimeZone(undefined, explicitTimeZone),
     };
+  }
+
+  /**
+   * Refund reporting is a mixed-response capability. A plan without it must
+   * still receive basic reports, so this check deliberately returns false
+   * instead of throwing the plan-denial response used by dedicated routes.
+   */
+  private async hasRefundReporting(organizationId: string): Promise<boolean> {
+    try {
+      return await this.entitlementsService.hasForOrganization(
+        organizationId,
+        REFUND_REPORTING_ENTITLEMENT,
+      );
+    } catch {
+      return false;
+    }
   }
 }

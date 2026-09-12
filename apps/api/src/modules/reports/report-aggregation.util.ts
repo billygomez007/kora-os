@@ -128,6 +128,33 @@ export interface StaffPerformanceEntry {
 }
 
 /**
+ * Keep the basic staff-performance report useful on plans without refund
+ * reporting while withholding every refund-derived field. Entries that only
+ * exist because of a refund/reversal are omitted so the response cannot leak
+ * the existence of refund activity through an otherwise empty staff row.
+ */
+export function redactStaffRefundAnalytics(
+  entries: readonly StaffPerformanceEntry[],
+): StaffPerformanceEntry[] {
+  return entries
+    .filter(
+      (entry) =>
+        entry.revenue.length > 0 ||
+        entry.commissionAccrued.length > 0 ||
+        entry.serviceCount > 0,
+    )
+    .map((entry) => ({
+      ...entry,
+      refundedRevenue: [],
+      reversedRevenue: [],
+      netRevenue: [],
+      commissionRefunded: [],
+      commissionReversed: [],
+      netCommission: [],
+    }));
+}
+
+/**
  * Aggregates per-staff revenue (from TransactionLineItem snapshots, kind-
  * aware since Phase 6) and commission (from CommissionAccrual, kind-
  * aware since Phase 6) into one entry per staff member, deterministically
@@ -212,6 +239,20 @@ export interface ServicePerformanceEntry {
   serviceCount: number;
 }
 
+/** Withhold refund/reversal-derived service fields for Starter-style plans. */
+export function redactServiceRefundAnalytics(
+  entries: readonly ServicePerformanceEntry[],
+): ServicePerformanceEntry[] {
+  return entries
+    .filter((entry) => entry.revenue.length > 0 || entry.serviceCount > 0)
+    .map((entry) => ({
+      ...entry,
+      refundedAmount: [],
+      reversedAmount: [],
+      netAmount: [],
+    }));
+}
+
 /** Kind-aware since Phase 6 (docs task: "service reporting distinguishes
  * sold and refunded amounts") — `serviceCount` counts only SALE lines. */
 export function aggregateServicePerformance(
@@ -272,6 +313,20 @@ export interface PaymentMethodEntry {
   netTotal: CurrencyAmount[];
 }
 
+/** Withhold return totals/counts while preserving posted collections. */
+export function redactPaymentMethodRefundAnalytics(
+  entries: readonly PaymentMethodEntry[],
+): PaymentMethodEntry[] {
+  return entries
+    .filter((entry) => entry.total.length > 0 || entry.count > 0)
+    .map((entry) => ({
+      ...entry,
+      returnedTotal: [],
+      returnedCount: 0,
+      netTotal: [],
+    }));
+}
+
 /** Kind-aware since Phase 6 (docs task: "payment-method reporting
  * distinguishes collections and recorded returns") — `receiptKind` is
  * the parent Receipt's kind, never a live PaymentRecord read. */
@@ -317,6 +372,23 @@ export interface CommissionReportEntry {
   refunded: CurrencyAmount[];
   reversed: CurrencyAmount[];
   net: CurrencyAmount[];
+}
+
+/** Keep earned commission visible without exposing refund adjustments/net. */
+export function redactCommissionRefundAnalytics(
+  entries: readonly CommissionReportEntry[],
+): CommissionReportEntry[] {
+  return entries
+    .filter(
+      (entry) =>
+        entry.policyAccrued.length > 0 || entry.noPolicyAccrued.length > 0,
+    )
+    .map((entry) => ({
+      ...entry,
+      refunded: [],
+      reversed: [],
+      net: [],
+    }));
 }
 
 /** Kind-aware since Phase 6 (docs task: "commission reporting

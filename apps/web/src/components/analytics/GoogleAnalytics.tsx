@@ -2,11 +2,16 @@
 
 import Script from "next/script";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  analyticsConsentUpdate,
+  ANALYTICS_CONSENT_EVENT,
+  clearGoogleAnalyticsCookies,
   KORA_GA_MEASUREMENT_ID,
   isPublicAnalyticsPath,
+  readAnalyticsConsent,
   safeAnalyticsPath,
+  type AnalyticsConsent,
 } from "@/lib/analytics";
 
 declare global {
@@ -14,6 +19,7 @@ declare global {
     dataLayer?: unknown[];
     gtag?: (...args: unknown[]) => void;
     __koraGaInitialized?: boolean;
+    __koraGaConfigured?: boolean;
   }
 }
 
@@ -25,14 +31,45 @@ declare global {
 export default function GoogleAnalytics() {
   const pathname = usePathname();
   const handledPath = useRef<string | null>(null);
+  const [consent, setConsent] = useState<AnalyticsConsent | null>(null);
   const production = process.env.NODE_ENV === "production";
-  const trackable = Boolean(pathname && production && isPublicAnalyticsPath(pathname));
+  const publicPath = Boolean(pathname && production && isPublicAnalyticsPath(pathname));
+  const trackable = publicPath && consent === "granted";
+
+  useEffect(() => {
+    if (!publicPath) {
+      return;
+    }
+
+    const syncConsent = window.setTimeout(() => setConsent(readAnalyticsConsent()), 0);
+    const handleConsent = (event: Event) => {
+      const nextConsent = (event as CustomEvent<AnalyticsConsent>).detail;
+      if (nextConsent === "granted" || nextConsent === "denied") {
+        setConsent(nextConsent);
+      }
+    };
+
+    window.addEventListener(ANALYTICS_CONSENT_EVENT, handleConsent);
+    return () => {
+      window.clearTimeout(syncConsent);
+      window.removeEventListener(ANALYTICS_CONSENT_EVENT, handleConsent);
+    };
+  }, [publicPath]);
+
+  useEffect(() => {
+    if (consent !== "denied") return;
+    if (typeof window.gtag === "function") {
+      window.gtag("consent", "update", analyticsConsentUpdate("denied"));
+    }
+    clearGoogleAnalyticsCookies();
+    handledPath.current = null;
+  }, [consent]);
 
   useEffect(() => {
     if (!pathname) return;
 
     if (!trackable) {
-      handledPath.current = pathname;
+      handledPath.current = null;
       return;
     }
 
@@ -65,6 +102,17 @@ export default function GoogleAnalytics() {
     };
   }, [pathname, trackable]);
 
+  useEffect(() => {
+    if (!trackable || typeof window.gtag !== "function") return;
+
+    window.gtag("consent", "update", analyticsConsentUpdate("granted"));
+
+    if (!window.__koraGaConfigured) {
+      window.gtag("config", KORA_GA_MEASUREMENT_ID, { send_page_view: false });
+      window.__koraGaConfigured = true;
+    }
+  }, [trackable]);
+
   if (!trackable) return null;
 
   return (
@@ -74,8 +122,13 @@ export default function GoogleAnalytics() {
 window.dataLayer = window.dataLayer || [];
 window.gtag = window.gtag || function(){window.dataLayer.push(arguments);};
 window.gtag('js', new Date());
-window.gtag('config', '${KORA_GA_MEASUREMENT_ID}', {send_page_view: false});
+window.gtag('consent', 'default', {analytics_storage: 'denied', ad_storage: 'denied', ad_user_data: 'denied', ad_personalization: 'denied'});
 window.__koraGaInitialized = true;
+}
+window.gtag('consent', 'update', {analytics_storage: 'granted', ad_storage: 'denied', ad_user_data: 'denied', ad_personalization: 'denied'});
+if (!window.__koraGaConfigured) {
+window.gtag('config', '${KORA_GA_MEASUREMENT_ID}', {send_page_view: false});
+window.__koraGaConfigured = true;
 }`}
       </Script>
       <Script

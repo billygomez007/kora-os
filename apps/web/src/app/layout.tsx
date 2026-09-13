@@ -3,6 +3,7 @@ import { Manrope } from "next/font/google";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages, getTranslations } from "next-intl/server";
 import { headers } from "next/headers";
+import AnalyticsConsentBanner from "@/components/analytics/AnalyticsConsentBanner";
 import GoogleAnalytics from "@/components/analytics/GoogleAnalytics";
 import "./globals.css";
 
@@ -53,8 +54,9 @@ export default async function RootLayout({
   return (
     <html data-scroll-behavior="smooth" lang={locale} className={manrope.variable}>
       <body>
-        <GoogleAnalytics />
         <NextIntlClientProvider locale={locale} messages={messages}>
+          <GoogleAnalytics />
+          <AnalyticsConsentBanner />
           {children}
         </NextIntlClientProvider>
       </body>

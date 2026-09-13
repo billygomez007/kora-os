@@ -26,7 +26,7 @@ const featureItems = {
 const pricingPlans = ["starter", "business", "pro", "enterprise"] as const;
 const resourceCategories = ["gettingStarted", "operations", "team", "customers", "commerce", "reports", "marketplace", "security"] as const;
 const helpCategories = ["gettingStarted", "appointments", "team", "customers", "services", "products", "payments", "reports", "marketplace", "security"] as const;
-const privacySections = ["information", "business", "customer", "commerce", "sessions", "use", "retention", "rights", "security", "contact"] as const;
+const privacySections = ["information", "business", "customer", "commerce", "sessions", "use", "analytics", "retention", "rights", "security", "contact"] as const;
 
 function localizePath(locale: string, path: string) {
   return path.startsWith("/") ? `/${locale}${path}` : path;
@@ -36,6 +36,7 @@ export default async function UtilityContentPage({ id }: { id: UtilityPageId }) 
   const locale = await getLocale();
   const t = await getTranslations(id === "pricing" ? "Pricing" : `Utility.${id}`);
   const common = await getTranslations("Common");
+  const analyticsPrivacy = id === "privacy" ? await getTranslations("AnalyticsPrivacy") : null;
 
   return (
     <main className="public-content-page">
@@ -93,7 +94,7 @@ export default async function UtilityContentPage({ id }: { id: UtilityPageId }) 
 
       {id === "help" ? <><section className="public-content-section shell"><div className="public-content-heading"><span>{t("centreKicker")}</span><h2>{t("centreTitle")}</h2><p>{t("centreBody")}</p></div><div className="public-content-category-grid">{helpCategories.map((category, index) => <article key={category}><span className="public-content-index">{String(index + 1).padStart(2, "0")}</span><h3>{t(`categories.${category}.title`)}</h3><p>{t(`categories.${category}.body`)}</p></article>)}</div></section><section className="public-content-contact-strip"><div className="shell"><div><span>{t("contactKicker")}</span><h2>{t("contactTitle")}</h2><p>{t("contactBody")}</p></div><div className="public-contact-links"><a href="mailto:hello@koraafric.com"><span>{t("general")}</span>hello@koraafric.com</a><a href="mailto:info@koraafric.com"><span>{t("information")}</span>info@koraafric.com</a><a href="tel:0302952240"><span>{t("phone")}</span>0302952240</a><span><span>{t("location")}</span>Accra, Ghana</span></div></div></section></> : null}
 
-      {id === "privacy" ? <section className="public-content-legal shell"><div className="public-content-heading"><span>{t("legalKicker")}</span><h2>{t("legalTitle")}</h2><p>{t("legalIntro")}</p></div><div className="public-content-legal-grid">{privacySections.map((section) => <article key={section}><h3>{t(`sections.${section}.title`)}</h3><p>{t(`sections.${section}.body`)}</p></article>)}</div><p className="public-content-last-updated">{t("lastUpdated")}</p></section> : null}
+      {id === "privacy" && analyticsPrivacy ? <section className="public-content-legal shell"><div className="public-content-heading"><span>{t("legalKicker")}</span><h2>{t("legalTitle")}</h2><p>{t("legalIntro")}</p></div><div className="public-content-legal-grid">{privacySections.map((section) => <article key={section}><h3>{t(`sections.${section}.title`)}</h3><p>{t(`sections.${section}.body`)}</p></article>)}<article><h3>{analyticsPrivacy("title")}</h3><p>{analyticsPrivacy("body")}</p></article></div><p className="public-content-last-updated">{t("lastUpdated")}</p></section> : null}
 
       <MarketingFooter />
     </main>

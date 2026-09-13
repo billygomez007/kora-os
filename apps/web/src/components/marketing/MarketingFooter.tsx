@@ -1,6 +1,7 @@
 import { getLocale, getTranslations } from "next-intl/server";
 import { type Locale } from "@/i18n/config";
 import { localizePathname } from "@/i18n/routing";
+import AnalyticsPreferencesButton from "@/components/analytics/AnalyticsPreferencesButton";
 import { Logo } from "./Logo";
 
 export default async function MarketingFooter() {
@@ -40,6 +41,7 @@ export default async function MarketingFooter() {
           <a href={href("/resources")}>{t("guides")}</a>
           <a href={`${href("/contact")}?type=support`}>{t("contactSupport")}</a>
           <a href={href("/privacy")}>{t("privacy")}</a>
+          <AnalyticsPreferencesButton />
         </div>
 
         <div className="footer-real">

@@ -15,6 +15,7 @@ import { resolveWorkspaceEntry } from "@/lib/workspace/entry";
 import { workspaceEntryRedirectPath } from "@/lib/workspace/routing";
 import LanguageSwitcher from "@/components/i18n/LanguageSwitcher";
 import { stripLocale } from "@/i18n/routing";
+import WorkspaceLoadingState from "./WorkspaceLoadingState";
 import {
   hasAnyWorkspacePermission,
   visibleWorkspaceNavItems,
@@ -318,9 +319,7 @@ export default function WorkspaceShell({
 
         <div className="workspace-content">
           {!accessResolved ? (
-            <div className="workspace-access-loading">
-              {t("checkingAccess")}
-            </div>
+            <WorkspaceLoadingState />
           ) : pageAllowed ? (
             children
           ) : (

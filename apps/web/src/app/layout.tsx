@@ -18,7 +18,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const suffix = pathname === "/" ? "" : pathname;
   const canonical = `/${locale}${suffix}`;
   return {
-    metadataBase: new URL("https://koraafric.com"),
+    metadataBase: new URL("https://www.koraafric.com"),
     title: t("title"),
     description: t("description"),
     alternates: {

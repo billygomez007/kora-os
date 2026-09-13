@@ -730,7 +730,7 @@ As of docs/ROADMAP.md Phase 7, a receipt's `kind` is `SALE_RECEIPT`, `REFUND_REC
 
 ## 22. Reports
 
-Implemented (docs/ROADMAP.md Phase 7), owner/manager only (`reports.read`). Every figure is derived from an already-POSTED Transaction and its snapshots — see docs/ARCHITECTURE.md section 21 and docs/SECURITY.md section 34 for the full authority model, including exactly which figures count as revenue.
+Implemented (docs/ROADMAP.md Phase 7), owner/manager only (`reports.read`). The dedicated `reports/commissions` route additionally requires the `commissions.reporting` plan entitlement; the mixed overview remains available to basic report readers but withholds its `commissionAccrued` field when that entitlement is absent. Every figure is derived from an already-POSTED Transaction and its snapshots — see docs/ARCHITECTURE.md section 21 and docs/SECURITY.md section 34 for the full authority model, including exactly which figures count as revenue.
 
 - `GET /organizations/{organizationId}/reports/overview`
 - `GET /organizations/{organizationId}/reports/revenue`
@@ -750,6 +750,7 @@ Example overview response shape:
   "transactionCount": 17,
   "averageTransactionValue": [{ "currency": "GHS", "amountMinor": 50000 }],
   "completedServiceCount": 21,
+  "commissionReportingAvailable": true,
   "commissionAccrued": [{ "currency": "GHS", "amountMinor": 85000 }],
   "pendingPaymentClaimCount": 2,
   "disputedPaymentClaimCount": 0,

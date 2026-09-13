@@ -36,6 +36,7 @@ import {
 
 const BROAD_BRANCH_ACCESS_PERMISSION = 'branches.manage';
 const REFUND_REPORTING_ENTITLEMENT = 'reporting.refunds';
+const COMMISSION_REPORTING_ENTITLEMENT = 'commissions.reporting';
 const MULTI_BRANCH_REPORTING_ENTITLEMENT = 'reporting.multi_branch';
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -74,6 +75,9 @@ export class ReportsService {
 
   async overview(tenant: TenantContext, query: ReportQuery) {
     const refundReportingAvailable = await this.hasRefundReporting(
+      tenant.organizationId,
+    );
+    const commissionReportingAvailable = await this.hasCommissionReporting(
       tenant.organizationId,
     );
     const range = parseReportDateRange(query.from, query.to);
@@ -156,7 +160,8 @@ export class ReportsService {
       transactionCount: saleTransactions.length,
       averageTransactionValue: revenueSummary.averages,
       completedServiceCount,
-      commissionAccrued,
+      commissionAccrued: commissionReportingAvailable ? commissionAccrued : [],
+      commissionReportingAvailable,
       pendingPaymentClaimCount,
       disputedPaymentClaimCount,
       grossPostedSales: kindTotals.grossPostedSales,
@@ -811,6 +816,22 @@ export class ReportsService {
       return await this.entitlementsService.hasForOrganization(
         organizationId,
         REFUND_REPORTING_ENTITLEMENT,
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Commission reporting is a mixed-response capability. Starter plans can
+   * still accrue commission records, but the premium report field must be
+   * withheld without blocking the rest of the overview.
+   */
+  private async hasCommissionReporting(organizationId: string): Promise<boolean> {
+    try {
+      return await this.entitlementsService.hasForOrganization(
+        organizationId,
+        COMMISSION_REPORTING_ENTITLEMENT,
       );
     } catch {
       return false;

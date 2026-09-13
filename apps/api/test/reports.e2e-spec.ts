@@ -54,8 +54,8 @@ describe('Owner/manager reports (e2e)', () => {
     });
   }
 
-  // These report routes remain available to report readers on every plan.
-  const reportRoutes = ['overview', 'revenue', 'payment-methods', 'commissions'];
+  // These basic report routes remain available to report readers on every plan.
+  const reportRoutes = ['overview', 'revenue', 'payment-methods'];
   const performanceRoutes = ['staff-performance', 'services'];
 
   const advancedReportUrl = () => reportsUrl('advanced', { branchId: fixture.branchId });
@@ -99,6 +99,131 @@ describe('Owner/manager reports (e2e)', () => {
     await authed(testApp, manager.accessToken)
       .get(reportsUrl('overview', { branchId: fixture.branchId }))
       .expect(200);
+  });
+
+  it('requires commissions.reporting for the dedicated commission report while preserving reports.read RBAC', async () => {
+    const url = reportsUrl('commissions', { branchId: fixture.branchId });
+
+    const starter = await authed(testApp, fixture.ownerAccessToken).get(url).expect(403);
+    expect(starter.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
+    await authed(testApp, cashier.accessToken).get(url).expect(403);
+
+    await setPlan('business');
+    await authed(testApp, fixture.ownerAccessToken).get(url).expect(200);
+    await authed(testApp, manager.accessToken).get(url).expect(200);
+    await authed(testApp, cashier.accessToken).get(url).expect(403);
+  });
+
+  it.each(['business', 'growth', 'pro', 'enterprise'])(
+    'allows commission reporting for the %s plan',
+    async (planCode) => {
+      await setPlan(planCode);
+      await authed(testApp, fixture.ownerAccessToken)
+        .get(reportsUrl('commissions', { branchId: fixture.branchId }))
+        .expect(200);
+    },
+  );
+
+  it('denies commission reporting during the Starter TRIALING period', async () => {
+    const subscription = await testApp.prisma.organizationSubscription.findUniqueOrThrow({
+      where: { organizationId: fixture.organizationId },
+    });
+    expect(subscription.status).toBe('TRIALING');
+    const denied = await authed(testApp, manager.accessToken)
+      .get(reportsUrl('commissions', { branchId: fixture.branchId }))
+      .expect(403);
+    expect(denied.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
+  });
+
+  it('keeps commission accrued visible in the mixed overview for Business', async () => {
+    await setPlan('business');
+    await authed(testApp, manager.accessToken)
+      .post(`/v1/organizations/${fixture.organizationId}/commission-rules`)
+      .send({ type: 'PERCENTAGE', rateBasisPoints: 1000 })
+      .expect(201);
+    await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
+
+    const response = await authed(testApp, manager.accessToken)
+      .get(reportsUrl('overview'))
+      .expect(200);
+    expect(response.body.data.commissionReportingAvailable).toBe(true);
+    expect(response.body.data.commissionAccrued).toEqual([
+      {
+        currency: fixture.serviceCurrency,
+        amountMinor: Math.round((fixture.servicePriceMinor * 1000) / 10_000),
+      },
+    ]);
+  });
+
+  it('keeps commission reporting scoped to the authorized tenant and branches', async () => {
+    await setPlan('business');
+    const restrictedReader = await createNoPermissionActor(testApp, fixture);
+    const role = await testApp.prisma.membershipRole.findFirstOrThrow({
+      where: { membershipId: restrictedReader.membershipId },
+    });
+    const reportsRead = await testApp.prisma.permission.findUniqueOrThrow({
+      where: { code: 'reports.read' },
+    });
+    await testApp.prisma.rolePermission.create({
+      data: { roleId: role.roleId, permissionId: reportsRead.id },
+    });
+    const unassignedBranch = await testApp.prisma.branch.create({
+      data: {
+        organizationId: fixture.organizationId,
+        name: 'Commission restricted branch',
+        code: `COM-${randomUUID().slice(0, 6)}`,
+        countryCode: 'GH',
+        currency: 'GHS',
+        timeZone: 'Africa/Accra',
+      },
+    });
+    const other = await createBookableFixture(testApp);
+    const own = await authed(testApp, restrictedReader.accessToken)
+      .get(reportsUrl('commissions', { branchId: fixture.branchId }))
+      .expect(200);
+    expect(own.body.data).toEqual([]);
+
+    await authed(testApp, restrictedReader.accessToken)
+      .get(reportsUrl('commissions', { branchId: unassignedBranch.id }))
+      .expect(403);
+    await authed(testApp, restrictedReader.accessToken)
+      .get(reportsUrl('commissions').replace(fixture.organizationId, other.organizationId))
+      .expect(403);
+  });
+
+  it('preserves user, organization, and blocked-subscription denial precedence for commission reporting', async () => {
+    await setPlan('business');
+    await testApp.prisma.user.update({
+      where: { id: manager.userId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('commissions', { branchId: fixture.branchId }))
+      .expect(401);
+
+    await testApp.prisma.user.update({
+      where: { id: manager.userId },
+      data: { status: 'ACTIVE' },
+    });
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('commissions', { branchId: fixture.branchId }))
+      .expect(403);
+
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'ACTIVE' },
+    });
+    await testApp.prisma.organizationSubscription.update({
+      where: { organizationId: fixture.organizationId },
+      data: { status: 'CANCELED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('commissions', { branchId: fixture.branchId }))
+      .expect(403);
   });
 
   it.each(['starter', 'business', 'growth'])(
@@ -565,6 +690,8 @@ describe('Owner/manager reports (e2e)', () => {
       expect(overview.body.data.netPostedRevenue).toEqual([]);
       expect(overview.body.data.refundTransactionCount).toBe(0);
       expect(overview.body.data.reversalTransactionCount).toBe(0);
+      expect(overview.body.data.commissionReportingAvailable).toBe(false);
+      expect(overview.body.data.commissionAccrued).toEqual([]);
 
       const paymentMethods = await authed(testApp, manager.accessToken)
         .get(reportsUrl('payment-methods'))
@@ -579,10 +706,8 @@ describe('Owner/manager reports (e2e)', () => {
 
       const commissions = await authed(testApp, manager.accessToken)
         .get(reportsUrl('commissions'))
-        .expect(200);
-      expect(commissions.body.data[0].refunded).toEqual([]);
-      expect(commissions.body.data[0].reversed).toEqual([]);
-      expect(commissions.body.data[0].net).toEqual([]);
+        .expect(403);
+      expect(commissions.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
     });
 
     it.each(['business', 'growth', 'pro', 'enterprise'])(
@@ -664,6 +789,7 @@ describe('Owner/manager reports (e2e)', () => {
     });
 
     it('commissions report separates POLICY and NO_POLICY accrual per staff', async () => {
+      await setPlan('business');
       await createPostedTransaction(testApp, fixture, extras.receptionistAccessToken, cashier.accessToken);
       const response = await authed(testApp, manager.accessToken).get(reportsUrl('commissions')).expect(200);
       const entry = response.body.data.find((e: { staffProfileId: string }) => e.staffProfileId === fixture.providerStaffProfileId);

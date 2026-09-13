@@ -53,6 +53,7 @@ export class ReportsController {
   }
 
   @Get('commissions')
+  @RequireEntitlement('commissions.reporting')
   async commissions(@CurrentTenant() tenant: TenantContext, @Query() query: ReportQueryDto) {
     return this.reportsService.commissions(tenant, query);
   }

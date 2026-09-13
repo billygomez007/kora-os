@@ -26,6 +26,9 @@ describe('canonical plan entitlements', () => {
       }
     }
     expect(PLAN_ENTITLEMENTS.business['reporting.performance']).toBe(true);
+    expect(PLAN_ENTITLEMENTS.starter['commissions.reporting']).toBe(false);
+    expect(PLAN_ENTITLEMENTS.business['commissions.reporting']).toBe(true);
+    expect(PLAN_ENTITLEMENTS.growth['commissions.reporting']).toBe(true);
     expect(PLAN_ENTITLEMENTS.pro['reporting.advanced']).toBe(true);
     expect(PLAN_ENTITLEMENTS.pro['cash.reconciliation']).toBe(true);
     expect(PLAN_ENTITLEMENTS.pro['commissions.advanced']).toBe(true);

@@ -23,6 +23,17 @@ reconciliation requires both the `reports.read` permission and the
 `cash.reconciliation` plan entitlement. Reporting and commission permissions are
 never granted by a plan entitlement alone.
 
+Commission reporting is a separate capability from basic accrual tracking:
+`commissions.basic` remains enabled for every plan, while
+`commissions.reporting` is disabled for Starter (including its TRIALING
+period) and enabled for Growth, Business, Pro, and Enterprise. The dedicated
+owner/manager commission report therefore requires both `reports.read` and
+`commissions.reporting`. Mixed reports such as the overview remain available
+to lower-tier readers, but withhold only the premium commission field and
+return `commissionReportingAvailable: false` so the UI can show a localized
+plan-unavailable state. Staff self-earnings and operational accrual reads keep
+their existing `commissions.read_own`/`commissions.read_all` permission gates.
+
 Staff invitations enforce `staff.max` server-side. The current API has no branch
 creation endpoint beyond onboarding's first branch; onboarding still validates
 the branch entitlement, and future branch-write endpoints must call the same

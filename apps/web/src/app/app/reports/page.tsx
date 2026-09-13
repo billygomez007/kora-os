@@ -33,6 +33,7 @@ type Overview = {
   averageTransactionValue: MoneyTotal[];
   completedServiceCount: number;
   commissionAccrued: MoneyTotal[];
+  commissionReportingAvailable?: boolean;
   pendingPaymentClaimCount: number;
   disputedPaymentClaimCount: number;
   grossPostedSales: MoneyTotal[];
@@ -591,13 +592,17 @@ export default function ReportsPage() {
             <div>
               <span>Commission accrued</span>
               <strong>
-                {reportReady ? money(
-                  amountForCurrency(
-                    overview?.commissionAccrued,
-                    currency,
-                  ),
-                  currency,
-                ) : "—"}
+                {!reportReady
+                  ? "—"
+                  : overview?.commissionReportingAvailable === false
+                    ? t("commissionReportingUnavailable")
+                    : money(
+                        amountForCurrency(
+                          overview?.commissionAccrued,
+                          currency,
+                        ),
+                        currency,
+                      )}
               </strong>
             </div>
           </div>

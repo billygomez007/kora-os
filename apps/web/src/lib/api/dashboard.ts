@@ -162,6 +162,7 @@ export interface OverviewReport {
   averageTransactionValue: CurrencyAmount[];
   completedServiceCount: number;
   commissionAccrued: CurrencyAmount[];
+  commissionReportingAvailable?: boolean;
   pendingPaymentClaimCount: number;
   disputedPaymentClaimCount: number;
   grossPostedSales: CurrencyAmount[];

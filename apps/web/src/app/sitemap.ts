@@ -19,8 +19,6 @@ const PUBLIC_PATHS = [
   "/resources",
 ] as const;
 
-const PUBLIC_CONTENT_LAST_MODIFIED = new Date("2026-09-13T00:00:00.000Z");
-
 function localizedUrl(locale: "en" | "fr", path: (typeof PUBLIC_PATHS)[number]) {
   return `${PRODUCTION_ORIGIN}/${locale}${path === "/" ? "" : path}`;
 }
@@ -36,7 +34,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
     return [
       {
         url: englishUrl,
-        lastModified: PUBLIC_CONTENT_LAST_MODIFIED,
         changeFrequency: isHomepage || isMarketplace ? "weekly" : isLegal ? "yearly" : "monthly",
         priority: isHomepage ? 1 : isMarketplace ? 0.8 : isLegal ? 0.4 : 0.7,
         alternates: {
@@ -49,7 +46,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       },
       {
         url: frenchUrl,
-        lastModified: PUBLIC_CONTENT_LAST_MODIFIED,
         changeFrequency: isHomepage || isMarketplace ? "weekly" : isLegal ? "yearly" : "monthly",
         priority: isHomepage ? 1 : isMarketplace ? 0.8 : isLegal ? 0.4 : 0.7,
         alternates: {

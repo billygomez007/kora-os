@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { CurrentTenant } from '../../common/authorization/decorators/current-tenant.decorator.js';
 import { RequireBranchParam } from '../../common/authorization/decorators/require-branch-param.decorator.js';
+import { RequireEntitlement } from '../../common/authorization/decorators/require-entitlement.decorator.js';
 import { RequirePermissions } from '../../common/authorization/decorators/require-permissions.decorator.js';
 import type { TenantContext } from '../../common/authorization/interfaces/tenant-context.interface.js';
 import { TenantAccessGuard } from '../../common/authorization/tenant-access.guard.js';
@@ -36,6 +37,7 @@ export class BranchInventoryController {
     return this.branchInventoryService.list(tenant.organizationId, branchId);
   }
 
+  @RequireEntitlement('inventory.expanded')
   @RequirePermissions('inventory.read')
   @Get('variants/:variantId/movements')
   movementHistory(
@@ -82,6 +84,7 @@ export class BranchInventoryController {
     );
   }
 
+  @RequireEntitlement('inventory.expanded')
   @RequirePermissions('inventory.manage')
   @Put('variants/:variantId/reorder-level')
   updateReorderLevel(

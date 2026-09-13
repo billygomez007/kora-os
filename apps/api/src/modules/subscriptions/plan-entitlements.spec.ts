@@ -26,6 +26,12 @@ describe('canonical plan entitlements', () => {
       }
     }
     expect(PLAN_ENTITLEMENTS.business['reporting.performance']).toBe(true);
+    expect(PLAN_ENTITLEMENTS.starter['products.basic']).toBe(true);
+    expect(PLAN_ENTITLEMENTS.starter['inventory.expanded']).toBe(false);
+    expect(PLAN_ENTITLEMENTS.growth['inventory.expanded']).toBe(true);
+    expect(PLAN_ENTITLEMENTS.business['inventory.expanded']).toBe(true);
+    expect(PLAN_ENTITLEMENTS.pro['inventory.expanded']).toBe(true);
+    expect(PLAN_ENTITLEMENTS.enterprise['inventory.expanded']).toBe(true);
     expect(PLAN_ENTITLEMENTS.starter['commissions.reporting']).toBe(false);
     expect(PLAN_ENTITLEMENTS.business['commissions.reporting']).toBe(true);
     expect(PLAN_ENTITLEMENTS.growth['commissions.reporting']).toBe(true);
@@ -35,7 +41,9 @@ describe('canonical plan entitlements', () => {
   });
 
   it('retains Growth internally without publishing it', () => {
-    expect(PLAN_DEFINITIONS.find((plan) => plan.code === 'growth')?.legacy).toBe(true);
+    expect(
+      PLAN_DEFINITIONS.find((plan) => plan.code === 'growth')?.legacy,
+    ).toBe(true);
     expect(PLAN_ENTITLEMENTS.growth).toBeDefined();
   });
 

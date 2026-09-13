@@ -8,6 +8,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { useTranslations } from "next-intl";
 import WorkspaceShell from "@/components/workspace/WorkspaceShell";
 import {
   type ActiveWorkspace,
@@ -38,6 +39,7 @@ import {
   type ProductCategory,
   type Supplier,
 } from "@/lib/api/products";
+import { koraData } from "@/lib/api/kora-api";
 
 type Tab = "products" | "inventory" | "categories" | "suppliers";
 type Dialog =
@@ -52,7 +54,12 @@ type Dialog =
   | "editVariant"
   | null;
 
+type SubscriptionDetail = {
+  entitlements?: Record<string, boolean | number | string | null>;
+};
+
 export default function ProductsWorkspace() {
+  const t = useTranslations("Products");
   const [workspace, setWorkspace] = useState<ActiveWorkspace | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
@@ -70,10 +77,14 @@ export default function ProductsWorkspace() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inventoryExpanded, setInventoryExpanded] = useState<boolean | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setInventoryExpanded(null);
 
     try {
       const active = await resolveActiveWorkspace();
@@ -87,10 +98,17 @@ export default function ProductsWorkspace() {
           listInventory(active.organizationId, active.branchId),
         ]);
 
+      const subscription = await koraData<SubscriptionDetail>(
+        `/organizations/${active.organizationId}/subscription`,
+      ).catch(() => null);
+
       setProducts(nextProducts);
       setCategories(nextCategories);
       setSuppliers(nextSuppliers);
       setInventory(nextInventory);
+      setInventoryExpanded(
+        subscription?.entitlements?.["inventory.expanded"] === true,
+      );
     } catch (cause) {
       setError(messageFrom(cause));
     } finally {
@@ -347,22 +365,39 @@ export default function ProductsWorkspace() {
             ) : null}
 
             {tab === "inventory" ? (
-              <InventoryTable
-                rows={inventory}
-                onReceive={(row) => {
-                  setSelectedInventory(row);
-                  setDialog("receive");
-                }}
-                onAdjust={(row) => {
-                  setSelectedInventory(row);
-                  setDialog("adjust");
-                }}
-                onReorder={(row) => {
-                  setSelectedInventory(row);
-                  setDialog("reorder");
-                }}
-                onHistory={(row) => void showHistory(row)}
-              />
+              <>
+                {inventoryExpanded === false ? (
+                  <div className="mb-5 rounded-2xl border border-[rgba(244,169,0,0.28)] bg-[rgba(244,169,0,0.08)] px-5 py-4">
+                    <p className="text-sm font-black text-[var(--ws-text)]">
+                      {t("advancedInventoryPlanTitle")}
+                    </p>
+                    <p className="mt-1 text-sm text-[var(--ws-text-secondary)]">
+                      {t("advancedInventoryPlanBody")}
+                    </p>
+                  </div>
+                ) : inventoryExpanded === null ? (
+                  <div className="mb-5 rounded-2xl border border-[var(--ws-border)] bg-[var(--ws-surface)] px-5 py-4 text-sm text-[var(--ws-text-secondary)]">
+                    {t("advancedInventoryUnavailable")}
+                  </div>
+                ) : null}
+                <InventoryTable
+                  rows={inventory}
+                  expandedInventory={inventoryExpanded === true}
+                  onReceive={(row) => {
+                    setSelectedInventory(row);
+                    setDialog("receive");
+                  }}
+                  onAdjust={(row) => {
+                    setSelectedInventory(row);
+                    setDialog("adjust");
+                  }}
+                  onReorder={(row) => {
+                    setSelectedInventory(row);
+                    setDialog("reorder");
+                  }}
+                  onHistory={(row) => void showHistory(row)}
+                />
+              </>
             ) : null}
 
             {tab === "categories" ? (
@@ -769,12 +804,14 @@ function ProductsTable({
 
 function InventoryTable({
   rows,
+  expandedInventory,
   onReceive,
   onAdjust,
   onReorder,
   onHistory,
 }: {
   rows: InventoryRow[];
+  expandedInventory: boolean;
   onReceive: (row: InventoryRow) => void;
   onAdjust: (row: InventoryRow) => void;
   onReorder: (row: InventoryRow) => void;
@@ -843,8 +880,16 @@ function InventoryTable({
           <div className="flex flex-wrap gap-2 lg:justify-end">
             <ActionButton label="Receive" onClick={() => onReceive(row)} />
             <ActionButton label="Adjust" onClick={() => onAdjust(row)} />
-            <ActionButton label="Reorder" onClick={() => onReorder(row)} />
-            <ActionButton label="History" onClick={() => onHistory(row)} />
+            <ActionButton
+              label="Reorder"
+              disabled={!expandedInventory}
+              onClick={() => onReorder(row)}
+            />
+            <ActionButton
+              label="History"
+              disabled={!expandedInventory}
+              onClick={() => onHistory(row)}
+            />
           </div>
         </article>
       ))}
@@ -1758,16 +1803,19 @@ function StatusPill({ archived }: { archived: boolean }) {
 
 function ActionButton({
   label,
+  disabled = false,
   onClick,
 }: {
   label: string;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onClick}
-      className="rounded-lg border border-[var(--ws-border)] bg-[var(--ws-surface)] px-3 py-2 text-xs font-extrabold text-[var(--ws-text)] transition hover:border-[#e6a300] hover:text-[var(--ws-gold)]"
+      className="rounded-lg border border-[var(--ws-border)] bg-[var(--ws-surface)] px-3 py-2 text-xs font-extrabold text-[var(--ws-text)] transition hover:border-[#e6a300] hover:text-[var(--ws-gold)] disabled:cursor-not-allowed disabled:opacity-40"
     >
       {label}
     </button>

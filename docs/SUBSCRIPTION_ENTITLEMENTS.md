@@ -34,6 +34,18 @@ return `commissionReportingAvailable: false` so the UI can show a localized
 plan-unavailable state. Staff self-earnings and operational accrual reads keep
 their existing `commissions.read_own`/`commissions.read_all` permission gates.
 
+Inventory uses the same cumulative model. `products.basic` is enabled for
+every plan and covers the product catalogue, variants, categories, supplier
+metadata, quantity-on-hand visibility, receiving stock, manual stock
+adjustments, product checkout, automatic sale decrement, and existing return
+or restock flows. `inventory.expanded` is disabled for Starter (including its
+TRIALING period) and enabled for Growth, Business, Pro, and Enterprise. It is
+reserved for advanced inventory controls only: movement-history reads and
+reorder-level configuration (including any future dedicated low-stock or
+reorder endpoint). Basic inventory operations must not be hidden behind this
+entitlement. These routes still require their normal `inventory.read` or
+`inventory.manage` permission, tenant access, and branch scope checks.
+
 Staff invitations enforce `staff.max` server-side. The current API has no branch
 creation endpoint beyond onboarding's first branch; onboarding still validates
 the branch entitlement, and future branch-write endpoints must call the same

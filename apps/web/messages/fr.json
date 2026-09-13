@@ -165,6 +165,11 @@
     "retryAccessCheck": "Réessayer",
     "openSuperAdmin": "Ouvrir Super Admin"
   },
+  "Products": {
+    "advancedInventoryPlanTitle": "Les contrôles avancés des stocks ne sont pas inclus dans votre forfait actuel.",
+    "advancedInventoryPlanBody": "L’historique des mouvements et les seuils de réapprovisionnement sont disponibles à partir du forfait Business.",
+    "advancedInventoryUnavailable": "Les contrôles avancés des stocks n’ont pas pu être vérifiés pour le moment. Les opérations de stock de base restent disponibles."
+  },
   "Reports": {
     "accessRestricted": "L’accès aux rapports est restreint",
     "couldNotLoad": "Les rapports n’ont pas pu être chargés",

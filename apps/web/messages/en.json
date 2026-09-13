@@ -165,6 +165,11 @@
     "retryAccessCheck": "Try again",
     "openSuperAdmin": "Open Super Admin"
   },
+  "Products": {
+    "advancedInventoryPlanTitle": "Advanced inventory controls are not included in your current plan.",
+    "advancedInventoryPlanBody": "Movement history and reorder-level controls are available on Business and above.",
+    "advancedInventoryUnavailable": "Advanced inventory controls could not be verified right now. Basic stock operations remain available."
+  },
   "Reports": {
     "accessRestricted": "Reports access is restricted",
     "couldNotLoad": "Reports could not load",

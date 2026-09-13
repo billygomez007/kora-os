@@ -260,8 +260,10 @@ describe('Owner/manager reports (e2e)', () => {
     // RBAC alone is not enough: on the default Starter trial plan (no
     // cash.reconciliation entitlement), even Owner/Manager are denied.
     await authed(testApp, cashier.accessToken).get(url).expect(403);
-    await authed(testApp, fixture.ownerAccessToken).get(url).expect(403);
-    await authed(testApp, manager.accessToken).get(url).expect(403);
+    const starterOwner = await authed(testApp, fixture.ownerAccessToken).get(url).expect(403);
+    expect(starterOwner.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
+    const starterManager = await authed(testApp, manager.accessToken).get(url).expect(403);
+    expect(starterManager.body.error.code).toBe('PLAN_ENTITLEMENT_REQUIRED');
 
     const proPlan = await testApp.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code: 'pro' } });
     await testApp.prisma.organizationSubscription.update({
@@ -274,6 +276,120 @@ describe('Owner/manager reports (e2e)', () => {
     await authed(testApp, cashier.accessToken).get(url).expect(403);
     await authed(testApp, fixture.ownerAccessToken).get(url).expect(200);
     await authed(testApp, manager.accessToken).get(url).expect(200);
+  });
+
+  it.each(['business', 'growth'])('returns a plan denial for the %s Owner', async (planCode) => {
+    await setPlan(planCode);
+    const response = await authed(testApp, fixture.ownerAccessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(403);
+    expect(response.body.error).toMatchObject({
+      code: 'PLAN_ENTITLEMENT_REQUIRED',
+    });
+    expect(response.body.error.message).toContain('cash.reconciliation');
+  });
+
+  it('allows an Enterprise Owner while preserving the report permission gate', async () => {
+    await setPlan('enterprise');
+    await authed(testApp, fixture.ownerAccessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(200);
+    const cashierResponse = await authed(testApp, cashier.accessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(403);
+    expect(cashierResponse.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('keeps Receptionist and Service Provider cash-report access denied by RBAC', async () => {
+    await setPlan('pro');
+    const receptionistResponse = await authed(testApp, extras.receptionistAccessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(403);
+    const providerResponse = await authed(testApp, fixture.providerAccessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(403);
+    expect(receptionistResponse.body.error.code).toBe('FORBIDDEN');
+    expect(providerResponse.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('rejects a cash report request for another tenant', async () => {
+    await setPlan('pro');
+    const other = await createBookableFixture(testApp);
+    const response = await authed(testApp, fixture.ownerAccessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: other.branchId }).replace(fixture.organizationId, other.organizationId))
+      .expect(403);
+    expect(response.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('keeps cash report branch scope limited to assigned branches', async () => {
+    await setPlan('pro');
+    const reader = await createNoPermissionActor(testApp, fixture);
+    const role = await testApp.prisma.membershipRole.findFirstOrThrow({
+      where: { membershipId: reader.membershipId },
+    });
+    const reportsRead = await testApp.prisma.permission.findUniqueOrThrow({
+      where: { code: 'reports.read' },
+    });
+    await testApp.prisma.rolePermission.create({
+      data: { roleId: role.roleId, permissionId: reportsRead.id },
+    });
+    const otherBranch = await testApp.prisma.branch.create({
+      data: {
+        organizationId: fixture.organizationId,
+        name: 'Cash report restricted branch',
+        code: `CASH-${randomUUID().slice(0, 6)}`,
+        countryCode: 'GH',
+        currency: 'GHS',
+        timeZone: 'Africa/Accra',
+      },
+    });
+
+    await authed(testApp, reader.accessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(200);
+    const forbidden = await authed(testApp, reader.accessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: otherBranch.id }))
+      .expect(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+    await authed(testApp, reader.accessToken)
+      .get(reportsUrl('cash-reconciliation'))
+      .expect(200);
+  });
+
+  it('preserves user, organization, and blocked-subscription denial precedence', async () => {
+    await setPlan('pro');
+
+    await testApp.prisma.user.update({
+      where: { id: manager.userId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(401);
+    await testApp.prisma.user.update({
+      where: { id: manager.userId },
+      data: { status: 'ACTIVE' },
+    });
+
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'SUSPENDED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(403);
+    await testApp.prisma.organization.update({
+      where: { id: fixture.organizationId },
+      data: { status: 'ACTIVE' },
+    });
+
+    await testApp.prisma.organizationSubscription.update({
+      where: { organizationId: fixture.organizationId },
+      data: { status: 'CANCELED' },
+    });
+    await authed(testApp, manager.accessToken)
+      .get(reportsUrl('cash-reconciliation', { branchId: fixture.branchId }))
+      .expect(403);
   });
 
   it('restricts report readers to assigned branches and their organization', async () => {

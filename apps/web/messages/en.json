@@ -199,6 +199,7 @@
     "cashKicker": "CASH CONTROL",
     "cashTitle": "Cash reconciliation",
     "cashDescription": "Physical cash custody by register session. It is separate from posted revenue.",
+    "cashPlanUnavailable": "Cash reconciliation is available on Pro and Enterprise plans.",
     "cashForbidden": "Cash reconciliation is not available for your role.",
     "cashUnavailable": "Cash reconciliation data is unavailable right now.",
     "cashError": "Cash reconciliation could not be loaded because of an API error.",

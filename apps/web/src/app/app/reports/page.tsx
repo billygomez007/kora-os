@@ -12,6 +12,10 @@ import {
   buildReportQuery,
   canReadReports,
 } from "@/lib/workspace/report-query";
+import {
+  cashReconciliationStateForOutcome,
+  type CashReconciliationState,
+} from "@/lib/workspace/cash-reconciliation-state";
 
 type RangeKey = "today" | "7d" | "30d";
 
@@ -231,7 +235,7 @@ export default function ReportsPage() {
   const [services, setServices] = useState<ServiceEntry[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodEntry[]>([]);
   const [cashReconciliation, setCashReconciliation] = useState<CashReconciliationEntry[]>([]);
-  const [cashState, setCashState] = useState<"loading" | "ready" | "forbidden" | "unavailable" | "error">("loading");
+  const [cashState, setCashState] = useState<CashReconciliationState>("loading");
   const [performanceState, setPerformanceState] = useState<PerformanceState>("loading");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -318,14 +322,10 @@ export default function ReportsPage() {
           `${base}/cash-reconciliation?${query}`,
         );
         cashData = cashReport.data ?? [];
-        setCashState("ready");
+        setCashState(cashReconciliationStateForOutcome({ ok: true }));
       } catch (cause) {
         setCashState(
-          cause instanceof KoraApiError && cause.status === 403
-            ? "forbidden"
-            : cause instanceof KoraApiError && cause.status === 0
-              ? "unavailable"
-              : "error",
+          cashReconciliationStateForOutcome({ ok: false, error: cause }),
         );
       }
 
@@ -855,7 +855,9 @@ export default function ReportsPage() {
           <span className="cashDescription">{t("cashDescription")}</span>
         </header>
 
-        {cashState === "forbidden" ? (
+        {cashState === "plan" ? (
+          <div className="smallEmpty">{t("cashPlanUnavailable")}</div>
+        ) : cashState === "forbidden" ? (
           <div className="smallEmpty">{t("cashForbidden")}</div>
         ) : cashState === "error" ? (
           <div className="smallEmpty">{t("cashError")}</div>

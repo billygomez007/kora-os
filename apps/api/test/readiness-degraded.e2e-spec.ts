@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
@@ -11,6 +12,7 @@ describe('Readiness when a required dependency is unavailable (e2e)', () => {
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
+      providers: [Reflector],
     })
       .overrideProvider(PrismaService)
       .useValue({

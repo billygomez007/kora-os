@@ -199,6 +199,7 @@
     "cashKicker": "CONTRÔLE DES ESPÈCES",
     "cashTitle": "Rapprochement des espèces",
     "cashDescription": "Suivi des espèces physiques par session de caisse, séparé du chiffre d’affaires comptabilisé.",
+    "cashPlanUnavailable": "Le rapprochement des espèces est disponible avec les forfaits Pro et Enterprise.",
     "cashForbidden": "Le rapprochement des espèces n’est pas disponible pour votre rôle.",
     "cashUnavailable": "Les données de rapprochement des espèces sont momentanément indisponibles.",
     "cashError": "Le rapprochement des espèces n’a pas pu être chargé en raison d’une erreur de l’API.",

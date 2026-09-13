@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Reflector } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
@@ -32,6 +33,7 @@ describe('Email OTP request when delivery fails (e2e)', () => {
   beforeAll(async () => {
     moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
+      providers: [Reflector],
     })
       .overrideProvider(EMAIL_OTP_SENDER)
       .useValue(new AlwaysFailingEmailOtpSender())

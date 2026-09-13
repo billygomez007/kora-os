@@ -4,7 +4,23 @@
 
 The web application currently stores access and refresh tokens in browser `localStorage`. This is compatible with the existing web and Android clients, but an XSS issue could expose a refresh token and extend a session until rotation, expiry, or revocation.
 
-This document is a migration design only. It does not change runtime authentication.
+The first additive server foundation is now implemented, but the web client has
+not been cut over: localStorage access/refresh storage and the legacy JSON/body
+refresh contract remain active.
+
+## SEC-03A additive foundation
+
+The API recognizes an explicit `X-Kora-Client: web` header. It does not infer
+browser transport from user-agent strings. For that opt-in transport only, OTP
+verification and refresh issue a `__Host-kora_refresh` cookie, and logout/
+logout-all clear it. The API requires an exact allowlisted `Origin` for these
+browser-cookie operations; mobile and legacy body transport do not require that
+browser-only Origin check.
+
+During this compatibility phase the response still contains the existing
+`refreshToken` field because the current web client and Android client have not
+yet migrated. No frontend cutover, localStorage removal, or database change is
+part of SEC-03A.
 
 ## Recommended architecture
 
@@ -41,4 +57,4 @@ Locale redirects (`/en`, `/fr`) must preserve only the intended pathname and que
 
 ## Operational rollout
 
-Test login, OTP verification, refresh rotation, concurrent refreshes, logout, logout-all, revoked sessions, expired sessions, invitation acceptance, localized redirects, and Android bearer authentication in staging. Confirm the API emits no refresh token in JSON for the browser flow, cookies are absent from JavaScript, and CORS rejects unapproved origins before production rollout.
+Test login, OTP verification, refresh rotation, concurrent refreshes, logout, logout-all, revoked sessions, expired sessions, invitation acceptance, localized redirects, and Android bearer authentication in staging. During SEC-03A, confirm the browser cookie is issued and the compatibility `refreshToken` JSON field remains present; after the web cutover, confirm that field is removed for browser responses. Cookies must remain absent from JavaScript, and CORS must reject unapproved origins.

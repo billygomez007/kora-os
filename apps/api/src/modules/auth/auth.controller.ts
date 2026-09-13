@@ -11,11 +11,21 @@ import {
   Param,
   Post,
   Req,
+  Res,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
+import { allowedCorsOrigins } from '../../bootstrap/configure-application.js';
 import type { RequestWithId } from '../../common/middleware/request-id.middleware.js';
 import { AuthService } from './auth.service.js';
+import {
+  assertAllowedBrowserOrigin,
+  clearBrowserRefreshCookie,
+  isBrowserCookieClient,
+  readRefreshCookie,
+  setBrowserRefreshCookie,
+} from './browser-refresh-cookie.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import { Public } from './decorators/public.decorator.js';
 import { RequestEmailOtpDto } from './dto/request-email-otp.dto.js';
@@ -39,6 +49,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly emailOtpService: EmailOtpService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -71,7 +82,11 @@ export class AuthController {
   async verifyEmailOtp(
     @Body() dto: VerifyEmailOtpDto,
     @Req() request: RequestWithId,
+    @Res({ passthrough: true }) response: Response,
   ) {
+    const browserClient = isBrowserCookieClient(request);
+    if (browserClient) this.assertBrowserOrigin(request);
+
     let userId: string;
     try {
       ({ userId } = await this.emailOtpService.verifyChallenge({
@@ -85,10 +100,14 @@ export class AuthController {
     }
 
     try {
-      return await this.authService.issueSessionForVerifiedUser(
+      const result = await this.authService.issueSessionForVerifiedUser(
         userId,
         buildMetadata(dto.deviceLabel, request),
       );
+      if (browserClient) {
+        this.setRefreshCookie(response, result.refreshToken, result.session.expiresAt);
+      }
+      return result;
     } catch (error) {
       this.logUnexpectedVerifyFailure('session_issuance', request.requestId, error);
       throw error;
@@ -116,27 +135,84 @@ export class AuthController {
   @Throttle(AUTH_THROTTLE)
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  async refresh(@Body() dto: RefreshDto, @Req() request: RequestWithId) {
-    return this.authService.refresh(
-      dto.refreshToken,
+  async refresh(
+    @Body() dto: RefreshDto,
+    @Req() request: RequestWithId,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const browserClient = isBrowserCookieClient(request);
+    if (browserClient) this.assertBrowserOrigin(request);
+
+    const refreshToken = browserClient
+      ? readRefreshCookie(request)
+      : dto.refreshToken;
+    if (!refreshToken) {
+      throw new HttpException('Authentication is required', HttpStatus.UNAUTHORIZED);
+    }
+
+    const result = await this.authService.refresh(
+      refreshToken,
       buildMetadata(undefined, request),
     );
+    if (browserClient) {
+      this.setRefreshCookie(response, result.refreshToken, result.session.expiresAt);
+    }
+    return result;
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async logout(@CurrentUser() user: RequestUser, @Req() request: RequestWithId) {
+  async logout(
+    @CurrentUser() user: RequestUser,
+    @Req() request: RequestWithId,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const browserClient = isBrowserCookieClient(request);
+    if (browserClient) this.assertBrowserOrigin(request);
+
     await this.authService.logout(
       user.id,
       user.sessionId,
       buildMetadata(undefined, request),
     );
+    if (browserClient) this.clearRefreshCookie(response);
   }
 
   @Post('logout-all')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async logoutAll(@CurrentUser() user: RequestUser, @Req() request: RequestWithId) {
+  async logoutAll(
+    @CurrentUser() user: RequestUser,
+    @Req() request: RequestWithId,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const browserClient = isBrowserCookieClient(request);
+    if (browserClient) this.assertBrowserOrigin(request);
+
     await this.authService.logoutAll(user.id, buildMetadata(undefined, request));
+    if (browserClient) this.clearRefreshCookie(response);
+  }
+
+  private assertBrowserOrigin(request: RequestWithId): void {
+    assertAllowedBrowserOrigin(
+      request,
+      allowedCorsOrigins(this.config.get<string>('NODE_ENV')),
+    );
+  }
+
+  private setRefreshCookie(response: Response, refreshToken: string, expiresAt: Date): void {
+    setBrowserRefreshCookie(
+      response,
+      refreshToken,
+      expiresAt,
+      this.config.get<string>('NODE_ENV') === 'production',
+    );
+  }
+
+  private clearRefreshCookie(response: Response): void {
+    clearBrowserRefreshCookie(
+      response,
+      this.config.get<string>('NODE_ENV') === 'production',
+    );
   }
 
   @Get('me')

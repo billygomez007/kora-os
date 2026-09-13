@@ -600,6 +600,221 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .get('/v1/auth/me')
         .set('Authorization', 'Bearer not-a-real-jwt')
         .expect(401);
+      });
+    });
+
+  describe('browser refresh-cookie transport', () => {
+    let testApp: TestApp;
+    beforeEach(async () => {
+      testApp = await createTestApp();
+    });
+    afterEach(async () => {
+      await testApp.app.close();
+    });
+
+    it('allows the explicit browser transport header through CORS preflight', async () => {
+      const preflight = await request(testApp.app.getHttpServer())
+        .options('/v1/auth/refresh')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type, x-kora-client')
+        .expect(204);
+
+      expect(preflight.headers['access-control-allow-headers']).toContain(
+        'X-Kora-Client',
+      );
+    });
+
+    function firstSetCookie(response: request.Response): string {
+      const setCookie = response.headers['set-cookie'];
+      const firstSetCookie = Array.isArray(setCookie)
+        ? setCookie[0]
+        : setCookie;
+      expect(firstSetCookie).toBeTruthy();
+      return firstSetCookie!;
+    }
+
+    function cookiePair(response: request.Response): string {
+      return firstSetCookie(response).split(';', 1)[0];
+    }
+
+    async function browserSignIn(email: string) {
+      await bypassOtpResendCooldown(testApp, normalizeEmail(email));
+      const requested = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/request')
+        .send({ email })
+        .expect(200);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
+      const verified = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/email-otp/verify')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .send({ challengeId: requested.body.data.challengeId, code })
+        .expect(200);
+      await trackUser(email);
+      const setCookie = firstSetCookie(verified);
+      return {
+        accessToken: verified.body.data.accessToken as string,
+        cookie: setCookie.split(';', 1)[0],
+        setCookie,
+        sessionId: verified.body.data.session.id as string,
+      };
+    }
+
+    it('issues a host-only HttpOnly browser cookie while preserving the legacy response', async () => {
+      const email = uniqueEmail();
+      const session = await browserSignIn(email);
+
+      expect(session.setCookie).toContain('__Host-kora_refresh=');
+      expect(session.setCookie).not.toContain('Domain=');
+      expect(session.setCookie).toContain('Path=/');
+      expect(session.setCookie).toContain('HttpOnly');
+      expect(session.setCookie).toContain('SameSite=Lax');
+      // The test environment is HTTP; production Secure behavior is covered
+      // by browser-refresh-cookie.spec.ts with NODE_ENV=production semantics.
+      expect(session.setCookie).not.toContain('Secure');
+    });
+
+    it('refreshes from the cookie, rotates it, and preserves reuse detection', async () => {
+      const email = uniqueEmail();
+      const first = await browserSignIn(email);
+
+      const rotated = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', first.cookie)
+        .send({})
+        .expect(200);
+      const replacementSetCookie = firstSetCookie(rotated);
+      const cookieExpiryValue =
+        replacementSetCookie.match(/Expires=([^;]+)/)?.[1];
+      expect(cookieExpiryValue).toBeTruthy();
+      expect(new Date(cookieExpiryValue!).getTime()).toBeLessThanOrEqual(
+        new Date(rotated.body.data.session.expiresAt).getTime(),
+      );
+      const replacementCookie = cookiePair(rotated);
+
+      expect(rotated.body.data.accessToken).toEqual(expect.any(String));
+      expect(rotated.body.data.refreshToken).toEqual(expect.any(String));
+      expect(replacementCookie).not.toBe(first.cookie);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', first.cookie)
+        .send({})
+        .expect(401);
+
+      // Reuse revokes the whole session family, including the replacement.
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', replacementCookie)
+        .send({})
+        .expect(401);
+    });
+
+    it('rejects a revoked, expired, and suspended browser session', async () => {
+      const revoked = await browserSignIn(uniqueEmail());
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/logout')
+        .set('Authorization', `Bearer ${revoked.accessToken}`)
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', revoked.cookie)
+        .expect(204);
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', revoked.cookie)
+        .send({})
+        .expect(401);
+
+      const expiredEmail = uniqueEmail();
+      const expired = await browserSignIn(expiredEmail);
+      await testApp.prisma.refreshToken.updateMany({
+        where: { sessionId: expired.sessionId },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', expired.cookie)
+        .send({})
+        .expect(401);
+
+      const suspendedEmail = uniqueEmail();
+      const suspended = await browserSignIn(suspendedEmail);
+      await testApp.prisma.user.updateMany({
+        where: { emailNormalized: normalizeEmail(suspendedEmail) },
+        data: { status: 'SUSPENDED' },
+      });
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', suspended.cookie)
+        .send({})
+        .expect(401);
+    });
+
+    it('clears the browser cookie on logout-all while preserving server revocation', async () => {
+      const session = await browserSignIn(uniqueEmail());
+      const logout = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${session.accessToken}`)
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .expect(204);
+      const clearedHeader = logout.headers['set-cookie'];
+      const cleared =
+        (Array.isArray(clearedHeader) ? clearedHeader[0] : clearedHeader) ?? '';
+      expect(cleared).toContain('__Host-kora_refresh=;');
+      expect(cleared).toContain('Max-Age=0');
+      expect(cleared).toContain('HttpOnly');
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(401);
+    });
+
+    it('enforces approved origins only for browser transport and leaves mobile/body transport unchanged', async () => {
+      const browser = await browserSignIn(uniqueEmail());
+
+      for (const origin of [
+        'https://evil.example',
+        'not-an-origin',
+        undefined,
+      ]) {
+        const refresh = request(testApp.app.getHttpServer())
+          .post('/v1/auth/refresh')
+          .set('X-Kora-Client', 'web')
+          .set('Cookie', browser.cookie)
+          .send({});
+        if (origin) refresh.set('Origin', origin);
+        await refresh.expect(403);
+      }
+
+      const mobile = await signInWithEmailOtp(testApp, uniqueEmail(), {
+        deviceLabel: 'Android',
+      });
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('Origin', 'https://evil.example')
+        .send({ refreshToken: mobile.refreshToken })
+        .expect(200);
     });
   });
 });

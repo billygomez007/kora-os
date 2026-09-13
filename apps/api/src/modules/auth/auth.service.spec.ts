@@ -13,8 +13,13 @@ function buildService(userStatus: UserStatus) {
         status: userStatus,
       }),
     },
-    session: { create: vi.fn() },
-    refreshToken: { findUnique: vi.fn() },
+    session: { create: vi.fn(), update: vi.fn() },
+    refreshToken: {
+      findUnique: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+    },
+    $transaction: vi.fn().mockResolvedValue([]),
   };
   const tokenService = {
     generateRefreshToken: vi.fn(),
@@ -91,8 +96,44 @@ describe('AuthService account status enforcement', () => {
       service.refresh('refresh', { requestId: 'request-1' }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(prisma.refreshToken.findUnique).toHaveBeenCalled();
-    expect(
-      (prisma as unknown as { $transaction?: unknown }).$transaction,
-    ).toBeUndefined();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('preserves the existing refresh response expiry semantics while session lifetime remains unchanged', async () => {
+    const { service, prisma, tokenService } = buildService(UserStatus.ACTIVE);
+    const sessionExpiresAt = new Date(Date.now() + 10_000);
+    prisma.refreshToken.findUnique.mockResolvedValue({
+      id: 'refresh-1',
+      tokenHash: 'hash',
+      revokedAt: null,
+      usedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      sessionId: 'session-1',
+      session: {
+        id: 'session-1',
+        userId: 'user-1',
+        revokedAt: null,
+        expiresAt: sessionExpiresAt,
+        user: {
+          id: 'user-1',
+          emailNormalized: 'owner@example.com',
+          displayName: 'Owner',
+          status: UserStatus.ACTIVE,
+        },
+      },
+    });
+    tokenService.hashRefreshToken = vi.fn().mockReturnValue('hash');
+    tokenService.generateRefreshToken = vi
+      .fn()
+      .mockReturnValue({ raw: 'next-refresh', hash: 'next-hash' });
+    tokenService.refreshTokenTtlMs = vi.fn().mockReturnValue(120_000);
+    tokenService.signAccessToken = vi.fn().mockResolvedValue('next-access');
+
+    const result = await service.refresh('refresh', { requestId: 'request-1' });
+
+    expect(result.session.expiresAt.getTime()).toBeGreaterThan(
+      sessionExpiresAt.getTime(),
+    );
+    expect(prisma.$transaction).toHaveBeenCalled();
   });
 });

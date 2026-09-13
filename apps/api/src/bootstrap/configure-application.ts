@@ -44,6 +44,7 @@ export function configureApplication(app: INestApplication): void {
       'Authorization',
       'X-Request-Id',
       'Idempotency-Key',
+      'X-Kora-Client',
     ],
   });
 

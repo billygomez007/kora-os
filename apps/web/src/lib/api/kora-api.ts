@@ -1,9 +1,15 @@
 import {
   clearKoraSession,
   getKoraSession,
-  saveKoraSession,
+  getKoraAccessToken,
+  mirrorKoraSession,
+  persistKoraSession,
   type KoraSession,
 } from "../auth/session.ts";
+import {
+  getGeneration,
+  isCurrentGeneration,
+} from "../auth/store.ts";
 
 const configuredApiBase = process.env.NEXT_PUBLIC_KORA_API_URL?.replace(/\/$/, "");
 const API_BASE =
@@ -98,6 +104,7 @@ async function refreshKoraSession(): Promise<KoraSession> {
   }
 
   refreshPromise = (async () => {
+    const refreshGeneration = getGeneration();
     const currentSession = getKoraSession();
 
     if (!currentSession?.refreshToken) {
@@ -166,7 +173,16 @@ async function refreshKoraSession(): Promise<KoraSession> {
       );
     }
 
-    saveKoraSession(nextSession);
+    if (!isCurrentGeneration(refreshGeneration)) {
+      throw new KoraApiError(
+        0,
+        "The Kora session changed while it was being refreshed.",
+        null,
+      );
+    }
+
+    mirrorKoraSession(nextSession, refreshGeneration);
+    persistKoraSession(nextSession);
 
     return nextSession;
   })();
@@ -202,9 +218,9 @@ export async function koraApi<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const session = getKoraSession();
+  const accessToken = getKoraAccessToken();
 
-  if (!session?.accessToken) {
+  if (!accessToken) {
     throw new KoraApiError(
       401,
       "Your Kora session is missing. Please sign in again.",
@@ -215,7 +231,7 @@ export async function koraApi<T>(
   let response = await authenticatedFetch(
     path,
     init,
-    session.accessToken,
+    accessToken,
   );
 
   if (response.status !== 401) {
@@ -261,14 +277,14 @@ export async function koraEnvelope<T>(
 }
 
 export async function logoutKoraSession(): Promise<void> {
-  const session = getKoraSession();
+  const accessToken = getKoraAccessToken();
 
   try {
-    if (session?.accessToken) {
+    if (accessToken) {
       await authenticatedFetch(
         "/auth/logout",
         { method: "POST" },
-        session.accessToken,
+        accessToken,
       );
     }
   } finally {

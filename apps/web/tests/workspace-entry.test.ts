@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, beforeEach } from "node:test";
 import { resolveWorkspaceEntry } from "../src/lib/workspace/entry.ts";
+import { resetForTests } from "../src/lib/auth/store.ts";
 
 function organization(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -26,6 +27,7 @@ let hasInactiveMembership = false;
 let workspacesShapeOverride: unknown;
 
 beforeEach(() => {
+  resetForTests();
   sessionValue = { accessToken: "test-token" };
   organizations = [];
   platformStatus = 403;

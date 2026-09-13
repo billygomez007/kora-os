@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { koraData } from "@/lib/api/kora-api";
 import type { ActiveWorkspace } from "@/lib/api/dashboard";
-import { getKoraSession } from "@/lib/auth/session";
+import { useAuthSnapshot } from "@/lib/auth/store";
 
 interface WorkdayService {
   serviceId: string;
@@ -258,10 +258,10 @@ export default function ProviderMyDay({
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  const session = getKoraSession();
+  const authSnapshot = useAuthSnapshot();
 
   const greetingName =
-    session?.user?.displayName?.trim() ||
+    authSnapshot.user?.displayName?.trim() ||
     workday?.provider.displayName?.trim() ||
     "team member";
 

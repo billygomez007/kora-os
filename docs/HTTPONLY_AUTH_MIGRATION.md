@@ -53,6 +53,36 @@ mode marker nor cookie credentials and therefore keeps the legacy response and
 `localStorage` behavior unchanged in this slice. Android/body responses are
 unchanged.
 
+## SEC-03B1 compatibility hydration and in-memory access state
+
+The web client now has a module-level in-memory auth store as the source of
+truth for access-token reads during the compatibility period. The store starts
+in an `UNKNOWN` state, hydrates once from the existing `kora.auth.session`
+localStorage record, and then exposes `AUTHENTICATED`, `UNAUTHENTICATED`, or
+`RETRYABLE_ERROR` states to the workspace bootstrap gate. Workspace routes do
+not run protected access checks while authentication is still unknown,
+preventing a first-render race from redirecting a valid session to login.
+
+Hydration is generation-aware. Login, logout, refresh, and cross-tab
+invalidation advance or validate a generation so a late refresh or hydration
+result cannot restore a session after the user has logged out or a newer auth
+transition has completed. Access tokens are mirrored into memory before the
+legacy localStorage record is written; refresh-token body transport remains
+unchanged for compatibility with the current API and Android client.
+
+Cross-tab coordination is invalidation-only. `BroadcastChannel` is preferred
+with a storage-event fallback, and messages contain only an invalidation type
+and an ephemeral source identifier. No access token, refresh token, or session
+payload is broadcast. The channel is best effort and never blocks logout.
+
+This is an additive SEC-03B1 foundation, not the cookie-first migration. The
+web client still reads and writes the legacy localStorage session and still
+uses the existing body refresh contract. No reauthentication is required for
+existing users, no API files or database schema change, and Android remains on
+its bearer-token flow. A later, separately reviewed cutover may activate the
+SEC-03A browser refresh-cookie contract and then remove the web localStorage
+token dependency.
+
 ## Recommended architecture
 
 Use architecture A: keep the refresh token in a host-only, `HttpOnly` cookie and keep short-lived access tokens in memory.

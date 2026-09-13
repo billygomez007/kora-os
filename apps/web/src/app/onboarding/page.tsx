@@ -9,7 +9,7 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getKoraSession } from "@/lib/auth/session";
+import { getKoraAccessToken } from "@/lib/auth/session";
 import { trackSignUp } from "@/lib/analytics";
 
 interface OrganizationCreateResponse {
@@ -103,9 +103,9 @@ export default function OnboardingPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const session = getKoraSession();
+    const accessToken = getKoraAccessToken();
 
-    if (!session?.accessToken) {
+    if (!accessToken) {
       setStatus("error");
       setMessage(
         "Your Kora sign-in session is missing. Please sign in again.",
@@ -153,7 +153,7 @@ export default function OnboardingPage() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${session.accessToken}`,
+            Authorization: `Bearer ${accessToken}`,
             "Idempotency-Key": idempotencyKey,
           },
           body: JSON.stringify({

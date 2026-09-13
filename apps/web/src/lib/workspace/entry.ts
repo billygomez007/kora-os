@@ -1,5 +1,5 @@
 import { KoraApiError, koraData } from "../api/kora-api.ts";
-import { getKoraSession } from "../auth/session.ts";
+import { getKoraAccessToken } from "../auth/session.ts";
 
 export interface WorkspaceBranchView {
   branchId: string;
@@ -133,8 +133,7 @@ async function checkPlatformAdminAccess(): Promise<boolean> {
  * a generic "workspace unavailable" crash.
  */
 export async function resolveWorkspaceEntry(): Promise<WorkspaceEntryResult> {
-  const session = getKoraSession();
-  if (!session?.accessToken) {
+  if (!getKoraAccessToken()) {
     return { state: "no_auth_session", isPlatformAdmin: false };
   }
 

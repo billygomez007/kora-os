@@ -9,6 +9,7 @@ import {
   saveKoraSession,
   type KoraSession,
 } from "@/lib/auth/session";
+import { getGeneration } from "@/lib/auth/store";
 import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
 import { trackLogin } from "@/lib/analytics";
 import { resolveWorkspaceEntry } from "@/lib/workspace/entry";
@@ -42,6 +43,8 @@ function VerifyContent() {
   }
 
   async function submitVerify() {
+    const authGeneration = getGeneration();
+
     if (!challengeId) {
       setStatus("error");
       setMessage(t("verificationExpired"));
@@ -104,7 +107,11 @@ function VerifyContent() {
       return;
     }
 
-    saveKoraSession(session);
+    if (!saveKoraSession(session, authGeneration)) {
+      setStatus("error");
+      setMessage(t("unexpected"));
+      return;
+    }
 
     if (mode === "signin") {
       trackLogin();

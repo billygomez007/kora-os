@@ -8,6 +8,7 @@ import {
   WorkspaceNotFoundError,
   type ActiveWorkspace,
 } from "../src/lib/api/dashboard.ts";
+import { resetForTests } from "../src/lib/auth/store.ts";
 
 const workspace = (
   permissionCodes: string[],
@@ -28,6 +29,7 @@ const workspace = (
 let paths: string[];
 let failedSection: string | undefined;
 beforeEach(() => {
+  resetForTests();
   paths = [];
   failedSection = undefined;
   Object.defineProperty(globalThis, "localStorage", {

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  getKoraSession,
+  getKoraAccessToken,
 } from "@/lib/auth/session";
 import {
   errorMessage,
@@ -107,9 +107,9 @@ export default function StaffInvitationPage() {
   async function acceptInvitation() {
     if (!apiBase || !token || !invitation) return;
 
-    const session = getKoraSession();
+    const accessToken = getKoraAccessToken();
 
-    if (!session?.accessToken) {
+    if (!accessToken) {
       router.push(
         `/login?invitation=${encodeURIComponent(token)}`,
       );
@@ -126,7 +126,7 @@ export default function StaffInvitationPage() {
           method: "POST",
           headers: {
             Accept: "application/json",
-            Authorization: `Bearer ${session.accessToken}`,
+            Authorization: `Bearer ${accessToken}`,
           },
         },
       );
@@ -248,13 +248,13 @@ export default function StaffInvitationPage() {
               >
                 {status === "accepting"
                   ? "Joining workspace..."
-                  : getKoraSession()?.accessToken
+                  : getKoraAccessToken()
                     ? `Accept and join ${invitation.organizationName}`
                     : "Sign in to accept invitation"}
               </button>
             )}
 
-            {!getKoraSession()?.accessToken && status !== "accepted" && (
+            {!getKoraAccessToken() && status !== "accepted" && (
               <p className="invite-security-note">
                 Use the same email address that received this invitation.
                 Kora will verify it securely before you can join.

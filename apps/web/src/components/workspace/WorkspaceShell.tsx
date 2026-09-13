@@ -5,8 +5,10 @@ import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getKoraSession } from "@/lib/auth/session";
 import { logoutKoraSession } from "@/lib/api/kora-api";
+import { bootstrapAuth } from "@/lib/auth/bootstrap";
+import { useAuthSnapshot } from "@/lib/auth/store";
+import { workspaceAuthGate } from "@/lib/auth/workspace-gate";
 import {
   resolveActiveWorkspace,
   type ActiveWorkspace,
@@ -94,6 +96,7 @@ export default function WorkspaceShell({
   const pathname = usePathname();
   const routePathname = stripLocale(pathname);
   const t = useTranslations("Workspace");
+  const authSnapshot = useAuthSnapshot();
 
   const [identity, setIdentity] = useState<WorkspaceIdentity>({
     businessName: "Your Kora Business",
@@ -137,14 +140,12 @@ export default function WorkspaceShell({
           return;
         }
 
-        const session = getKoraSession();
-
         void resolveActiveWorkspace()
           .then((workspace) => {
             setIdentity({
               businessName: workspace.organizationName,
               branchName: workspace.branchName,
-              email: session?.user?.email ?? null,
+              email: authSnapshot.user?.email ?? null,
               roleLabel: roleLabel(workspace),
               permissionCodes: workspace.permissionCodes,
             });
@@ -157,7 +158,7 @@ export default function WorkspaceShell({
             }
             setIdentity((current) => ({
               ...current,
-              email: session?.user?.email ?? null,
+              email: authSnapshot.user?.email ?? null,
             }));
             setAccessResolved(true);
           });
@@ -166,12 +167,36 @@ export default function WorkspaceShell({
         setWorkspaceContextError(true);
         setAccessResolved(true);
       });
-  }, [localize, router]);
+  }, [authSnapshot.user?.email, localize, router]);
 
   useEffect(() => {
+    void bootstrapAuth();
+  }, []);
+
+  useEffect(() => {
+    if (authSnapshot.state === "UNKNOWN") return;
+
+    if (
+      authSnapshot.state === "UNAUTHENTICATED" ||
+      (authSnapshot.state === "RETRYABLE_ERROR" &&
+        !authSnapshot.accessToken)
+    ) {
+      if (authSnapshot.state === "UNAUTHENTICATED") {
+        router.replace(localize("/login"));
+      }
+      return;
+    }
+
     const timer = window.setTimeout(checkAccess, 0);
     return () => window.clearTimeout(timer);
-  }, [checkAccess]);
+  }, [
+    authSnapshot.accessToken,
+    authSnapshot.generation,
+    authSnapshot.state,
+    checkAccess,
+    localize,
+    router,
+  ]);
 
   const visibleNavItems = useMemo(
     () =>
@@ -195,6 +220,10 @@ export default function WorkspaceShell({
     }
   }
 
+  function retryAuthBootstrap() {
+    void bootstrapAuth();
+  }
+
   function renderNavItem(item: WorkspaceNavItem, mobile = false) {
     const active =
       item.href === "/app"
@@ -215,6 +244,29 @@ export default function WorkspaceShell({
         <span>{item.icon}</span>
         {t(item.labelKey)}
       </Link>
+    );
+  }
+
+  const authGate = workspaceAuthGate(authSnapshot);
+
+  if (authGate === "loading") {
+    return <WorkspaceLoadingState variant="fullscreen" />;
+  }
+
+  if (authGate === "redirect_login") {
+    return <WorkspaceLoadingState variant="fullscreen" />;
+  }
+
+  if (authGate === "retry") {
+    return (
+      <main className="workspace-page">
+        <section className="workspace-system-state error">
+          <strong>{t("accessCheckFailed")}</strong>
+          <button type="button" onClick={retryAuthBootstrap}>
+            {t("retryAccessCheck")}
+          </button>
+        </section>
+      </main>
     );
   }
 

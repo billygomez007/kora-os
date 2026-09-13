@@ -2,7 +2,10 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service.js';
 import { isUserAllowedAccess } from '../../common/authorization/status-policy.js';
-import { SessionRevokedReason, UserStatus } from '../../generated/prisma/client.js';
+import {
+  SessionRevokedReason,
+  UserStatus,
+} from '../../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { TokenService } from './token.service.js';
 
@@ -79,7 +82,10 @@ export class AuthService {
     return result;
   }
 
-  async refresh(rawRefreshToken: string, meta: RequestMetadata): Promise<AuthResult> {
+  async refresh(
+    rawRefreshToken: string,
+    meta: RequestMetadata,
+  ): Promise<AuthResult> {
     const tokenHash = this.tokenService.hashRefreshToken(rawRefreshToken);
     const existing = await this.prisma.refreshToken.findUnique({
       where: { tokenHash },
@@ -116,28 +122,77 @@ export class AuthService {
       throw new UnauthorizedException(GENERIC_AUTH_ERROR);
     }
 
+    if (existing.session.expiresAt.getTime() <= Date.now()) {
+      await this.revokeSession(
+        existing.sessionId,
+        SessionRevokedReason.EXPIRED,
+      );
+      throw new UnauthorizedException(GENERIC_AUTH_ERROR);
+    }
+
     const nextRefreshToken = this.tokenService.generateRefreshToken();
     const refreshExpiresAt = new Date(
       Date.now() + this.tokenService.refreshTokenTtlMs(),
     );
 
-    await this.prisma.$transaction([
-      this.prisma.refreshToken.update({
-        where: { id: existing.id },
-        data: { usedAt: new Date() },
-      }),
-      this.prisma.refreshToken.create({
+    const rotation = await this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const claimed = await tx.refreshToken.updateMany({
+        where: {
+          id: existing.id,
+          usedAt: null,
+          revokedAt: null,
+        },
+        data: { usedAt: now },
+      });
+
+      if (claimed.count === 0) {
+        return false;
+      }
+
+      const activeSession = await tx.session.updateMany({
+        where: {
+          id: existing.sessionId,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { lastUsedAt: now },
+      });
+
+      if (activeSession.count === 0) {
+        throw new UnauthorizedException(GENERIC_AUTH_ERROR);
+      }
+
+      await tx.refreshToken.create({
         data: {
           sessionId: existing.sessionId,
           tokenHash: nextRefreshToken.hash,
           expiresAt: refreshExpiresAt,
         },
-      }),
-      this.prisma.session.update({
-        where: { id: existing.sessionId },
-        data: { lastUsedAt: new Date() },
-      }),
-    ]);
+      });
+
+      return true;
+    });
+
+    if (!rotation) {
+      // A conditional claim losing means another request already consumed or
+      // revoked this token. Keep the existing family-revocation invariant;
+      // browser tabs must coordinate before this path is used by the future
+      // cookie-first client.
+      await this.revokeSession(
+        existing.sessionId,
+        SessionRevokedReason.REUSE_DETECTED,
+      );
+      await this.auditService.record({
+        actorUserId: existing.session.userId,
+        action: 'auth.refresh_reuse_detected',
+        entityType: 'session',
+        entityId: existing.sessionId,
+        requestId: meta.requestId,
+        source: 'auth',
+      });
+      throw new UnauthorizedException(GENERIC_AUTH_ERROR);
+    }
 
     const accessToken = await this.tokenService.signAccessToken({
       sub: existing.session.userId,
@@ -157,13 +212,61 @@ export class AuthService {
     };
   }
 
-  async logout(userId: string, sessionId: string, meta: RequestMetadata): Promise<void> {
-    await this.revokeOwnedSession(userId, sessionId, SessionRevokedReason.LOGOUT);
+  async logout(
+    userId: string,
+    sessionId: string,
+    meta: RequestMetadata,
+  ): Promise<void> {
+    await this.revokeOwnedSession(
+      userId,
+      sessionId,
+      SessionRevokedReason.LOGOUT,
+    );
     await this.auditService.record({
       actorUserId: userId,
       action: 'auth.logout',
       entityType: 'session',
       entityId: sessionId,
+      requestId: meta.requestId,
+      source: 'auth',
+    });
+  }
+
+  async logoutByRefreshToken(
+    rawRefreshToken: string,
+    meta: RequestMetadata,
+  ): Promise<void> {
+    const tokenHash = this.tokenService.hashRefreshToken(rawRefreshToken);
+    const existing = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+      select: {
+        sessionId: true,
+        session: { select: { userId: true } },
+      },
+    });
+
+    if (!existing) return;
+
+    const revokedAt = new Date();
+    await this.prisma.$transaction([
+      this.prisma.session.updateMany({
+        where: { id: existing.sessionId, revokedAt: null },
+        data: {
+          revokedAt,
+          revokedReason: SessionRevokedReason.LOGOUT,
+        },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { sessionId: existing.sessionId, revokedAt: null },
+        data: { revokedAt },
+      }),
+    ]);
+
+    await this.auditService.record({
+      actorUserId: existing.session.userId,
+      action: 'auth.browser_logout',
+      entityType: 'session',
+      entityId: existing.sessionId,
       requestId: meta.requestId,
       source: 'auth',
     });
@@ -178,10 +281,16 @@ export class AuthService {
     await this.prisma.$transaction([
       this.prisma.session.updateMany({
         where: { userId, revokedAt: null },
-        data: { revokedAt: new Date(), revokedReason: SessionRevokedReason.LOGOUT_ALL },
+        data: {
+          revokedAt: new Date(),
+          revokedReason: SessionRevokedReason.LOGOUT_ALL,
+        },
       }),
       this.prisma.refreshToken.updateMany({
-        where: { sessionId: { in: activeSessions.map((s) => s.id) }, revokedAt: null },
+        where: {
+          sessionId: { in: activeSessions.map((s) => s.id) },
+          revokedAt: null,
+        },
         data: { revokedAt: new Date() },
       }),
     ]);
@@ -197,7 +306,10 @@ export class AuthService {
     });
   }
 
-  async listSessions(userId: string, currentSessionId: string): Promise<SessionSummary[]> {
+  async listSessions(
+    userId: string,
+    currentSessionId: string,
+  ): Promise<SessionSummary[]> {
     const sessions = await this.prisma.session.findMany({
       where: { userId, revokedAt: null },
       orderBy: { lastUsedAt: 'desc' },
@@ -219,7 +331,11 @@ export class AuthService {
     sessionId: string,
     meta: RequestMetadata,
   ): Promise<void> {
-    await this.revokeOwnedSession(userId, sessionId, SessionRevokedReason.LOGOUT);
+    await this.revokeOwnedSession(
+      userId,
+      sessionId,
+      SessionRevokedReason.LOGOUT,
+    );
     await this.auditService.record({
       actorUserId: userId,
       action: 'auth.session_revoked',
@@ -230,8 +346,17 @@ export class AuthService {
     });
   }
 
-  async me(userId: string): Promise<{ id: string; email: string | null; displayName: string; status: UserStatus }> {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  async me(
+    userId: string,
+  ): Promise<{
+    id: string;
+    email: string | null;
+    displayName: string;
+    status: UserStatus;
+  }> {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+    });
     return {
       id: user.id,
       email: user.emailNormalized,
@@ -312,7 +437,8 @@ export class AuthService {
     const ttl = this.config.getOrThrow<string>('JWT_ACCESS_TTL');
     const amount = Number.parseInt(ttl, 10);
     const unit = ttl.at(-1);
-    const multiplier = { s: 1, m: 60, h: 3600, d: 86_400 }[unit as 's' | 'm' | 'h' | 'd'] ?? 60;
+    const multiplier =
+      { s: 1, m: 60, h: 3600, d: 86_400 }[unit as 's' | 'm' | 'h' | 'd'] ?? 60;
     return amount * multiplier;
   }
 }

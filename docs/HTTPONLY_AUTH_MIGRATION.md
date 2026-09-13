@@ -22,6 +22,37 @@ During this compatibility phase the response still contains the existing
 yet migrated. No frontend cutover, localStorage removal, or database change is
 part of SEC-03A.
 
+## SEC-03B0.2 browser safety primitives
+
+`POST /v1/auth/browser-logout` is the browser-only logout contract. It is
+unauthenticated by bearer token, but requires `X-Kora-Client: web` and an
+exactly allowlisted `Origin`. The API hashes the `__Host-kora_refresh` cookie
+server-side, revokes the resolved session family without rotating or
+classifying the token as reuse, and always clears the cookie. Missing,
+expired, unknown, and already-revoked cookies therefore have the same success
+behavior; rejected origins or transport markers do not clear a cookie.
+
+Refresh rotation now claims the source `RefreshToken` with a conditional
+database update (`usedAt IS NULL AND revokedAt IS NULL`) inside the existing
+Prisma transaction. PostgreSQL row-update serialization makes this
+authoritative across API replicas: one concurrent request can create the
+replacement, while a loser is treated as reuse and revokes the whole session
+family with `REUSE_DETECTED`. This preserves the existing sequential replay
+protection. The future cookie-first web client must coordinate refreshes across
+tabs (for example with Web Locks/BroadcastChannel) before enabling this
+contract, because a losing concurrent request intentionally revokes the family.
+
+Refresh also checks `Session.expiresAt` before issuing any replacement. An
+expired session revokes its family with `EXPIRED` and returns the same generic
+authentication error used for other invalid sessions.
+
+Response redaction is opt-in only: a future browser client must send both
+`X-Kora-Client: web` and `X-Kora-Auth-Mode: cookie-v1` to omit `refreshToken`
+from OTP/refresh JSON responses. The current web client sends neither the
+mode marker nor cookie credentials and therefore keeps the legacy response and
+`localStorage` behavior unchanged in this slice. Android/body responses are
+unchanged.
+
 ## Recommended architecture
 
 Use architecture A: keep the refresh token in a host-only, `HttpOnly` cookie and keep short-lived access tokens in memory.

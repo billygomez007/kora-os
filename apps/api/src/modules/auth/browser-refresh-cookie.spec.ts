@@ -4,6 +4,7 @@ import {
   assertAllowedBrowserOrigin,
   clearBrowserRefreshCookie,
   isBrowserCookieClient,
+  isCookieFirstBrowserClient,
   readRefreshCookie,
   setBrowserRefreshCookie,
 } from './browser-refresh-cookie.js';
@@ -38,6 +39,28 @@ describe('browser refresh-cookie contract', () => {
       isBrowserCookieClient(requestWith({ 'x-kora-client': 'android' })),
     ).toBe(false);
     expect(isBrowserCookieClient(requestWith({}))).toBe(false);
+  });
+
+  it('requires a separate explicit cookie-first marker for redaction', () => {
+    expect(
+      isCookieFirstBrowserClient(
+        requestWith({
+          'x-kora-client': 'web',
+          'x-kora-auth-mode': 'cookie-v1',
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isCookieFirstBrowserClient(requestWith({ 'x-kora-client': 'web' })),
+    ).toBe(false);
+    expect(
+      isCookieFirstBrowserClient(
+        requestWith({
+          'x-kora-client': 'android',
+          'x-kora-auth-mode': 'cookie-v1',
+        }),
+      ),
+    ).toBe(false);
   });
 
   it('reads only the host-only refresh cookie', () => {

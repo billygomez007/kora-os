@@ -4,6 +4,15 @@ import { UserStatus } from '../../generated/prisma/client.js';
 import { AuthService } from './auth.service.js';
 
 function buildService(userStatus: UserStatus) {
+  const transactionClient = {
+    session: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    refreshToken: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      create: vi.fn().mockResolvedValue({}),
+    },
+  };
   const prisma = {
     user: {
       findUniqueOrThrow: vi.fn().mockResolvedValue({
@@ -13,13 +22,23 @@ function buildService(userStatus: UserStatus) {
         status: userStatus,
       }),
     },
-    session: { create: vi.fn(), update: vi.fn() },
+    session: {
+      create: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
     refreshToken: {
       findUnique: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
-    $transaction: vi.fn().mockResolvedValue([]),
+    $transaction: vi.fn(async (operation: unknown) => {
+      if (typeof operation === 'function') {
+        return operation(transactionClient);
+      }
+      return [];
+    }),
   };
   const tokenService = {
     generateRefreshToken: vi.fn(),
@@ -34,7 +53,7 @@ function buildService(userStatus: UserStatus) {
     auditService as never,
     new ConfigService({ JWT_ACCESS_TTL: '15m' }),
   );
-  return { service, prisma, tokenService, auditService };
+  return { service, prisma, tokenService, auditService, transactionClient };
 }
 
 describe('AuthService account status enforcement', () => {
@@ -135,5 +154,92 @@ describe('AuthService account status enforcement', () => {
       sessionExpiresAt.getTime(),
     );
     expect(prisma.$transaction).toHaveBeenCalled();
+  });
+
+  it('does not rotate an unexpired refresh token when its session has expired', async () => {
+    const { service, prisma, tokenService, transactionClient } = buildService(
+      UserStatus.ACTIVE,
+    );
+    prisma.refreshToken.findUnique.mockResolvedValue({
+      id: 'refresh-1',
+      tokenHash: 'hash',
+      revokedAt: null,
+      usedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      sessionId: 'session-1',
+      session: {
+        id: 'session-1',
+        userId: 'user-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() - 1_000),
+        user: {
+          id: 'user-1',
+          emailNormalized: 'owner@example.com',
+          displayName: 'Owner',
+          status: UserStatus.ACTIVE,
+        },
+      },
+    });
+    tokenService.hashRefreshToken = vi.fn().mockReturnValue('hash');
+
+    await expect(
+      service.refresh('refresh', { requestId: 'request-1' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(tokenService.generateRefreshToken).not.toHaveBeenCalled();
+    expect(transactionClient.refreshToken.create).not.toHaveBeenCalled();
+    expect(prisma.session.update).toHaveBeenCalledWith({
+      where: { id: 'session-1' },
+      data: expect.objectContaining({ revokedReason: 'EXPIRED' }),
+    });
+  });
+
+  it('allows only one conditional refresh-token claim and treats a loser as reuse', async () => {
+    const { service, prisma, tokenService, transactionClient } = buildService(
+      UserStatus.ACTIVE,
+    );
+    const existing = {
+      id: 'refresh-1',
+      tokenHash: 'hash',
+      revokedAt: null,
+      usedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      sessionId: 'session-1',
+      session: {
+        id: 'session-1',
+        userId: 'user-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+        user: {
+          id: 'user-1',
+          emailNormalized: 'owner@example.com',
+          displayName: 'Owner',
+          status: UserStatus.ACTIVE,
+        },
+      },
+    };
+    prisma.refreshToken.findUnique.mockResolvedValue(existing);
+    tokenService.hashRefreshToken = vi.fn().mockReturnValue('hash');
+    tokenService.generateRefreshToken = vi
+      .fn()
+      .mockReturnValue({ raw: 'next-refresh', hash: 'next-hash' });
+    tokenService.refreshTokenTtlMs = vi.fn().mockReturnValue(120_000);
+    tokenService.signAccessToken = vi.fn().mockResolvedValue('next-access');
+
+    await expect(
+      service.refresh('refresh', { requestId: 'request-1' }),
+    ).resolves.toMatchObject({ accessToken: 'next-access' });
+
+    transactionClient.refreshToken.updateMany.mockResolvedValueOnce({
+      count: 0,
+    });
+
+    await expect(
+      service.refresh('refresh', { requestId: 'request-2' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(transactionClient.refreshToken.create).toHaveBeenCalledTimes(1);
+    expect(prisma.session.update).toHaveBeenCalledWith({
+      where: { id: 'session-1' },
+      data: expect.objectContaining({ revokedReason: 'REUSE_DETECTED' }),
+    });
   });
 });

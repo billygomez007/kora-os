@@ -18,11 +18,12 @@ import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { allowedCorsOrigins } from '../../bootstrap/configure-application.js';
 import type { RequestWithId } from '../../common/middleware/request-id.middleware.js';
-import { AuthService } from './auth.service.js';
+import { AuthService, type AuthResult } from './auth.service.js';
 import {
   assertAllowedBrowserOrigin,
   clearBrowserRefreshCookie,
   isBrowserCookieClient,
+  isCookieFirstBrowserClient,
   readRefreshCookie,
   setBrowserRefreshCookie,
 } from './browser-refresh-cookie.js';
@@ -95,7 +96,11 @@ export class AuthController {
         requestId: request.requestId,
       }));
     } catch (error) {
-      this.logUnexpectedVerifyFailure('challenge_verification', request.requestId, error);
+      this.logUnexpectedVerifyFailure(
+        'challenge_verification',
+        request.requestId,
+        error,
+      );
       throw error;
     }
 
@@ -105,11 +110,22 @@ export class AuthController {
         buildMetadata(dto.deviceLabel, request),
       );
       if (browserClient) {
-        this.setRefreshCookie(response, result.refreshToken, result.session.expiresAt);
+        this.setRefreshCookie(
+          response,
+          result.refreshToken,
+          result.session.expiresAt,
+        );
       }
-      return result;
+      return this.authResponseForClient(
+        result,
+        isCookieFirstBrowserClient(request),
+      );
     } catch (error) {
-      this.logUnexpectedVerifyFailure('session_issuance', request.requestId, error);
+      this.logUnexpectedVerifyFailure(
+        'session_issuance',
+        request.requestId,
+        error,
+      );
       throw error;
     }
   }
@@ -123,8 +139,13 @@ export class AuthController {
     // not need noisy logs. Unexpected failures get only an allowlisted name
     // and error code; never message text, OTPs, tokens, or secrets.
     if (error instanceof HttpException && error.getStatus() < 500) return;
-    const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
-    const name = safeDiagnosticToken(error instanceof Error ? error.name : record.name);
+    const record =
+      error && typeof error === 'object'
+        ? (error as Record<string, unknown>)
+        : {};
+    const name = safeDiagnosticToken(
+      error instanceof Error ? error.name : record.name,
+    );
     const code = safeDiagnosticToken(record.code);
     this.logger.error(
       `Email OTP verify failed stage=${stage} requestId=${safeDiagnosticToken(requestId)} name=${name} code=${code}`,
@@ -147,7 +168,10 @@ export class AuthController {
       ? readRefreshCookie(request)
       : dto.refreshToken;
     if (!refreshToken) {
-      throw new HttpException('Authentication is required', HttpStatus.UNAUTHORIZED);
+      throw new HttpException(
+        'Authentication is required',
+        HttpStatus.UNAUTHORIZED,
+      );
     }
 
     const result = await this.authService.refresh(
@@ -155,9 +179,45 @@ export class AuthController {
       buildMetadata(undefined, request),
     );
     if (browserClient) {
-      this.setRefreshCookie(response, result.refreshToken, result.session.expiresAt);
+      this.setRefreshCookie(
+        response,
+        result.refreshToken,
+        result.session.expiresAt,
+      );
     }
-    return result;
+    return this.authResponseForClient(
+      result,
+      isCookieFirstBrowserClient(request),
+    );
+  }
+
+  @Public()
+  @Post('browser-logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async browserLogout(
+    @Req() request: RequestWithId,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    if (!isBrowserCookieClient(request)) {
+      throw new HttpException(
+        'Browser authentication is required',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    this.assertBrowserOrigin(request);
+
+    try {
+      const refreshToken = readRefreshCookie(request);
+      if (refreshToken) {
+        await this.authService.logoutByRefreshToken(
+          refreshToken,
+          buildMetadata(undefined, request),
+        );
+      }
+    } finally {
+      this.clearRefreshCookie(response);
+    }
   }
 
   @Post('logout')
@@ -188,7 +248,10 @@ export class AuthController {
     const browserClient = isBrowserCookieClient(request);
     if (browserClient) this.assertBrowserOrigin(request);
 
-    await this.authService.logoutAll(user.id, buildMetadata(undefined, request));
+    await this.authService.logoutAll(
+      user.id,
+      buildMetadata(undefined, request),
+    );
     if (browserClient) this.clearRefreshCookie(response);
   }
 
@@ -199,7 +262,11 @@ export class AuthController {
     );
   }
 
-  private setRefreshCookie(response: Response, refreshToken: string, expiresAt: Date): void {
+  private setRefreshCookie(
+    response: Response,
+    refreshToken: string,
+    expiresAt: Date,
+  ): void {
     setBrowserRefreshCookie(
       response,
       refreshToken,
@@ -213,6 +280,14 @@ export class AuthController {
       response,
       this.config.get<string>('NODE_ENV') === 'production',
     );
+  }
+
+  private authResponseForClient(result: AuthResult, cookieFirst: boolean) {
+    if (!cookieFirst) return result;
+
+    const { refreshToken: _refreshToken, ...redacted } = result;
+    void _refreshToken;
+    return redacted;
   }
 
   @Get('me')
@@ -247,10 +322,15 @@ export class AuthController {
  * anomaly review.
  */
 function hashIp(request: RequestWithId & Request): string {
-  return createHash('sha256').update(request.ip ?? 'unknown').digest('hex');
+  return createHash('sha256')
+    .update(request.ip ?? 'unknown')
+    .digest('hex');
 }
 
-function buildMetadata(deviceLabel: string | undefined, request: RequestWithId & Request) {
+function buildMetadata(
+  deviceLabel: string | undefined,
+  request: RequestWithId & Request,
+) {
   return {
     deviceLabel,
     userAgent: request.headers['user-agent'],

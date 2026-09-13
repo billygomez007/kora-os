@@ -3,6 +3,8 @@ import { ForbiddenException } from '@nestjs/common';
 
 export const BROWSER_CLIENT_HEADER = 'x-kora-client';
 export const BROWSER_CLIENT_VALUE = 'web';
+export const BROWSER_AUTH_MODE_HEADER = 'x-kora-auth-mode';
+export const COOKIE_FIRST_AUTH_MODE = 'cookie-v1';
 export const BROWSER_REFRESH_COOKIE = '__Host-kora_refresh';
 
 /**
@@ -13,6 +15,19 @@ export function isBrowserCookieClient(request: Request): boolean {
   return (
     request.header(BROWSER_CLIENT_HEADER)?.trim().toLowerCase() ===
     BROWSER_CLIENT_VALUE
+  );
+}
+
+/**
+ * Explicit opt-in for the future cookie-first web client. The current web
+ * client intentionally does not send this marker, so its legacy response
+ * contract remains unchanged until the frontend migration is deployed.
+ */
+export function isCookieFirstBrowserClient(request: Request): boolean {
+  return (
+    isBrowserCookieClient(request) &&
+    request.header(BROWSER_AUTH_MODE_HEADER)?.trim().toLowerCase() ===
+      COOKIE_FIRST_AUTH_MODE
   );
 }
 

@@ -215,7 +215,9 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .post('/v1/auth/email-otp/request')
         .send({ email })
         .expect(200);
-      const code = testApp.fakeEmailOtpSender.lastCodeFor(normalizeEmail(email));
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(
+        normalizeEmail(email),
+      );
 
       const verified = await request(testApp.app.getHttpServer())
         .post('/v1/auth/email-otp/verify')
@@ -251,7 +253,9 @@ describe('Passwordless email OTP auth (e2e)', () => {
         data: { status: 'SUSPENDED' },
       });
 
-      await authed(testApp, signedIn.accessToken).get('/v1/auth/me').expect(401);
+      await authed(testApp, signedIn.accessToken)
+        .get('/v1/auth/me')
+        .expect(401);
       await request(testApp.app.getHttpServer())
         .post('/v1/auth/refresh')
         .send({ refreshToken: signedIn.refreshToken })
@@ -272,7 +276,9 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .post('/v1/auth/email-otp/request')
         .send({ email })
         .expect(200);
-      const code = testApp.fakeEmailOtpSender.lastCodeFor(signedIn.emailNormalized);
+      const code = testApp.fakeEmailOtpSender.lastCodeFor(
+        signedIn.emailNormalized,
+      );
 
       await request(testApp.app.getHttpServer())
         .post('/v1/auth/email-otp/verify')
@@ -301,7 +307,10 @@ describe('Passwordless email OTP auth (e2e)', () => {
 
       await request(testApp.app.getHttpServer())
         .post('/v1/auth/email-otp/verify')
-        .send({ challengeId: requestResponse.body.data.challengeId, code: '000000' })
+        .send({
+          challengeId: requestResponse.body.data.challengeId,
+          code: '000000',
+        })
         .expect(401);
 
       // The real code still works afterward.
@@ -310,7 +319,10 @@ describe('Passwordless email OTP auth (e2e)', () => {
       );
       await request(testApp.app.getHttpServer())
         .post('/v1/auth/email-otp/verify')
-        .send({ challengeId: requestResponse.body.data.challengeId, code: realCode })
+        .send({
+          challengeId: requestResponse.body.data.challengeId,
+          code: realCode,
+        })
         .expect(200);
       await trackUser(email);
     });
@@ -376,14 +388,19 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .send({ challengeId, code: '000000' })
         .expect(401);
 
-      const afterFailedAttempt = await prisma.emailOtpChallenge.findUniqueOrThrow({
-        where: { id: challengeId },
-      });
+      const afterFailedAttempt =
+        await prisma.emailOtpChallenge.findUniqueOrThrow({
+          where: { id: challengeId },
+        });
       expect(afterFailedAttempt.attemptCount).toBe(1);
       expect(afterFailedAttempt.codeDigest).toBe(afterCreate.codeDigest);
-      expect(afterFailedAttempt.emailNormalized).toBe(afterCreate.emailNormalized);
+      expect(afterFailedAttempt.emailNormalized).toBe(
+        afterCreate.emailNormalized,
+      );
 
-      const pepper = testApp.app.get(ConfigService).getOrThrow<string>('OTP_PEPPER');
+      const pepper = testApp.app
+        .get(ConfigService)
+        .getOrThrow<string>('OTP_PEPPER');
       const recomputedFromFreshRead = computeOtpDigest({
         pepper,
         challengeId: afterFailedAttempt.id,
@@ -560,25 +577,75 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .expect(401);
     });
 
+    it('allows only one concurrent refresh winner for a shared token', async () => {
+      const signedIn = await signInWithEmailOtp(testApp, uniqueEmail());
+      await trackUser(signedIn.email);
+
+      const attempt = () =>
+        request(testApp.app.getHttpServer())
+          .post('/v1/auth/refresh')
+          .send({ refreshToken: signedIn.refreshToken });
+      const results = await Promise.all([attempt(), attempt()]);
+
+      expect(results.filter((result) => result.status === 200)).toHaveLength(1);
+      expect(results.filter((result) => result.status === 401)).toHaveLength(1);
+
+      const session = await testApp.prisma.session.findUniqueOrThrow({
+        where: { id: signedIn.sessionId },
+      });
+      expect(session.revokedReason).toBe('REUSE_DETECTED');
+      const tokens = await testApp.prisma.refreshToken.findMany({
+        where: { sessionId: signedIn.sessionId },
+      });
+      expect(tokens).toHaveLength(2);
+      expect(
+        tokens.filter(
+          (token) => token.usedAt === null && token.revokedAt === null,
+        ),
+      ).toHaveLength(0);
+      expect(
+        tokens.every((token) => token.tokenHash !== signedIn.refreshToken),
+      ).toBe(true);
+      expect(JSON.stringify(tokens)).not.toContain(signedIn.refreshToken);
+    });
+
     it('revokes the current session on logout and every session on logout-all', async () => {
       const email = uniqueEmail();
-      const session1 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-1' });
+      const session1 = await signInWithEmailOtp(testApp, email, {
+        deviceLabel: 'device-1',
+      });
       await trackUser(email);
-      const session2 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-2' });
+      const session2 = await signInWithEmailOtp(testApp, email, {
+        deviceLabel: 'device-2',
+      });
 
-      await authed(testApp, session1.accessToken).post('/v1/auth/logout').expect(204);
-      await authed(testApp, session1.accessToken).get('/v1/auth/me').expect(401);
-      await authed(testApp, session2.accessToken).get('/v1/auth/me').expect(200);
+      await authed(testApp, session1.accessToken)
+        .post('/v1/auth/logout')
+        .expect(204);
+      await authed(testApp, session1.accessToken)
+        .get('/v1/auth/me')
+        .expect(401);
+      await authed(testApp, session2.accessToken)
+        .get('/v1/auth/me')
+        .expect(200);
 
-      await authed(testApp, session2.accessToken).post('/v1/auth/logout-all').expect(204);
-      await authed(testApp, session2.accessToken).get('/v1/auth/me').expect(401);
+      await authed(testApp, session2.accessToken)
+        .post('/v1/auth/logout-all')
+        .expect(204);
+      await authed(testApp, session2.accessToken)
+        .get('/v1/auth/me')
+        .expect(401);
     });
 
     it('immediately invalidates a session revoked via the sessions endpoint', async () => {
       const email = uniqueEmail();
-      const session1 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-1' });
+      const session1 = await signInWithEmailOtp(testApp, email, {
+        deviceLabel: 'device-1',
+      });
       await trackUser(email);
-      const session2 = await signInWithEmailOtp(testApp, email, { deviceLabel: 'device-2' });
+      const session2 = await signInWithEmailOtp(testApp, email, {
+        deviceLabel: 'device-2',
+      });
 
       const list = await authed(testApp, session1.accessToken)
         .get('/v1/auth/sessions')
@@ -590,8 +657,12 @@ describe('Passwordless email OTP auth (e2e)', () => {
       await authed(testApp, session1.accessToken)
         .delete(`/v1/auth/sessions/${session2.sessionId}`)
         .expect(204);
-      await authed(testApp, session2.accessToken).get('/v1/auth/me').expect(401);
-      await authed(testApp, session1.accessToken).get('/v1/auth/me').expect(200);
+      await authed(testApp, session2.accessToken)
+        .get('/v1/auth/me')
+        .expect(401);
+      await authed(testApp, session1.accessToken)
+        .get('/v1/auth/me')
+        .expect(200);
     });
 
     it('rejects unauthenticated and garbage-token requests to protected routes', async () => {
@@ -600,8 +671,8 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .get('/v1/auth/me')
         .set('Authorization', 'Bearer not-a-real-jwt')
         .expect(401);
-      });
     });
+  });
 
   describe('browser refresh-cookie transport', () => {
     let testApp: TestApp;
@@ -617,11 +688,17 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .options('/v1/auth/refresh')
         .set('Origin', 'https://www.koraafric.com')
         .set('Access-Control-Request-Method', 'POST')
-        .set('Access-Control-Request-Headers', 'content-type, x-kora-client')
+        .set(
+          'Access-Control-Request-Headers',
+          'content-type, x-kora-client, x-kora-auth-mode',
+        )
         .expect(204);
 
       expect(preflight.headers['access-control-allow-headers']).toContain(
         'X-Kora-Client',
+      );
+      expect(preflight.headers['access-control-allow-headers']).toContain(
+        'X-Kora-Auth-Mode',
       );
     });
 
@@ -638,7 +715,7 @@ describe('Passwordless email OTP auth (e2e)', () => {
       return firstSetCookie(response).split(';', 1)[0];
     }
 
-    async function browserSignIn(email: string) {
+    async function browserSignIn(email: string, authMode?: string) {
       await bypassOtpResendCooldown(testApp, normalizeEmail(email));
       const requested = await request(testApp.app.getHttpServer())
         .post('/v1/auth/email-otp/request')
@@ -647,10 +724,12 @@ describe('Passwordless email OTP auth (e2e)', () => {
       const code = testApp.fakeEmailOtpSender.lastCodeFor(
         normalizeEmail(email),
       );
-      const verified = await request(testApp.app.getHttpServer())
+      const verify = request(testApp.app.getHttpServer())
         .post('/v1/auth/email-otp/verify')
         .set('X-Kora-Client', 'web')
-        .set('Origin', 'https://www.koraafric.com')
+        .set('Origin', 'https://www.koraafric.com');
+      if (authMode) verify.set('X-Kora-Auth-Mode', authMode);
+      const verified = await verify
         .send({ challengeId: requested.body.data.challengeId, code })
         .expect(200);
       await trackUser(email);
@@ -660,6 +739,7 @@ describe('Passwordless email OTP auth (e2e)', () => {
         cookie: setCookie.split(';', 1)[0],
         setCookie,
         sessionId: verified.body.data.session.id as string,
+        response: verified,
       };
     }
 
@@ -675,6 +755,27 @@ describe('Passwordless email OTP auth (e2e)', () => {
       // The test environment is HTTP; production Secure behavior is covered
       // by browser-refresh-cookie.spec.ts with NODE_ENV=production semantics.
       expect(session.setCookie).not.toContain('Secure');
+    });
+
+    it('supports an explicit future cookie-first response without changing legacy browser transport', async () => {
+      const session = await browserSignIn(uniqueEmail(), 'cookie-v1');
+      expect(session.response.body.data.accessToken).toEqual(
+        expect.any(String),
+      );
+      expect(session.response.body.data.refreshToken).toBeUndefined();
+
+      const rotated = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('X-Kora-Auth-Mode', 'cookie-v1')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(200);
+
+      expect(rotated.body.data.accessToken).toEqual(expect.any(String));
+      expect(rotated.body.data.refreshToken).toBeUndefined();
+      expect(firstSetCookie(rotated)).toContain('__Host-kora_refresh=');
     });
 
     it('refreshes from the cookie, rotates it, and preserves reuse detection', async () => {
@@ -717,6 +818,107 @@ describe('Passwordless email OTP auth (e2e)', () => {
         .set('Cookie', replacementCookie)
         .send({})
         .expect(401);
+    });
+
+    it('revokes the cookie session family and clears the cookie without rotating it', async () => {
+      const session = await browserSignIn(uniqueEmail());
+      const before = await testApp.prisma.refreshToken.findMany({
+        where: { sessionId: session.sessionId },
+      });
+
+      const logout = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-logout')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .expect(204);
+
+      const cleared = String(
+        (Array.isArray(logout.headers['set-cookie'])
+          ? logout.headers['set-cookie'][0]
+          : logout.headers['set-cookie']) ?? '',
+      );
+      expect(cleared).toContain('__Host-kora_refresh=;');
+      expect(cleared).toContain('Max-Age=0');
+      expect(cleared).toContain('HttpOnly');
+
+      const storedSession = await testApp.prisma.session.findUniqueOrThrow({
+        where: { id: session.sessionId },
+      });
+      expect(storedSession.revokedAt).not.toBeNull();
+      expect(storedSession.revokedReason).toBe('LOGOUT');
+      const after = await testApp.prisma.refreshToken.findMany({
+        where: { sessionId: session.sessionId },
+      });
+      expect(after).toHaveLength(before.length);
+      expect(after.every((token) => token.revokedAt)).toBe(true);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(401);
+    });
+
+    it('is idempotent for absent, expired, and already-revoked cookies', async () => {
+      const withoutCookie = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-logout')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://koraafric.com')
+        .expect(204);
+      expect(String(withoutCookie.headers['set-cookie']?.[0] ?? '')).toContain(
+        '__Host-kora_refresh=;',
+      );
+
+      const alreadyRevoked = await browserSignIn(uniqueEmail());
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/logout')
+        .set('Authorization', `Bearer ${alreadyRevoked.accessToken}`)
+        .expect(204);
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-logout')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', alreadyRevoked.cookie)
+        .expect(204);
+
+      const expired = await browserSignIn(uniqueEmail());
+      await testApp.prisma.refreshToken.updateMany({
+        where: { sessionId: expired.sessionId },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      const expiredLogout = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-logout')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', expired.cookie)
+        .expect(204);
+      expect(String(expiredLogout.headers['set-cookie']?.[0] ?? '')).toContain(
+        '__Host-kora_refresh=;',
+      );
+    });
+
+    it('requires the browser marker and an approved Origin for browser logout', async () => {
+      for (const requestBuilder of [
+        request(testApp.app.getHttpServer())
+          .post('/v1/auth/browser-logout')
+          .set('Origin', 'https://www.koraafric.com'),
+        request(testApp.app.getHttpServer())
+          .post('/v1/auth/browser-logout')
+          .set('X-Kora-Client', 'web'),
+        request(testApp.app.getHttpServer())
+          .post('/v1/auth/browser-logout')
+          .set('X-Kora-Client', 'web')
+          .set('Origin', 'https://evil.example'),
+        request(testApp.app.getHttpServer())
+          .post('/v1/auth/browser-logout')
+          .set('X-Kora-Client', 'web')
+          .set('Origin', 'not-an-origin'),
+      ]) {
+        await requestBuilder.expect(403);
+      }
     });
 
     it('rejects a revoked, expired, and suspended browser session', async () => {

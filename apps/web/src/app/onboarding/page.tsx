@@ -3,12 +3,14 @@
 import {
   FormEvent,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getKoraSession } from "@/lib/auth/session";
+import { trackSignUp } from "@/lib/analytics";
 
 interface OrganizationCreateResponse {
   data?: {
@@ -80,6 +82,7 @@ export default function OnboardingPage() {
     useState<"idle" | "loading" | "error">("idle");
 
   const [message, setMessage] = useState("");
+  const signUpTracked = useRef(false);
 
   const generatedSlug = useMemo(
     () => makeSlug(businessName),
@@ -230,6 +233,11 @@ export default function OnboardingPage() {
         "kora.onboarding.businessName",
         businessName.trim(),
       );
+
+      if (organizationId && !signUpTracked.current) {
+        signUpTracked.current = true;
+        trackSignUp(organizationId);
+      }
 
       router.replace("/app");
     } catch (error) {

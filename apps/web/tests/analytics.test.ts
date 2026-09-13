@@ -7,9 +7,16 @@ import {
   analyticsConsentUpdate,
   clearGoogleAnalyticsCookies,
   isPublicAnalyticsPath,
+  isAnalyticsRuntimePath,
   parseAnalyticsConsent,
   safeAnalyticsPath,
   setAnalyticsConsent,
+  trackBeginCheckout,
+  trackEvent,
+  trackLogin,
+  trackPricingView,
+  trackPurchase,
+  trackSignUp,
 } from "../src/lib/analytics.ts";
 
 test("uses the approved public GA4 measurement ID", () => {
@@ -23,6 +30,14 @@ test("tracks localized public marketing routes only", () => {
   assert.equal(isPublicAnalyticsPath("/en/app"), false);
   assert.equal(isPublicAnalyticsPath("/fr/invite/secret-token"), false);
   assert.equal(isPublicAnalyticsPath("/en/verify?token=secret"), false);
+});
+
+test("allows consented event runtime on auth boundaries without treating them as public page views", () => {
+  assert.equal(isAnalyticsRuntimePath("/en/login"), true);
+  assert.equal(isAnalyticsRuntimePath("/fr/verify"), true);
+  assert.equal(isAnalyticsRuntimePath("/en/onboarding"), true);
+  assert.equal(isAnalyticsRuntimePath("/en/app"), false);
+  assert.equal(isPublicAnalyticsPath("/en/verify"), false);
 });
 
 test("removes query strings before a page location is sent", () => {
@@ -116,5 +131,160 @@ test("declining analytics clears GA cookies but leaves unrelated cookies alone",
     ]);
   } finally {
     Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+  }
+});
+
+test("event tracking is consent-gated and does not send without gtag", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { gtag: (...args: unknown[]) => calls.push(args) },
+  });
+
+  try {
+    assert.equal(trackSignUp("organization-event"), true);
+    assert.equal(trackLogin(), true);
+    assert.equal(trackPricingView(), true);
+    assert.deepEqual(calls.map(([type, name]) => [type, name]), [
+      ["event", "sign_up"],
+      ["event", "login"],
+      ["event", "view_pricing"],
+    ]);
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
+test("event tracking remains disabled when consent is denied", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=denied" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { gtag: (...args: unknown[]) => calls.push(args) },
+  });
+
+  try {
+    assert.equal(trackEvent("login"), false);
+    assert.deepEqual(calls, []);
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
+test("sign_up is deduplicated by the created organization without sending its ID", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { gtag: (...args: unknown[]) => calls.push(args) },
+  });
+
+  try {
+    assert.equal(trackSignUp("organization-001"), true);
+    assert.equal(trackSignUp("organization-001"), false);
+    assert.equal(trackSignUp("organization-002"), true);
+    assert.deepEqual(calls, [
+      ["event", "sign_up", { method: "email_otp" }],
+      ["event", "sign_up", { method: "email_otp" }],
+    ]);
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
+test("a throwing gtag implementation cannot block the calling flow", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { gtag: () => { throw new Error("blocked analytics"); } },
+  });
+
+  try {
+    assert.equal(trackLogin(), false);
+    assert.equal(trackSignUp("organization-throw"), false);
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
+test("purchase tracking requires a transaction and suppresses duplicate transaction IDs", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { gtag: (...args: unknown[]) => calls.push(args) },
+  });
+
+  try {
+    assert.equal(trackPurchase({ transactionId: "" }), false);
+    assert.equal(trackPurchase({ transactionId: "subscription-001", currency: "GHS", value: 120 }), true);
+    assert.equal(trackPurchase({ transactionId: "subscription-001", currency: "GHS", value: 120 }), false);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], ["event", "purchase", {
+      transaction_id: "subscription-001",
+      currency: "GHS",
+      value: 120,
+    }]);
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
+test("checkout payloads stay optional until a real Kora checkout exists", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { gtag: (...args: unknown[]) => calls.push(args) },
+  });
+
+  try {
+    assert.equal(trackBeginCheckout({}), true);
+    assert.deepEqual(calls[0], ["event", "begin_checkout", {}]);
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
   }
 });

@@ -13,6 +13,24 @@ export const ANALYTICS_CONSENT_DEFAULT = {
   ad_personalization: "denied",
 } as const;
 
+type AnalyticsScalar = string | number | boolean;
+export type AnalyticsItem = Readonly<Record<string, AnalyticsScalar>>;
+export type AnalyticsEventParams = Readonly<Record<string, AnalyticsScalar | readonly AnalyticsItem[]>>;
+
+export type AnalyticsEventName =
+  | "sign_up"
+  | "generate_lead"
+  | "begin_checkout"
+  | "purchase"
+  | "login"
+  | "view_pricing";
+
+declare global {
+  interface Window {
+    gtag?: (...args: unknown[]) => void;
+  }
+}
+
 export function analyticsConsentUpdate(consent: AnalyticsConsent) {
   return {
     ...ANALYTICS_CONSENT_DEFAULT,
@@ -59,6 +77,146 @@ export function clearGoogleAnalyticsCookies(): void {
   }
 }
 
+/**
+ * Send a consent-gated GA4 event through the existing direct gtag integration.
+ * Event payloads intentionally accept only scalar values and safe item data;
+ * callers must never pass identity, contact, authentication, or payment data.
+ */
+export function trackEvent(
+  name: AnalyticsEventName,
+  params: AnalyticsEventParams = {},
+): boolean {
+  if (typeof window === "undefined" || readAnalyticsConsent() !== "granted") {
+    return false;
+  }
+
+  if (typeof window.gtag !== "function") return false;
+
+  try {
+    window.gtag("event", name, params);
+    return true;
+  } catch {
+    // Analytics must never block authentication or onboarding.
+    return false;
+  }
+}
+
+const trackedSignUpKeys = new Set<string>();
+
+function signUpWasTracked(key: string): boolean {
+  if (trackedSignUpKeys.has(key)) return true;
+
+  try {
+    if (window.sessionStorage?.getItem(key) === "1") {
+      trackedSignUpKeys.add(key);
+      return true;
+    }
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+
+  return false;
+}
+
+function rememberSignUp(key: string): void {
+  trackedSignUpKeys.add(key);
+
+  try {
+    window.sessionStorage?.setItem(key, "1");
+  } catch {
+    // The in-memory guard still protects retries in this page lifecycle.
+  }
+}
+
+export function trackSignUp(organizationId: string): boolean {
+  const normalizedOrganizationId = organizationId.trim();
+  if (!normalizedOrganizationId) return false;
+
+  const key = `kora.analytics.signup.${encodeURIComponent(normalizedOrganizationId)}`;
+  if (signUpWasTracked(key)) return false;
+
+  if (!trackEvent("sign_up", { method: "email_otp" })) return false;
+  rememberSignUp(key);
+  return true;
+}
+
+export function trackLead(): boolean {
+  return trackEvent("generate_lead");
+}
+
+export function trackBeginCheckout(input: {
+  currency?: string;
+  value?: number;
+  items?: readonly AnalyticsItem[];
+} = {}): boolean {
+  const params: AnalyticsEventParams = {
+    ...(input.currency ? { currency: input.currency } : {}),
+    ...(typeof input.value === "number" ? { value: input.value } : {}),
+    ...(input.items ? { items: input.items } : {}),
+  };
+
+  return trackEvent("begin_checkout", params);
+}
+
+const trackedPurchaseKeys = new Set<string>();
+
+function purchaseWasTracked(key: string): boolean {
+  if (trackedPurchaseKeys.has(key)) return true;
+
+  try {
+    if (window.sessionStorage?.getItem(key) === "1") {
+      trackedPurchaseKeys.add(key);
+      return true;
+    }
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+
+  return false;
+}
+
+function rememberPurchase(key: string): void {
+  trackedPurchaseKeys.add(key);
+
+  try {
+    window.sessionStorage?.setItem(key, "1");
+  } catch {
+    // The in-memory guard still protects retries in this page lifecycle.
+  }
+}
+
+export function trackPurchase(input: {
+  transactionId: string;
+  currency?: string;
+  value?: number;
+  items?: readonly AnalyticsItem[];
+}): boolean {
+  const transactionId = input.transactionId.trim();
+  if (!transactionId) return false;
+
+  const key = `kora.analytics.purchase.${encodeURIComponent(transactionId)}`;
+  if (purchaseWasTracked(key)) return false;
+
+  const params: AnalyticsEventParams = {
+    transaction_id: transactionId,
+    ...(input.currency ? { currency: input.currency } : {}),
+    ...(typeof input.value === "number" ? { value: input.value } : {}),
+    ...(input.items ? { items: input.items } : {}),
+  };
+
+  if (!trackEvent("purchase", params)) return false;
+  rememberPurchase(key);
+  return true;
+}
+
+export function trackLogin(): boolean {
+  return trackEvent("login", { method: "email_otp" });
+}
+
+export function trackPricingView(): boolean {
+  return trackEvent("view_pricing");
+}
+
 const PUBLIC_ANALYTICS_PATHS = new Set([
   "/",
   "/about",
@@ -85,6 +243,19 @@ export function isPublicAnalyticsPath(pathname: string): boolean {
     PUBLIC_ANALYTICS_PATHS.has(withoutLocale) ||
     withoutLocale.startsWith("/marketplace/")
   );
+}
+
+/**
+ * Auth/onboarding routes can host explicit post-success events, but they must
+ * never generate page views. They are eligible only when the visitor already
+ * has an accepted analytics preference; the consent banner remains public-site
+ * only.
+ */
+const EVENT_ANALYTICS_PATHS = new Set(["/login", "/verify", "/onboarding"]);
+
+export function isAnalyticsRuntimePath(pathname: string): boolean {
+  const withoutLocale = pathname.replace(/^\/(?:en|fr)(?=\/|$)/, "") || "/";
+  return isPublicAnalyticsPath(pathname) || EVENT_ANALYTICS_PATHS.has(withoutLocale);
 }
 
 export function safeAnalyticsPath(pathname: string): string {

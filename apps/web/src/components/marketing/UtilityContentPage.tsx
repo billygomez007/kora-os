@@ -3,6 +3,7 @@ import { getLocale, getTranslations } from "next-intl/server";
 import MarketingFooter from "./MarketingFooter";
 import MarketingHeader from "./MarketingHeader";
 import PricingPlanGrid from "./PricingPlanGrid";
+import PricingViewTracker from "@/components/analytics/PricingViewTracker";
 import { PUBLIC_PRICING } from "@/lib/pricing";
 
 type UtilityPageId = "features" | "pricing" | "resources" | "help" | "privacy";
@@ -40,6 +41,7 @@ export default async function UtilityContentPage({ id }: { id: UtilityPageId }) 
 
   return (
     <main className="public-content-page">
+      {id === "pricing" ? <PricingViewTracker /> : null}
       <div className="public-content-nav"><MarketingHeader /></div>
       <header className="public-content-hero shell">
         <span>{t("kicker")}</span><h1>{t("title")}</h1><p>{t("body")}</p>

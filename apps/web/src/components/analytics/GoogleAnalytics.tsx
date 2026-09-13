@@ -8,6 +8,7 @@ import {
   ANALYTICS_CONSENT_EVENT,
   clearGoogleAnalyticsCookies,
   KORA_GA_MEASUREMENT_ID,
+  isAnalyticsRuntimePath,
   isPublicAnalyticsPath,
   readAnalyticsConsent,
   safeAnalyticsPath,
@@ -34,10 +35,11 @@ export default function GoogleAnalytics() {
   const [consent, setConsent] = useState<AnalyticsConsent | null>(null);
   const production = process.env.NODE_ENV === "production";
   const publicPath = Boolean(pathname && production && isPublicAnalyticsPath(pathname));
-  const trackable = publicPath && consent === "granted";
+  const analyticsPath = Boolean(pathname && production && isAnalyticsRuntimePath(pathname));
+  const trackable = analyticsPath && consent === "granted";
 
   useEffect(() => {
-    if (!publicPath) {
+    if (!analyticsPath) {
       return;
     }
 
@@ -54,7 +56,7 @@ export default function GoogleAnalytics() {
       window.clearTimeout(syncConsent);
       window.removeEventListener(ANALYTICS_CONSENT_EVENT, handleConsent);
     };
-  }, [publicPath]);
+  }, [analyticsPath]);
 
   useEffect(() => {
     if (consent !== "denied") return;
@@ -68,7 +70,7 @@ export default function GoogleAnalytics() {
   useEffect(() => {
     if (!pathname) return;
 
-    if (!trackable) {
+    if (!publicPath || !trackable) {
       handledPath.current = null;
       return;
     }
@@ -100,7 +102,7 @@ export default function GoogleAnalytics() {
     return () => {
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, [pathname, trackable]);
+  }, [pathname, publicPath, trackable]);
 
   useEffect(() => {
     if (!trackable || typeof window.gtag !== "function") return;

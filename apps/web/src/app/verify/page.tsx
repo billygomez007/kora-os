@@ -10,6 +10,7 @@ import {
   type KoraSession,
 } from "@/lib/auth/session";
 import { errorMessage, readResponseBody } from "@/lib/api/kora-api";
+import { trackLogin } from "@/lib/analytics";
 import { resolveWorkspaceEntry } from "@/lib/workspace/entry";
 import { workspaceEntryRedirectPathForJourney } from "@/lib/workspace/routing";
 import { createSingleFlightGuard } from "@/lib/utils/single-flight";
@@ -104,6 +105,10 @@ function VerifyContent() {
     }
 
     saveKoraSession(session);
+
+    if (mode === "signin") {
+      trackLogin();
+    }
 
     if (invitationToken) {
       router.replace(localize(`/invite/${encodeURIComponent(invitationToken)}`));

@@ -10,16 +10,24 @@ Kora's public web application uses Google Analytics 4 with measurement ID
   consent.
 - Only public marketing routes are trackable: the localized home, company,
   utility, pricing and marketplace pages.
-- Workspace, authentication, onboarding, invitation, QR/customer and admin
-  routes are excluded.
+- Workspace, invitation, QR/customer and admin routes are excluded. Login,
+  verification and business-onboarding routes are event-only runtime paths
+  when prior consent exists; they never emit page views.
 - GA4 automatic page views are disabled. The client component emits one
   `page_view` event per pathname transition, including the locale prefix so
   English and French navigation remain distinguishable.
 - Query strings are removed from `page_path` and `page_location`, so email
   addresses, tokens and other query values are not sent to Google Analytics.
 
-No authenticated API response, business identifier, customer/staff value,
-token, OTP, or custom business event is sent to analytics.
+The centralized event helper sends only the reviewed non-PII events documented
+in [`analytics-google-ads.md`](./analytics-google-ads.md): `sign_up` after a
+successful business workspace creation, `login` after successful sign-in OTP
+verification when an already-consented GA session is available, and
+`view_pricing` after the pricing page is genuinely viewed. No business
+identifier, customer/staff value, token, OTP, contact detail, or payment
+credential is sent to analytics. Lead and paid-subscription conversion events
+remain untriggered until Kora has real successful backend boundaries for those
+actions.
 
 ## Consent
 

@@ -118,6 +118,38 @@ only and fail closed rather than pretending BroadcastChannel is a mutex or
 creating an unbounded localStorage lock. B2B remains inactive, and B2C
 reauthentication/localStorage removal remains inactive.
 
+### SEC-03B2A.1 coordination hardening
+
+Every refresh lifecycle signal is scoped to the authentication generation that
+started the operation. The coordinator ignores missing or malformed generation,
+version, and status metadata, as well as `refresh-start`, `refresh-complete`, or
+`refresh-failed` signals from an older or future generation. Version ordering is
+strictly monotonic within a generation, so delayed, duplicate, and out-of-order
+signals cannot wake a newer waiter. Logout or a newer login advances the store
+generation; a waiter then exits with a stale-generation error and cannot commit
+recovered access state.
+
+The recovery contract is covered by tests for exact and normalized browser
+markers, missing/malformed/unapproved origins, 30-per-minute throttling, trusted
+proxy behavior, concurrent recovery requests, and both response-loss cases. A
+lost response body is recoverable with the replacement cookie; a lost
+`Set-Cookie` header causes the old cookie to be denied without family revocation,
+after which the user must reauthenticate or use the still-valid replacement
+cookie. The current web client remains on the B1 compatibility path: cookie-first
+OTP, refresh, bootstrap, and browser-logout cutover are all off.
+
+The full API E2E suite runs with serialized files and unique test ports. The
+appointment race test creates its OTP fixture users serially before issuing the
+concurrent booking requests, avoiding unrelated local PostgreSQL setup
+contention. This is test-harness isolation only; appointment and reporting
+production logic is unchanged.
+
+Throttling remains process-local and is acceptable only while this recovery
+endpoint is dormant. A shared/distributed limiter is a prerequisite for B2B
+activation; the smallest likely follow-up is Redis-backed Nest throttler
+storage (optionally reinforced at the Cloudflare edge). No infrastructure is
+provisioned by this slice.
+
 ## Recommended architecture
 
 Use architecture A: keep the refresh token in a host-only, `HttpOnly` cookie and keep short-lived access tokens in memory.

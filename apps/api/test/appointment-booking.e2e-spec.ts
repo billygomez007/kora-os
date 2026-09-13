@@ -296,9 +296,22 @@ describe('Appointment booking (e2e)', () => {
 
     it('proves exactly one of several simultaneous requests for the same provider and time succeeds', async () => {
       const start = nearFutureSlotStart();
+      // Create the six independent customer sessions serially. OTP challenge
+      // creation is intentionally backed by the shared local database, so
+      // racing those setup writes would test pool contention rather than the
+      // appointment booking race below.
+      const racers = [];
+      for (let index = 0; index < 6; index += 1) {
+        racers.push(
+          await signInWithEmailOtp(
+            testApp,
+            `racer-${randomUUID()}@example.test`,
+          ),
+        );
+      }
+
       const attempts = await Promise.all(
-        Array.from({ length: 6 }, async () => {
-          const customer = await signInWithEmailOtp(testApp, `racer-${randomUUID()}@example.test`);
+        racers.map(async (customer) => {
           return request(testApp.app.getHttpServer())
             .post('/v1/me/appointments')
             .set('Authorization', `Bearer ${customer.accessToken}`)

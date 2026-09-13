@@ -59,6 +59,7 @@ export interface CoordinationOptions<T> {
 }
 
 interface RefreshWaiter {
+  generation: number;
   afterVersion: number;
   resolve: (completed: boolean) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -254,6 +255,7 @@ async function runCoordinatedRefresh<T>(options: {
   if (leader) return result as T;
 
   await waitForRefreshSignal(
+    options.generation,
     options.startingVersion,
     options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS,
   );
@@ -273,13 +275,24 @@ function handleRefreshSignal(message: AuthInvalidationMessage): void {
   if (
     (message.type !== "refresh-complete" &&
       message.type !== "refresh-failed") ||
+    message.generation === undefined ||
     message.version === undefined
   ) {
     return;
   }
 
+  // Refresh lifecycle signals are scoped to the auth generation that started
+  // the operation. A signal from a previous login (or a speculative future
+  // generation) must not wake a waiter belonging to the current session.
+  if (message.generation !== getGeneration()) return;
+
+  const expectedStatus =
+    message.type === "refresh-complete" ? "completed" : "failed";
+  if (message.status !== expectedStatus) return;
+
   latestRefreshVersion = Math.max(latestRefreshVersion, message.version);
   for (const waiter of waiters) {
+    if (waiter.generation !== message.generation) continue;
     if (message.version <= waiter.afterVersion) continue;
     clearTimeout(waiter.timer);
     waiter.resolve(true);
@@ -288,17 +301,28 @@ function handleRefreshSignal(message: AuthInvalidationMessage): void {
 }
 
 function waitForRefreshSignal(
+  generation: number,
   afterVersion: number,
   timeoutMs: number,
 ): Promise<boolean> {
-  if (latestRefreshVersion > afterVersion) return Promise.resolve(true);
+  if (
+    generation === getGeneration() &&
+    latestRefreshVersion > afterVersion
+  ) {
+    return Promise.resolve(true);
+  }
 
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       waiters.delete(waiter);
       resolve(false);
     }, timeoutMs);
-    const waiter: RefreshWaiter = { afterVersion, resolve, timer };
+    const waiter: RefreshWaiter = {
+      generation,
+      afterVersion,
+      resolve,
+      timer,
+    };
     waiters.add(waiter);
   });
 }

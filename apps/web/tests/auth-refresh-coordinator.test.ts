@@ -3,6 +3,7 @@ import { beforeEach, test } from "node:test";
 import {
   BrowserAccessTokenRecoveryError,
   RefreshCoordinationUnavailableError,
+  StaleAuthGenerationError,
   coordinateBrowserRefresh,
   recoverBrowserAccessToken,
   resetRefreshCoordinatorForTests,
@@ -15,7 +16,41 @@ import {
   setAuthenticated,
 } from "../src/lib/auth/store.ts";
 
-function installBrowser(lockMode: "leader" | "busy" | "none"): void {
+type FakeChannelListener = (event: { data: unknown }) => void;
+
+class FakeBroadcastChannel {
+  static instances = new Set<FakeBroadcastChannel>();
+  private listener: FakeChannelListener | null = null;
+
+  constructor(name: string) {
+    void name;
+    FakeBroadcastChannel.instances.add(this);
+  }
+
+  addEventListener(_type: "message", listener: FakeChannelListener): void {
+    this.listener = listener;
+  }
+
+  removeEventListener(_type: "message", listener: FakeChannelListener): void {
+    if (this.listener === listener) this.listener = null;
+  }
+
+  postMessage(data: unknown): void {
+    for (const instance of FakeBroadcastChannel.instances) {
+      if (instance !== this) instance.listener?.({ data });
+    }
+  }
+
+  close(): void {
+    this.listener = null;
+    FakeBroadcastChannel.instances.delete(this);
+  }
+}
+
+function installBrowser(
+  lockMode: "leader" | "busy" | "none",
+  withBroadcastChannel = false,
+): void {
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: {
@@ -32,7 +67,7 @@ function installBrowser(lockMode: "leader" | "busy" | "none"): void {
 
   Object.defineProperty(globalThis, "BroadcastChannel", {
     configurable: true,
-    value: undefined,
+    value: withBroadcastChannel ? FakeBroadcastChannel : undefined,
   });
 
   Object.defineProperty(globalThis, "navigator", {
@@ -53,6 +88,7 @@ function installBrowser(lockMode: "leader" | "busy" | "none"): void {
 }
 
 beforeEach(() => {
+  FakeBroadcastChannel.instances.clear();
   resetForTests();
   resetAuthChannelForTests();
   resetRefreshCoordinatorForTests();
@@ -102,6 +138,89 @@ test("a waiting tab recovers after the lock without performing a second rotation
   assert.equal(recovered, 1);
 });
 
+test("waiters ignore stale and future generation signals, including duplicates and out-of-order versions", async () => {
+  installBrowser("busy", true);
+  setAuthenticated({ accessToken: "current-session" });
+  const generation = getSnapshot().generation;
+  const external = new FakeBroadcastChannel("kora.auth.v1");
+  let recovered = 0;
+
+  const resultPromise = coordinateBrowserRefresh({
+    waitTimeoutMs: 100,
+    rotate: async () => "unsafe",
+    recover: async () => {
+      recovered += 1;
+      return "recovered";
+    },
+  });
+
+  // The operation belongs to the current generation. Signals from an older
+  // logout and a speculative future login must not wake it.
+  external.postMessage({
+    type: "refresh-start",
+    source: "other-tab",
+    generation: generation - 1,
+    version: 100,
+    status: "started",
+  });
+  external.postMessage({
+    type: "refresh-complete",
+    source: "other-tab",
+    generation: generation + 1,
+    version: 101,
+    status: "completed",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(recovered, 0);
+
+  // A matching completion wakes exactly once; lower and duplicate versions
+  // are ignored after the waiter is removed.
+  for (const version of [10, 9, 10]) {
+    external.postMessage({
+      type: "refresh-complete",
+      source: "other-tab",
+      generation,
+      version,
+      status: "completed",
+    });
+  }
+
+  assert.equal(await resultPromise, "recovered");
+  assert.equal(recovered, 1);
+  external.close();
+});
+
+test("logout and a newer login advance generation and prevent stale recovery commit", async () => {
+  installBrowser("busy", true);
+  setAuthenticated({ accessToken: "current-session" });
+  const external = new FakeBroadcastChannel("kora.auth.v1");
+  let recovered = 0;
+
+  const pending = coordinateBrowserRefresh({
+    waitTimeoutMs: 10,
+    rotate: async () => "unsafe",
+    recover: async () => {
+      recovered += 1;
+      return "must-not-commit";
+    },
+  });
+
+  clearAuthenticated();
+  setAuthenticated({ accessToken: "new-session" });
+  external.postMessage({
+    type: "refresh-complete",
+    source: "other-tab",
+    generation: 1,
+    version: Date.now(),
+    status: "completed",
+  });
+
+  await assert.rejects(pending, StaleAuthGenerationError);
+  assert.equal(recovered, 0);
+  assert.equal(getSnapshot().accessToken, "new-session");
+  external.close();
+});
+
 test("browsers without Web Locks use recovery only and fail closed on an expired cookie", async () => {
   installBrowser("none");
   let rotated = 0;
@@ -121,6 +240,27 @@ test("browsers without Web Locks use recovery only and fail closed on an expired
   );
 
   assert.equal(rotated, 0);
+});
+
+test("browsers without Web Locks use valid recovery without rotating the refresh cookie", async () => {
+  installBrowser("none");
+  let rotated = 0;
+  let recovered = 0;
+
+  const result = await coordinateBrowserRefresh({
+    rotate: async () => {
+      rotated += 1;
+      return "unsafe";
+    },
+    recover: async () => {
+      recovered += 1;
+      return "recovered";
+    },
+  });
+
+  assert.equal(result, "recovered");
+  assert.equal(rotated, 0);
+  assert.equal(recovered, 1);
 });
 
 test("recovery client sends browser credentials and commits access state only in memory", async () => {

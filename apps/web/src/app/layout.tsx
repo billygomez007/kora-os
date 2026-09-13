@@ -3,6 +3,7 @@ import { Manrope } from "next/font/google";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages, getTranslations } from "next-intl/server";
 import { headers } from "next/headers";
+import GoogleAnalytics from "@/components/analytics/GoogleAnalytics";
 import "./globals.css";
 
 const manrope = Manrope({
@@ -52,6 +53,7 @@ export default async function RootLayout({
   return (
     <html data-scroll-behavior="smooth" lang={locale} className={manrope.variable}>
       <body>
+        <GoogleAnalytics />
         <NextIntlClientProvider locale={locale} messages={messages}>
           {children}
         </NextIntlClientProvider>

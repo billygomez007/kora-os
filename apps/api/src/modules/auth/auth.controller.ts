@@ -12,6 +12,7 @@ import {
   Post,
   Req,
   Res,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
@@ -42,6 +43,11 @@ import type { RequestUser } from './interfaces/authenticated-request.interface.j
 // is a coarser, IP-only backstop consistent with how the rest of the
 // auth surface is throttled.
 const AUTH_THROTTLE = { default: { limit: 10, ttl: 60_000 } };
+
+// Recovery can legitimately run during reloads and coordinated multi-tab
+// startup. It is deliberately more generous than OTP, while the global
+// throttler remains the last-resort per-process backstop.
+const BROWSER_RECOVERY_THROTTLE = { default: { limit: 30, ttl: 60_000 } };
 
 @Controller('auth')
 export class AuthController {
@@ -191,6 +197,56 @@ export class AuthController {
     );
   }
 
+  /**
+   * Mint a short-lived access token from the current browser refresh cookie
+   * without rotating or otherwise mutating the refresh-token family. This is
+   * reserved for the future cookie-first web client recovering after a lost
+   * refresh response; the current web client does not call it yet.
+   */
+  @Public()
+  @Throttle(BROWSER_RECOVERY_THROTTLE)
+  @Post('browser-access-token')
+  @HttpCode(HttpStatus.OK)
+  async browserAccessToken(
+    @Req() request: RequestWithId,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+
+    if (!isBrowserCookieClient(request)) {
+      this.logBrowserRecoveryDenied(request, 'missing_browser_marker');
+      throw new HttpException(
+        'Browser authentication is required',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    try {
+      this.assertBrowserOrigin(request);
+    } catch (error) {
+      this.logBrowserRecoveryDenied(request, 'origin_not_allowed');
+      throw error;
+    }
+
+    const refreshToken = readRefreshCookie(request);
+    if (!refreshToken) {
+      this.logBrowserRecoveryDenied(request, 'missing_cookie');
+      throw new UnauthorizedException('Authentication is required');
+    }
+
+    try {
+      return await this.authService.recoverBrowserAccessToken(
+        refreshToken,
+        buildMetadata(undefined, request),
+      );
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        this.logBrowserRecoveryDenied(request, 'authentication_required');
+      }
+      throw error;
+    }
+  }
+
   @Public()
   @Post('browser-logout')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -279,6 +335,19 @@ export class AuthController {
     clearBrowserRefreshCookie(
       response,
       this.config.get<string>('NODE_ENV') === 'production',
+    );
+  }
+
+  private logBrowserRecoveryDenied(
+    request: RequestWithId,
+    reason:
+      | 'missing_browser_marker'
+      | 'origin_not_allowed'
+      | 'missing_cookie'
+      | 'authentication_required',
+  ): void {
+    this.logger.warn(
+      `Browser access-token recovery denied reason=${reason} requestId=${safeDiagnosticToken(request.requestId)}`,
     );
   }
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import {
+  broadcastAuthSignal,
   broadcastAuthInvalidation,
   resetAuthChannelForTests,
   startAuthChannel,
@@ -47,10 +48,14 @@ function installWindow(): void {
         setItem: (key: string, value: string) => storage.set(key, value),
         removeItem: (key: string) => storage.delete(key),
       },
-      addEventListener: (_type: "storage", listener: (event: StorageEvent) => void) =>
-        storageListeners.add(listener),
-      removeEventListener: (_type: "storage", listener: (event: StorageEvent) => void) =>
-        storageListeners.delete(listener),
+      addEventListener: (
+        _type: "storage",
+        listener: (event: StorageEvent) => void,
+      ) => storageListeners.add(listener),
+      removeEventListener: (
+        _type: "storage",
+        listener: (event: StorageEvent) => void,
+      ) => storageListeners.delete(listener),
     },
   });
 }
@@ -121,4 +126,42 @@ test("storage fallback emits only invalidation signals", () => {
     } as StorageEvent);
   }
   assert.deepEqual(messages, [{ type: "logout", source: "another-tab" }]);
+});
+
+test("refresh lifecycle signals carry only safe coordination metadata", () => {
+  Object.defineProperty(globalThis, "BroadcastChannel", {
+    configurable: true,
+    value: FakeBroadcastChannel,
+  });
+
+  const messages: unknown[] = [];
+  startAuthChannel((message) => messages.push(message));
+
+  const external = new FakeBroadcastChannel("kora.auth.v1");
+  external.postMessage({
+    type: "refresh-complete",
+    source: "another-tab",
+    generation: 4,
+    version: 12,
+    status: "completed",
+    accessToken: "must-not-be-consumed",
+    refreshToken: "must-not-be-consumed",
+  });
+
+  assert.deepEqual(messages, [
+    {
+      type: "refresh-complete",
+      source: "another-tab",
+      generation: 4,
+      version: 12,
+      status: "completed",
+    },
+  ]);
+
+  broadcastAuthSignal("refresh-start", {
+    generation: 4,
+    version: 13,
+    status: "started",
+  });
+  assert.equal(storage.size, 0);
 });

@@ -212,6 +212,67 @@ export class AuthService {
     };
   }
 
+  /**
+   * Validate the current browser refresh cookie without consuming it. This
+   * is intentionally separate from `refresh`: a tab that lost a rotating
+   * refresh response must be able to mint a short-lived access token from the
+   * replacement cookie without presenting the already-used token again.
+   */
+  async recoverBrowserAccessToken(
+    rawRefreshToken: string,
+    meta: RequestMetadata,
+  ): Promise<Omit<AuthResult, 'refreshToken'>> {
+    const tokenHash = this.tokenService.hashRefreshToken(rawRefreshToken);
+    const existing = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+      include: { session: { include: { user: true } } },
+    });
+
+    if (
+      !existing ||
+      existing.usedAt !== null ||
+      existing.revokedAt !== null ||
+      existing.expiresAt.getTime() <= Date.now() ||
+      existing.session.revokedAt !== null ||
+      existing.session.expiresAt.getTime() <= Date.now() ||
+      !isUserAllowedAccess(existing.session.user.status)
+    ) {
+      throw new UnauthorizedException(GENERIC_AUTH_ERROR);
+    }
+
+    const accessToken = await this.tokenService.signAccessToken({
+      sub: existing.session.userId,
+      sid: existing.sessionId,
+    });
+
+    await this.auditService.record({
+      actorUserId: existing.session.userId,
+      action: 'auth.browser_access_token_recovered',
+      entityType: 'session',
+      entityId: existing.sessionId,
+      requestId: meta.requestId,
+      source: 'auth',
+      metadata: {
+        transport: 'browser_cookie',
+        rotation: false,
+      },
+    });
+
+    return {
+      user: {
+        id: existing.session.user.id,
+        email: existing.session.user.emailNormalized,
+        displayName: existing.session.user.displayName,
+      },
+      accessToken,
+      accessTokenExpiresInSeconds: this.accessTokenTtlSeconds(),
+      session: {
+        id: existing.sessionId,
+        expiresAt: existing.session.expiresAt,
+      },
+    };
+  }
+
   async logout(
     userId: string,
     sessionId: string,
@@ -346,9 +407,7 @@ export class AuthService {
     });
   }
 
-  async me(
-    userId: string,
-  ): Promise<{
+  async me(userId: string): Promise<{
     id: string;
     email: string | null;
     displayName: string;

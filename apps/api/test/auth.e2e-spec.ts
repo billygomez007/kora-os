@@ -778,6 +778,185 @@ describe('Passwordless email OTP auth (e2e)', () => {
       expect(firstSetCookie(rotated)).toContain('__Host-kora_refresh=');
     });
 
+    it('recovers an access token without rotating or mutating the current cookie family', async () => {
+      const session = await browserSignIn(uniqueEmail(), 'cookie-v1');
+      const before = await testApp.prisma.refreshToken.findMany({
+        where: { sessionId: session.sessionId },
+      });
+
+      const recovery = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(200);
+
+      expect(recovery.headers['cache-control']).toContain('no-store');
+      expect(recovery.body.data.accessToken).toEqual(expect.any(String));
+      expect(recovery.body.data.refreshToken).toBeUndefined();
+      expect(recovery.headers['set-cookie']).toBeUndefined();
+
+      const after = await testApp.prisma.refreshToken.findMany({
+        where: { sessionId: session.sessionId },
+      });
+      expect(after).toHaveLength(before.length);
+      expect(after).toEqual(before);
+    });
+
+    it('allows repeated recovery calls against one current cookie without family revocation', async () => {
+      const session = await browserSignIn(uniqueEmail(), 'cookie-v1');
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const recovery = await request(testApp.app.getHttpServer())
+          .post('/v1/auth/browser-access-token')
+          .set('X-Kora-Client', 'web')
+          .set('Origin', 'https://www.koraafric.com')
+          .set('Cookie', session.cookie)
+          .send({})
+          .expect(200);
+        expect(recovery.body.data.refreshToken).toBeUndefined();
+      }
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('X-Kora-Auth-Mode', 'cookie-v1')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(200);
+    });
+
+    it('recovers safely after a rotating response body is lost', async () => {
+      const session = await browserSignIn(uniqueEmail(), 'cookie-v1');
+      const rotated = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/refresh')
+        .set('X-Kora-Client', 'web')
+        .set('X-Kora-Auth-Mode', 'cookie-v1')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(200);
+      const replacementCookie = cookiePair(rotated);
+
+      // Deliberately ignore the rotating response body: this represents a
+      // client-side response-loss after the server has already set the new
+      // HttpOnly cookie.
+      const recovery = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', replacementCookie)
+        .send({})
+        .expect(200);
+
+      expect(recovery.body.data.accessToken).toEqual(expect.any(String));
+      expect(recovery.body.data.refreshToken).toBeUndefined();
+
+      // The replacement cookie remains valid after recovery; the recovery
+      // path never presents it to the rotating endpoint a second time.
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', replacementCookie)
+        .send({})
+        .expect(200);
+    });
+
+    it('rejects missing/invalid browser recovery transport without exposing credentials', async () => {
+      const session = await browserSignIn(uniqueEmail(), 'cookie-v1');
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(403);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://evil.example')
+        .set('Cookie', session.cookie)
+        .send({})
+        .expect(403);
+
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .send({})
+        .expect(401);
+
+      const invalid = await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', '__Host-kora_refresh=not-a-real-token')
+        .send({})
+        .expect(401);
+      expect(JSON.stringify(invalid.body)).not.toContain('not-a-real-token');
+    });
+
+    it('rejects expired, revoked, and non-active browser sessions', async () => {
+      const expired = await browserSignIn(uniqueEmail(), 'cookie-v1');
+      await testApp.prisma.refreshToken.updateMany({
+        where: { sessionId: expired.sessionId },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', expired.cookie)
+        .send({})
+        .expect(401);
+
+      const expiredSession = await browserSignIn(uniqueEmail(), 'cookie-v1');
+      await testApp.prisma.session.update({
+        where: { id: expiredSession.sessionId },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', expiredSession.cookie)
+        .send({})
+        .expect(401);
+
+      const revoked = await browserSignIn(uniqueEmail(), 'cookie-v1');
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-logout')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', revoked.cookie)
+        .expect(204);
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', revoked.cookie)
+        .send({})
+        .expect(401);
+
+      const suspendedEmail = uniqueEmail();
+      const suspended = await browserSignIn(suspendedEmail, 'cookie-v1');
+      await testApp.prisma.user.updateMany({
+        where: { emailNormalized: normalizeEmail(suspendedEmail) },
+        data: { status: 'SUSPENDED' },
+      });
+      await request(testApp.app.getHttpServer())
+        .post('/v1/auth/browser-access-token')
+        .set('X-Kora-Client', 'web')
+        .set('Origin', 'https://www.koraafric.com')
+        .set('Cookie', suspended.cookie)
+        .send({})
+        .expect(401);
+    });
+
     it('refreshes from the cookie, rotates it, and preserves reuse detection', async () => {
       const email = uniqueEmail();
       const first = await browserSignIn(email);

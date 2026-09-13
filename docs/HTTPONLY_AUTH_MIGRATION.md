@@ -83,6 +83,41 @@ its bearer-token flow. A later, separately reviewed cutover may activate the
 SEC-03A browser refresh-cookie contract and then remove the web localStorage
 token dependency.
 
+## SEC-03B2A recovery and refresh-coordination foundation
+
+`POST /v1/auth/browser-access-token` is a dormant browser-only recovery
+contract. It requires `X-Kora-Client: web`, an exact allowlisted `Origin`, and
+the `__Host-kora_refresh` HttpOnly cookie. It validates the current token and
+session without marking the refresh token used, rotating it, extending its
+expiry, or changing the token family. It checks token/session expiry,
+revocation, and active user status, then returns only the normal short-lived
+access token and safe user/session metadata. Responses use `Cache-Control:
+no-store`, are rate-limited at 30 requests per minute per throttler key, and
+successful recoveries create a safe audit event without credentials. Rejected
+requests log only a category and request ID; cookie, access-token, OTP, and
+authorization values are never logged. The repository's current throttler
+storage is process-local; it is a useful backstop but is not a distributed
+multi-replica quota. A distributed limiter remains an operational follow-up
+before broad B2B rollout.
+
+The endpoint exists for a future cookie-first browser client to recover after a
+rotating refresh response is lost. Presenting the replacement cookie to this
+endpoint does not perform a second rotation, so response-loss recovery cannot
+trigger refresh-token reuse detection. The current B1 web client does not call
+this endpoint.
+
+The web foundation extends the existing invalidation-only auth channel with
+metadata-only `refresh-start`, `refresh-complete`, and `refresh-failed`
+signals. Signals may carry only a source, generation, version, and status; no
+access token, refresh token, cookie, OTP, email, or user payload is accepted or
+forwarded. A dormant coordinator uses the `kora-auth-refresh` Web Lock when
+available. The lock holder may run the future rotating refresh; waiting tabs do
+not rotate blindly and instead use the non-rotating recovery callback after a
+completion signal or bounded timeout. Browsers without Web Locks use recovery
+only and fail closed rather than pretending BroadcastChannel is a mutex or
+creating an unbounded localStorage lock. B2B remains inactive, and B2C
+reauthentication/localStorage removal remains inactive.
+
 ## Recommended architecture
 
 Use architecture A: keep the refresh token in a host-only, `HttpOnly` cookie and keep short-lived access tokens in memory.

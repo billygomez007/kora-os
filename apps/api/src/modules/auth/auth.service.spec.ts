@@ -243,3 +243,127 @@ describe('AuthService account status enforcement', () => {
     });
   });
 });
+
+describe('AuthService browser access-token recovery', () => {
+  it('mints an access token without changing the refresh-token family', async () => {
+    const { service, prisma, tokenService, auditService } = buildService(
+      UserStatus.ACTIVE,
+    );
+    const tokenExpiresAt = new Date(Date.now() + 60_000);
+    const sessionExpiresAt = new Date(Date.now() + 120_000);
+    prisma.refreshToken.findUnique.mockResolvedValue({
+      id: 'refresh-1',
+      tokenHash: 'hash',
+      revokedAt: null,
+      usedAt: null,
+      expiresAt: tokenExpiresAt,
+      sessionId: 'session-1',
+      session: {
+        id: 'session-1',
+        userId: 'user-1',
+        revokedAt: null,
+        expiresAt: sessionExpiresAt,
+        user: {
+          id: 'user-1',
+          emailNormalized: 'owner@example.com',
+          displayName: 'Owner',
+          status: UserStatus.ACTIVE,
+        },
+      },
+    });
+    tokenService.hashRefreshToken = vi.fn().mockReturnValue('hash');
+    tokenService.signAccessToken = vi
+      .fn()
+      .mockResolvedValue('recovered-access');
+    tokenService.refreshTokenTtlMs = vi.fn().mockReturnValue(60_000);
+
+    const result = await service.recoverBrowserAccessToken('refresh', {
+      requestId: 'request-1',
+    });
+
+    expect(result).toMatchObject({
+      accessToken: 'recovered-access',
+      user: { id: 'user-1' },
+      session: { id: 'session-1', expiresAt: sessionExpiresAt },
+    });
+    expect(result).not.toHaveProperty('refreshToken');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    expect(tokenService.generateRefreshToken).not.toHaveBeenCalled();
+    expect(auditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'auth.browser_access_token_recovered',
+        entityId: 'session-1',
+        metadata: { transport: 'browser_cookie', rotation: false },
+      }),
+    );
+  });
+
+  it.each([UserStatus.PENDING, UserStatus.SUSPENDED, UserStatus.DELETED])(
+    'rejects a %s user without minting an access token',
+    async (status) => {
+      const { service, prisma, tokenService } = buildService(UserStatus.ACTIVE);
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'refresh-1',
+        tokenHash: 'hash',
+        revokedAt: null,
+        usedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+        sessionId: 'session-1',
+        session: {
+          id: 'session-1',
+          userId: 'user-1',
+          revokedAt: null,
+          expiresAt: new Date(Date.now() + 60_000),
+          user: {
+            id: 'user-1',
+            emailNormalized: 'owner@example.com',
+            displayName: 'Owner',
+            status,
+          },
+        },
+      });
+      tokenService.hashRefreshToken = vi.fn().mockReturnValue('hash');
+
+      await expect(
+        service.recoverBrowserAccessToken('refresh', {
+          requestId: 'request-1',
+        }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(tokenService.signAccessToken).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a used token without classifying it as reuse or mutating the family', async () => {
+    const { service, prisma, tokenService } = buildService(UserStatus.ACTIVE);
+    prisma.refreshToken.findUnique.mockResolvedValue({
+      id: 'refresh-1',
+      tokenHash: 'hash',
+      revokedAt: null,
+      usedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      sessionId: 'session-1',
+      session: {
+        id: 'session-1',
+        userId: 'user-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 60_000),
+        user: {
+          id: 'user-1',
+          emailNormalized: 'owner@example.com',
+          displayName: 'Owner',
+          status: UserStatus.ACTIVE,
+        },
+      },
+    });
+    tokenService.hashRefreshToken = vi.fn().mockReturnValue('hash');
+
+    await expect(
+      service.recoverBrowserAccessToken('refresh', { requestId: 'request-1' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.session.update).not.toHaveBeenCalled();
+    expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+  });
+});

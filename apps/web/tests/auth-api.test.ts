@@ -8,6 +8,7 @@ import { getKoraAccessToken } from "../src/lib/auth/session.ts";
 import { resetAuthChannelForTests } from "../src/lib/auth/channel.ts";
 import {
   clearAuthenticated,
+  getSnapshot,
   resetForTests,
   setAuthenticated,
 } from "../src/lib/auth/store.ts";
@@ -147,4 +148,124 @@ test("stale refresh results cannot restore auth after generation changes", async
       error instanceof KoraApiError && error.status === 0,
   );
   assert.equal(storage.get("kora.auth.session"), JSON.stringify(legacySession));
+});
+
+// SEC-03 regression: a request that started refreshing before a *newer*
+// login completed must never destroy that newer login when its own,
+// now-obsolete refresh attempt finally settles (success, 401, or a delayed
+// retry). Only the generation active when the attempt began matters.
+
+test("REGRESSION: a stale refresh-endpoint 401 cannot erase a newer login that completed while it was in flight", async () => {
+  let resolveRefreshFetch: ((response: Response) => void) | undefined;
+  let refreshStartedResolve: (() => void) | undefined;
+  const refreshStarted = new Promise<void>((resolve) => {
+    refreshStartedResolve = resolve;
+  });
+
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/v1/auth/refresh")) {
+      refreshStartedResolve?.();
+      return new Promise<Response>((resolve) => {
+        resolveRefreshFetch = resolve;
+      });
+    }
+
+    return Response.json({ error: { message: "expired" } }, { status: 401 });
+  };
+
+  const request = koraApi("/test");
+  await refreshStarted;
+
+  // A newer, independent login completes while the stale refresh request is
+  // still awaiting a response.
+  setAuthenticated({ accessToken: "newer-login-token" });
+
+  assert.ok(resolveRefreshFetch);
+  resolveRefreshFetch(
+    Response.json({ error: { message: "expired" } }, { status: 401 }),
+  );
+
+  await assert.rejects(
+    request,
+    (error: unknown) => error instanceof KoraApiError && error.status === 0,
+  );
+
+  assert.equal(getSnapshot().accessToken, "newer-login-token");
+});
+
+test("REGRESSION: a stale refresh-endpoint success cannot replace a newer login's session", async () => {
+  let resolveRefresh: ((response: Response) => void) | undefined;
+  let refreshStartedResolve: (() => void) | undefined;
+  const refreshStarted = new Promise<void>((resolve) => {
+    refreshStartedResolve = resolve;
+  });
+
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/v1/auth/refresh")) {
+      refreshStartedResolve?.();
+      return new Promise<Response>((resolve) => {
+        resolveRefresh = resolve;
+      });
+    }
+
+    return Response.json({ error: { message: "expired" } }, { status: 401 });
+  };
+
+  const request = koraApi("/test");
+  await refreshStarted;
+
+  setAuthenticated({ accessToken: "newer-login-token" });
+
+  assert.ok(resolveRefresh);
+  resolveRefresh(Response.json({ data: refreshedSession }));
+
+  await assert.rejects(
+    request,
+    (error: unknown) => error instanceof KoraApiError && error.status === 0,
+  );
+
+  assert.equal(getSnapshot().accessToken, "newer-login-token");
+  assert.notEqual(
+    JSON.parse(storage.get("kora.auth.session") ?? "{}").accessToken,
+    refreshedSession.accessToken,
+  );
+});
+
+test("REGRESSION: a delayed retry response cannot mutate a newer auth state after refresh already completed", async () => {
+  let callCount = 0;
+  let resolveRetry: ((response: Response) => void) | undefined;
+
+  globalThis.fetch = async (input) => {
+    callCount += 1;
+
+    if (String(input).endsWith("/v1/auth/refresh")) {
+      return Response.json({ data: refreshedSession });
+    }
+
+    if (callCount === 1) {
+      return Response.json({ error: { message: "expired" } }, { status: 401 });
+    }
+
+    return new Promise<Response>((resolve) => {
+      resolveRetry = resolve;
+    });
+  };
+
+  const request = koraApi("/test");
+
+  // Let the initial 401, the refresh round-trip, and the retry's fetch call
+  // all run; only the retry's response is deliberately left pending.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  setAuthenticated({ accessToken: "newer-login-token" });
+
+  assert.ok(resolveRetry);
+  resolveRetry(Response.json({ error: { message: "expired" } }, { status: 401 }));
+
+  await assert.rejects(
+    request,
+    (error: unknown) => error instanceof KoraApiError && error.status === 0,
+  );
+
+  assert.equal(getSnapshot().accessToken, "newer-login-token");
 });

@@ -1,10 +1,16 @@
-export type AuthInvalidationMessageType =
+export type AuthInvalidationSignalType =
   | "logout"
   | "session-invalidated"
-  | "auth-generation-changed"
+  | "auth-generation-changed";
+
+export type AuthLifecycleSignalType =
   | "refresh-start"
   | "refresh-complete"
   | "refresh-failed";
+
+export type AuthInvalidationMessageType =
+  | AuthInvalidationSignalType
+  | AuthLifecycleSignalType;
 
 export type AuthRefreshSignalStatus = "started" | "completed" | "failed";
 
@@ -65,6 +71,24 @@ function isMessage(value: unknown): value is AuthInvalidationMessage {
     message.status === "failed";
 
   return typeIsValid && generationIsValid && versionIsValid && statusIsValid;
+}
+
+/**
+ * True only for genuine auth-invalidation events (logout, explicit session
+ * invalidation, or an out-of-band generation bump). Refresh/coordination
+ * lifecycle signals (refresh-start/refresh-complete/refresh-failed) describe
+ * an in-progress operation, not a credential change, and must never satisfy
+ * this check — a listener that clears peer auth may act only when this
+ * returns true.
+ */
+export function isAuthInvalidationSignal(
+  message: AuthInvalidationMessage,
+): message is AuthInvalidationMessage & { type: AuthInvalidationSignalType } {
+  return (
+    message.type === "logout" ||
+    message.type === "session-invalidated" ||
+    message.type === "auth-generation-changed"
+  );
 }
 
 export function startAuthChannel(

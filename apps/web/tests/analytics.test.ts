@@ -266,6 +266,118 @@ test("purchase tracking requires a transaction and suppresses duplicate transact
   }
 });
 
+// SEC-03 regression: GA4's gtag.js auto-attaches page_location/page_referrer
+// from document.location/document.referrer to every hit — including
+// explicit event() calls — independently of automatic page_view being
+// disabled. /verify and /onboarding can carry email, challenge/OTP, and
+// invitation-token query parameters, so trackEvent must always override
+// both fields itself rather than ever depending on that default.
+test("REGRESSION: trackLogin from a verify URL with sensitive query params never lets gtag attach the raw location or referrer", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      gtag: (...args: unknown[]) => calls.push(args),
+      location: {
+        origin: "https://www.koraafric.com",
+        pathname: "/en/verify",
+        href: "https://www.koraafric.com/en/verify?email=user@example.com&challengeId=abc123&invitation=secret-token",
+      },
+    },
+  });
+
+  try {
+    assert.equal(trackLogin(), true);
+    const [, , params] = calls[0] as [string, string, Record<string, unknown>];
+
+    assert.equal(params.page_location, "https://www.koraafric.com/en/verify");
+    assert.equal(params.page_referrer, "");
+    assert.doesNotMatch(String(params.page_location), /email|challengeId|invitation|secret-token/);
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
+test("REGRESSION: trackSignUp from an onboarding URL with an invitation token never leaks it via page_location", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      gtag: (...args: unknown[]) => calls.push(args),
+      location: {
+        origin: "https://www.koraafric.com",
+        pathname: "/en/onboarding",
+        href: "https://www.koraafric.com/en/onboarding?invitation=secret-token",
+      },
+    },
+  });
+
+  try {
+    assert.equal(trackSignUp("organization-verify-test"), true);
+    const [, , params] = calls[0] as [string, string, Record<string, unknown>];
+
+    assert.equal(params.page_location, "https://www.koraafric.com/en/onboarding");
+    assert.equal(params.page_referrer, "");
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
+test("REGRESSION: a caller-supplied page_location/page_referrer can never override the sanitized values", () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const calls: unknown[][] = [];
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: { cookie: "KORA_ANALYTICS_CONSENT=granted" },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      gtag: (...args: unknown[]) => calls.push(args),
+      location: {
+        origin: "https://www.koraafric.com",
+        pathname: "/pricing",
+        href: "https://www.koraafric.com/pricing?utm_source=spoofed",
+      },
+    },
+  });
+
+  try {
+    assert.equal(
+      trackEvent("view_pricing", {
+        page_location: "https://evil.example/attacker-controlled",
+        page_referrer: "https://evil.example/",
+      }),
+      true,
+    );
+    const [, , params] = calls[0] as [string, string, Record<string, unknown>];
+
+    assert.equal(params.page_location, "https://www.koraafric.com/pricing");
+    assert.equal(params.page_referrer, "");
+  } finally {
+    Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+});
+
 test("checkout payloads stay optional until a real Kora checkout exists", () => {
   const originalDocument = globalThis.document;
   const originalWindow = globalThis.window;

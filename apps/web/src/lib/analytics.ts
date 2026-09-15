@@ -82,6 +82,29 @@ export function clearGoogleAnalyticsCookies(): void {
  * Event payloads intentionally accept only scalar values and safe item data;
  * callers must never pass identity, contact, authentication, or payment data.
  */
+/**
+ * GA4's gtag.js auto-attaches `page_location` (document.location.href) and
+ * `page_referrer` (document.referrer) to every hit, including explicit
+ * `event` calls, independently of whether automatic page_view is disabled.
+ * Login/verify/onboarding routes can carry sensitive query parameters
+ * (email, challenge/OTP identifiers, invitation tokens), so trackEvent must
+ * never rely on that default — it always supplies its own sanitized,
+ * query-stripped location and omits referrer, overriding whatever gtag
+ * would otherwise have filled in from the real URL.
+ */
+function safeAnalyticsContext(): AnalyticsEventParams {
+  if (typeof window === "undefined") return {};
+
+  try {
+    return {
+      page_location: `${window.location.origin}${safeAnalyticsPath(window.location.pathname)}`,
+      page_referrer: "",
+    };
+  } catch {
+    return {};
+  }
+}
+
 export function trackEvent(
   name: AnalyticsEventName,
   params: AnalyticsEventParams = {},
@@ -93,7 +116,9 @@ export function trackEvent(
   if (typeof window.gtag !== "function") return false;
 
   try {
-    window.gtag("event", name, params);
+    // Sanitized context is spread last so it always wins over any (never
+    // currently supplied) caller params of the same name.
+    window.gtag("event", name, { ...params, ...safeAnalyticsContext() });
     return true;
   } catch {
     // Analytics must never block authentication or onboarding.

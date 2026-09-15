@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { createThrottlerStorage } from './modules/throttler/throttler-storage.factory.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { ApiExceptionFilter } from './common/http/api-exception.filter.js';
@@ -67,7 +68,21 @@ import { ProviderWorkdayModule } from './modules/provider-workday/provider-workd
     }),
     // Lenient global default (every route); auth routes additionally
     // apply a stricter per-route @Throttle() limit (see AuthController).
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
+    // Storage is Redis-backed (shared/atomic across API replicas) when
+    // THROTTLER_REDIS_URL is configured, which config/environment.ts
+    // requires in production; otherwise it falls back to the in-memory
+    // default for local development and tests (SEC-03 prerequisite —
+    // docs/HTTPONLY_AUTH_MIGRATION.md).
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        throttlers: [{ name: 'default', ttl: 60_000, limit: 100 }],
+        storage: createThrottlerStorage(
+          config.get<string>('THROTTLER_REDIS_URL'),
+        ),
+      }),
+    }),
     DatabaseModule,
     DomainEventsModule,
     AuditModule,

@@ -286,12 +286,18 @@ export class AuthController {
     const browserClient = isBrowserCookieClient(request);
     if (browserClient) this.assertBrowserOrigin(request);
 
-    await this.authService.logout(
-      user.id,
-      user.sessionId,
-      buildMetadata(undefined, request),
-    );
-    if (browserClient) this.clearRefreshCookie(response);
+    try {
+      await this.authService.logout(
+        user.id,
+        user.sessionId,
+        buildMetadata(undefined, request),
+      );
+    } finally {
+      // Clear the browser cookie even if the server-side revoke throws, so a
+      // failed logout never leaves a stale Set-Cookie the client believes is
+      // already signed out. Mirrors browser-logout's ordering.
+      if (browserClient) this.clearRefreshCookie(response);
+    }
   }
 
   @Post('logout-all')
@@ -304,11 +310,15 @@ export class AuthController {
     const browserClient = isBrowserCookieClient(request);
     if (browserClient) this.assertBrowserOrigin(request);
 
-    await this.authService.logoutAll(
-      user.id,
-      buildMetadata(undefined, request),
-    );
-    if (browserClient) this.clearRefreshCookie(response);
+    try {
+      await this.authService.logoutAll(
+        user.id,
+        buildMetadata(undefined, request),
+      );
+    } finally {
+      // Same ordering fix as logout(): clear the cookie even on failure.
+      if (browserClient) this.clearRefreshCookie(response);
+    }
   }
 
   private assertBrowserOrigin(request: RequestWithId): void {

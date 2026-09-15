@@ -94,12 +94,47 @@ describe('validateEnvironment', () => {
         JWT_ACCESS_SECRET: 'a'.repeat(32),
         REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
         OTP_PEPPER: 'c'.repeat(32),
+        THROTTLER_REDIS_URL: 'redis://localhost:6379',
       }),
     ).toMatchObject({
       JWT_ACCESS_SECRET: 'a'.repeat(32),
       REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
       OTP_PEPPER: 'c'.repeat(32),
+      THROTTLER_REDIS_URL: 'redis://localhost:6379',
     });
+  });
+
+  // SEC-03 prerequisite: the built-in @nestjs/throttler storage is
+  // in-memory/per-process, so it cannot enforce a shared quota across API
+  // replicas. Production must not silently accept that as if it were a
+  // real distributed limiter.
+  it('requires an explicit THROTTLER_REDIS_URL in production', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://user:pass@host:5432/db',
+        JWT_ACCESS_SECRET: 'a'.repeat(32),
+        REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
+        OTP_PEPPER: 'c'.repeat(32),
+      }),
+    ).toThrow('THROTTLER_REDIS_URL must be explicitly provided in production');
+  });
+
+  it('leaves THROTTLER_REDIS_URL unset by default outside production', () => {
+    expect(validateEnvironment({}).THROTTLER_REDIS_URL).toBeUndefined();
+  });
+
+  it('accepts a rediss:// (TLS) THROTTLER_REDIS_URL', () => {
+    expect(
+      validateEnvironment({ THROTTLER_REDIS_URL: 'rediss://cache.example:6380' })
+        .THROTTLER_REDIS_URL,
+    ).toBe('rediss://cache.example:6380');
+  });
+
+  it('rejects a THROTTLER_REDIS_URL that is not a redis:// or rediss:// connection string', () => {
+    expect(() =>
+      validateEnvironment({ THROTTLER_REDIS_URL: 'https://cache.example' }),
+    ).toThrow('THROTTLER_REDIS_URL must be a redis:// or rediss:// connection string');
   });
 
   it('rejects an OTP_CODE_LENGTH below the minimum of six digits', () => {
@@ -173,6 +208,7 @@ describe('validateEnvironment', () => {
         JWT_ACCESS_SECRET: 'a'.repeat(32),
         REFRESH_TOKEN_PEPPER: 'b'.repeat(32),
         OTP_PEPPER: 'c'.repeat(32),
+        THROTTLER_REDIS_URL: 'redis://localhost:6379',
       }),
     ).toMatchObject({ EMAIL_DELIVERY_MODE: undefined });
   });

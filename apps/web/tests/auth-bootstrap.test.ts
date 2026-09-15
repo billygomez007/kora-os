@@ -109,7 +109,7 @@ test("cross-tab invalidation clears memory and rejects stale work", () => {
   setAuthenticated({ accessToken: "access-token" });
   const staleGeneration = getGeneration();
 
-  handleCrossTabInvalidation();
+  handleCrossTabInvalidation({ type: "logout", source: "peer-tab" });
 
   assert.equal(getSnapshot().state, "UNAUTHENTICATED");
   assert.equal(getSnapshot().accessToken, null);
@@ -117,4 +117,35 @@ test("cross-tab invalidation clears memory and rejects stale work", () => {
     commitAuthenticated({ accessToken: "stale-token" }, staleGeneration),
     false,
   );
+});
+
+// SEC-03 regression: refresh-start/refresh-complete/refresh-failed are
+// coordination lifecycle signals, not invalidation signals. They must never
+// reach the shared cross-tab handler's destructive path, or every other tab
+// gets logged out while one tab is merely refreshing.
+for (const type of ["refresh-start", "refresh-complete", "refresh-failed"] as const) {
+  test(`REGRESSION: ${type} does not clear a valid peer tab's authenticated session`, () => {
+    setAuthenticated({ accessToken: "access-token" });
+    const generationBeforeSignal = getGeneration();
+
+    handleCrossTabInvalidation({ type, source: "peer-tab", generation: 0, version: 1 });
+
+    assert.equal(getSnapshot().state, "AUTHENTICATED");
+    assert.equal(getSnapshot().accessToken, "access-token");
+    assert.equal(getGeneration(), generationBeforeSignal);
+  });
+}
+
+test("genuine invalidation types (logout, session-invalidated, auth-generation-changed) all clear a peer tab", () => {
+  for (const type of [
+    "logout",
+    "session-invalidated",
+    "auth-generation-changed",
+  ] as const) {
+    setAuthenticated({ accessToken: "access-token" });
+
+    handleCrossTabInvalidation({ type, source: "peer-tab" });
+
+    assert.equal(getSnapshot().state, "UNAUTHENTICATED", `expected ${type} to clear peer auth`);
+  }
 });

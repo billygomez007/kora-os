@@ -108,6 +108,14 @@ async function refreshKoraSession(): Promise<KoraSession> {
     const currentSession = getKoraSession();
 
     if (!currentSession?.refreshToken) {
+      if (!isCurrentGeneration(refreshGeneration)) {
+        throw new KoraApiError(
+          0,
+          "The Kora session changed while it was being refreshed.",
+          null,
+        );
+      }
+
       clearKoraSession();
 
       throw new KoraApiError(
@@ -144,6 +152,14 @@ async function refreshKoraSession(): Promise<KoraSession> {
 
     if (!response.ok) {
       if (response.status === 401) {
+        if (!isCurrentGeneration(refreshGeneration)) {
+          throw new KoraApiError(
+            0,
+            "The Kora session changed while it was being refreshed.",
+            null,
+          );
+        }
+
         clearKoraSession();
       }
 
@@ -164,6 +180,14 @@ async function refreshKoraSession(): Promise<KoraSession> {
       !nextSession?.refreshToken ||
       !nextSession?.session?.id
     ) {
+      if (!isCurrentGeneration(refreshGeneration)) {
+        throw new KoraApiError(
+          0,
+          "The Kora session changed while it was being refreshed.",
+          null,
+        );
+      }
+
       clearKoraSession();
 
       throw new KoraApiError(
@@ -239,6 +263,7 @@ export async function koraApi<T>(
   }
 
   const refreshedSession = await refreshKoraSession();
+  const generationAfterRefresh = getGeneration();
 
   response = await authenticatedFetch(
     path,
@@ -247,6 +272,14 @@ export async function koraApi<T>(
   );
 
   if (response.status === 401) {
+    if (!isCurrentGeneration(generationAfterRefresh)) {
+      throw new KoraApiError(
+        0,
+        "The Kora session changed while it was being refreshed.",
+        null,
+      );
+    }
+
     clearKoraSession();
 
     const body = await readResponseBody(response);

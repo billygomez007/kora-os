@@ -150,6 +150,139 @@ activation; the smallest likely follow-up is Redis-backed Nest throttler
 storage (optionally reinforced at the Cloudflare edge). No infrastructure is
 provisioned by this slice.
 
+## SEC-03 prerequisite hardening slice
+
+This slice fixes defects the prior completion review found in the B2A/B2A.1
+foundation and lays additional groundwork, without activating any of the
+cookie-first behavior above. Cookie-first OTP, refresh, bootstrap, and the
+browser logout web cutover all remain off.
+
+### Distributed throttling
+
+The recovery endpoint's "30 requests per minute" policy (and the shared
+`AUTH_THROTTLE` on OTP/refresh) was backed only by @nestjs/throttler's
+built-in in-memory `ThrottlerStorageService` — per API process, not shared
+across replicas. A `RedisThrottlerStorage` (`apps/api/src/modules/throttler/`)
+now implements the same fixed-window-plus-block algorithm atomically in a
+single Redis Lua `EVAL`, keyed by a sha256 hash of the guard's own tracker
+key (never a raw IP, token, or credential). `config/environment.ts` requires
+`THROTTLER_REDIS_URL` to be set in production and refuses to boot without
+it — there is no silent fallback to the permissive in-memory storage in
+production. Outside production (no Redis available), the built-in in-memory
+storage is used, which is the existing, accepted, testable-locally
+behavior. If the Redis command itself fails at request time (an outage, not
+a missing-configuration case), the storage fails OPEN and logs a safe
+(no-secret) warning rather than blocking login/OTP/refresh for every user
+during a transient blip — an explicit, documented trade-off, not a silent
+one. No Redis/Valkey instance is provisioned by this slice; provisioning one
+and setting `THROTTLER_REDIS_URL` is a required deployment blocker before
+this branch reaches production (the app will not start without it).
+
+### Cross-tab lifecycle vs. invalidation signals
+
+`refresh-start`/`refresh-complete`/`refresh-failed` and genuine invalidation
+signals (`logout`/`session-invalidated`/`auth-generation-changed`) shared one
+undiscriminating dispatch path: every listener registered via
+`startAuthChannel` received every message type. The bootstrap module's
+cross-tab handler ignored its message argument entirely and unconditionally
+cleared auth on any signal, so a leader tab's refresh broadcast logged out
+every other tab mid-refresh. `lib/auth/channel.ts` now exports
+`isAuthInvalidationSignal`, and the bootstrap handler checks it before
+clearing anything; lifecycle signals are inert there. The refresh
+coordinator's own listener already filtered by type/generation/version
+correctly and is unchanged.
+
+### Stale refresh failure vs. a newer login
+
+`refreshKoraSession()`'s three failure branches (missing refresh token, a
+401 from `/v1/auth/refresh`, a malformed success body) cleared the shared
+auth store unconditionally, without checking whether the generation
+captured when the attempt began was still current. A request that started
+refreshing before a newer, independent login completed elsewhere in the tab
+could — once its own now-obsolete network response arrived — destroy that
+newer session. Each failure branch, and the retried-request 401 branch in
+`koraApi()`, now checks `isCurrentGeneration()` first and, if stale, throws
+the same non-destructive "the session changed while it was being refreshed"
+error the existing success path already used, instead of clearing.
+
+### Cookie mutation ordering
+
+Reviewing OTP/refresh/logout cookie mutation ordering found one real
+asymmetry: `browser-logout` clears the `__Host-kora_refresh` cookie in a
+`finally` block (so it clears even if the server-side revoke throws), but
+`logout` and `logout-all` only cleared it after a successful revoke — a
+thrown revoke left a stale cookie the client believed was already cleared.
+Both now clear in `finally` as well, matching `browser-logout`. The
+`kora-auth-refresh` Web Lock foundation and non-rotating recovery fallback
+from SEC-03B2A.1 already cover the leader/waiter, lost-response, two-tab,
+and sleeping-tab cases described in the migration sequence above; no
+further activation happens here.
+
+### Canonical authenticated origin — documented blocker, not implemented
+
+CORS currently allows both `https://koraafric.com` and
+`https://www.koraafric.com`, and nothing redirects one to the other; the web
+app has no `middleware.ts`/`proxy.ts` host logic beyond locale handling.
+Web Locks, BroadcastChannel, and localStorage are all origin-scoped, so a
+user split across both hosts cannot be coordinated by any of the
+SEC-03B2A.1/B2A.1 primitives above — this is a real prerequisite gap for
+B2B.
+
+This slice does **not** add an application-level apex→www redirect, even
+though `proxy.ts` could technically implement one. The reason: any redirect
+that changes a browser's effective origin — whether enforced at Cloudflare
+or inside this app — strands that browser's existing origin-scoped
+`localStorage` session (the legacy `kora.auth.session` key lives on whichever
+host the user happened to authenticate from). That is a one-time,
+self-healing cost (the user simply signs in again on the canonical host),
+but it is a live, immediate, production-visible behavior change for every
+current apex visitor, which is out of proportion for a slice whose other
+changes are all either dormant-code-path fixes or additive/dev-only
+configuration. It also cannot be "fully justified and covered by tests" in
+the way this slice's other changes are, since the affected population (real
+users currently on the bare apex, if any) is not something this review can
+observe from the repository alone.
+
+**Required infrastructure action before B2B**: pick one canonical
+authenticated web origin (`https://www.koraafric.com`, matching the existing
+`metadataBase`/sitemap/robots convention) and enforce it with a redirect
+from the apex, either as a Cloudflare redirect rule (no app deploy required)
+or as application-level middleware in `proxy.ts` (a same-host-preserving,
+production-only, exact-hostname-matched 308 redirect, run before the
+existing locale logic) — implement whichever the operator prefers, timed
+deliberately rather than folded into an unrelated hardening deploy, and
+treat the resulting one-time re-authentication for any existing apex-origin
+sessions as expected. Do not enable cookie-first bootstrap until one origin
+is enforced this way.
+
+### Protected entry-point inventory
+
+Workspace routes (`app/app/*`, gated by `WorkspaceShell` reading
+`useAuthSnapshot`/`workspaceAuthGate`), business onboarding
+(`app/onboarding`), customer onboarding (`app/customer-onboarding`),
+invitation acceptance (`app/invite/[token]`), and platform admin
+(`app/super-admin`) were inventoried and none read a refresh token or the
+raw legacy session storage key directly — all access goes through
+`lib/auth/session.ts`/`lib/auth/store.ts`. A regression test
+(`tests/protected-entry-points.test.ts`) statically guards this invariant so
+a future change cannot reintroduce a direct read without failing a test.
+Cookie bootstrap remains off; this is inventory and a guard rail, not a
+behavior change.
+
+### Analytics privacy hardening
+
+GA4's `gtag.js` attaches `page_location`/`page_referrer` from
+`document.location`/`document.referrer` to every hit, including explicit
+`event()` calls, regardless of automatic page-view collection being
+disabled. `/verify` and `/onboarding` can carry `email`, challenge/OTP, and
+invitation-token query parameters; the centralized `trackEvent()` helper
+(`lib/analytics.ts`) now always supplies its own sanitized, query-stripped
+`page_location` and an empty `page_referrer` on every event it sends,
+overriding gtag's default rather than relying on it — closing the one place
+those values could otherwise reach Google Analytics unsanitized. `page_view`
+semantics, the events sent, and consent behavior are all unchanged; no
+historical leak is claimed, only a latent gap in the explicit-event path.
+
 ## Recommended architecture
 
 Use architecture A: keep the refresh token in a host-only, `HttpOnly` cookie and keep short-lived access tokens in memory.

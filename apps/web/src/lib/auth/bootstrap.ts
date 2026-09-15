@@ -1,4 +1,8 @@
-import { startAuthChannel } from "./channel.ts";
+import {
+  isAuthInvalidationSignal,
+  startAuthChannel,
+  type AuthInvalidationMessage,
+} from "./channel.ts";
 import {
   clearAuthenticated,
   getGeneration,
@@ -16,7 +20,19 @@ import {
 let bootstrapPromise: Promise<void> | null = null;
 let channelStarted = false;
 
-export function handleCrossTabInvalidation(): void {
+/**
+ * The shared cross-tab channel carries both genuine invalidation signals
+ * (logout, session-invalidated, auth-generation-changed) and
+ * refresh/coordination lifecycle signals (refresh-start/-complete/-failed).
+ * Only the former may clear a peer tab's authenticated state; a lifecycle
+ * signal describes an in-progress refresh elsewhere and must be ignored
+ * here, or every other tab would be logged out mid-refresh.
+ */
+export function handleCrossTabInvalidation(
+  message: AuthInvalidationMessage,
+): void {
+  if (!isAuthInvalidationSignal(message)) return;
+
   clearAuthenticated();
   removeLegacyKoraSession();
 }

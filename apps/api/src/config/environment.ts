@@ -27,6 +27,7 @@ export interface KoraEnvironment extends Record<string, unknown> {
   OTP_DIAGNOSTICS?: boolean;
   EMAIL_DELIVERY_MODE?: 'smtp' | 'resend';
   CLOUDFLARE_TRUSTED_PROXY_CIDRS?: string;
+  THROTTLER_REDIS_URL?: string;
   SMTP_HOST?: string;
   SMTP_PORT?: number;
   SMTP_SECURE?: boolean;
@@ -134,6 +135,10 @@ export function validateEnvironment(
   const cloudflareTrustedProxyCidrs = optionalString(
     input.CLOUDFLARE_TRUSTED_PROXY_CIDRS,
   );
+  const throttlerRedisUrl = validateThrottlerRedisUrl(
+    input.THROTTLER_REDIS_URL,
+    nodeEnvironment,
+  );
 
   const {
     emailDeliveryMode,
@@ -167,6 +172,7 @@ export function validateEnvironment(
     OTP_MAX_REQUESTS_PER_IP_PER_HOUR: otpMaxRequestsPerIpPerHour,
     OTP_DIAGNOSTICS: otpDiagnostics,
     CLOUDFLARE_TRUSTED_PROXY_CIDRS: cloudflareTrustedProxyCidrs,
+    THROTTLER_REDIS_URL: throttlerRedisUrl,
     EMAIL_DELIVERY_MODE: emailDeliveryMode,
     SMTP_HOST: smtpHost,
     SMTP_PORT: smtpPort,
@@ -363,6 +369,38 @@ function validateEmailDeliveryConfig(
 function optionalString(value: unknown): string | undefined {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * SEC-03 prerequisite: the built-in @nestjs/throttler storage is in-memory
+ * and per-process, so it cannot enforce a shared quota across API replicas.
+ * Production must configure a real distributed backend explicitly; there is
+ * no silent fallback to the permissive in-memory limiter in production. This
+ * mirrors the existing DATABASE_URL production-required check above.
+ */
+function validateThrottlerRedisUrl(
+  value: unknown,
+  nodeEnvironment: string,
+): string | undefined {
+  const throttlerRedisUrl = optionalString(value);
+
+  if (nodeEnvironment === 'production' && !throttlerRedisUrl) {
+    throw new Error(
+      'THROTTLER_REDIS_URL must be explicitly provided in production. The ' +
+        'built-in throttler storage is per-process/in-memory and would ' +
+        'silently under-enforce rate limits (including the browser-access-' +
+        'token recovery endpoint) across multiple API replicas. Provision a ' +
+        'Redis/Valkey instance and set THROTTLER_REDIS_URL before deploying.',
+    );
+  }
+
+  if (throttlerRedisUrl && !/^rediss?:\/\/.+/.test(throttlerRedisUrl)) {
+    throw new Error(
+      'THROTTLER_REDIS_URL must be a redis:// or rediss:// connection string',
+    );
+  }
+
+  return throttlerRedisUrl;
 }
 
 function parseRequiredBoolean(

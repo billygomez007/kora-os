@@ -3,6 +3,7 @@ import { beforeEach, test } from "node:test";
 import {
   KoraApiError,
   koraApi,
+  logoutKoraSession,
 } from "../src/lib/api/kora-api.ts";
 import { getKoraAccessToken } from "../src/lib/auth/session.ts";
 import { resetAuthChannelForTests } from "../src/lib/auth/channel.ts";
@@ -116,6 +117,46 @@ test("network and server failures do not falsely clear known auth", async () => 
 
   await assert.rejects(() => koraApi("/test"), KoraApiError);
   assert.equal(storage.has("kora.auth.session"), true);
+});
+
+test("REGRESSION: delayed logout A cannot clear login B", async () => {
+  let resolveLogout: ((response: Response) => void) | undefined;
+  globalThis.fetch = async () => new Promise<Response>((resolve) => {
+    resolveLogout = resolve;
+  });
+
+  setAuthenticated({ accessToken: "session-a" });
+  const logout = logoutKoraSession();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  setAuthenticated({ accessToken: "session-b" });
+
+  resolveLogout?.(Response.json({ data: { ok: true } }));
+  await logout;
+
+  assert.equal(getSnapshot().accessToken, "session-b");
+  assert.equal(getSnapshot().state, "AUTHENTICATED");
+});
+
+test("REGRESSION: initial 401 A cannot refresh or retry as login B", async () => {
+  let resolveInitial: ((response: Response) => void) | undefined;
+  let refreshCalls = 0;
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/v1/auth/refresh")) {
+      refreshCalls += 1;
+      return Response.json({ data: refreshedSession });
+    }
+    return new Promise<Response>((resolve) => { resolveInitial = resolve; });
+  };
+
+  setAuthenticated({ accessToken: "session-a" });
+  const request = koraApi("/test");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  setAuthenticated({ accessToken: "session-b" });
+  resolveInitial?.(Response.json({ error: { message: "expired" } }, { status: 401 }));
+
+  await assert.rejects(request, (error: unknown) => error instanceof KoraApiError && error.status === 0);
+  assert.equal(refreshCalls, 0);
+  assert.equal(getSnapshot().accessToken, "session-b");
 });
 
 test("stale refresh results cannot restore auth after generation changes", async () => {

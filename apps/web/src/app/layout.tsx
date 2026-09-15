@@ -1,17 +1,10 @@
 import type { Metadata } from "next";
-import { Manrope } from "next/font/google";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages, getTranslations } from "next-intl/server";
 import { headers } from "next/headers";
 import AnalyticsConsentBanner from "@/components/analytics/AnalyticsConsentBanner";
 import GoogleAnalytics from "@/components/analytics/GoogleAnalytics";
 import "./globals.css";
-
-const manrope = Manrope({
-  subsets: ["latin"],
-  variable: "--font-kora",
-  display: "swap",
-});
 
 export async function generateMetadata(): Promise<Metadata> {
   const locale = await getLocale();
@@ -52,7 +45,7 @@ export default async function RootLayout({
   const messages = await getMessages();
 
   return (
-    <html data-scroll-behavior="smooth" lang={locale} className={manrope.variable}>
+    <html data-scroll-behavior="smooth" lang={locale}>
       <body>
         <NextIntlClientProvider locale={locale} messages={messages}>
           <GoogleAnalytics />

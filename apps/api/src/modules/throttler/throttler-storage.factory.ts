@@ -1,7 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type { ThrottlerStorage } from '@nestjs/throttler';
-import { Redis } from 'ioredis';
-import { RedisThrottlerStorage } from './redis-throttler-storage.js';
+import { ThrottlerRedisService } from './throttler-redis.service.js';
 
 const logger = new Logger('ThrottlerStorageFactory');
 
@@ -19,25 +18,20 @@ const logger = new Logger('ThrottlerStorageFactory');
  *   documented, testable-locally trade-off, not a silent production
  *   downgrade.
  *
- * The Redis client itself is configured to fail fast rather than queue or
- * retry indefinitely: a connection outage should surface immediately as a
- * storage error (handled by RedisThrottlerStorage's explicit fail-open
- * policy), not as hung requests.
+ * The shared client is configured with bounded connect/command timeouts and
+ * finite retries. RedisThrottlerStorage surfaces command failures; the
+ * KoraThrottlerGuard fails closed for token issuance and authentication
+ * routes, while ordinary route throttling retains an explicit availability
+ * fallback.
  */
 export function createThrottlerStorage(
   throttlerRedisUrl: string | undefined,
+  redisService?: ThrottlerRedisService,
 ): ThrottlerStorage | undefined {
   if (!throttlerRedisUrl) return undefined;
-
-  const client = new Redis(throttlerRedisUrl, {
-    maxRetriesPerRequest: 1,
-    enableOfflineQueue: false,
-    lazyConnect: false,
-  });
-
-  client.on('error', (error: Error) => {
-    logger.warn(`Throttler Redis connection error: ${error.message}`);
-  });
-
-  return new RedisThrottlerStorage(client);
+  const storage = redisService?.getStorage();
+  if (!storage) {
+    logger.error('THROTTLER_REDIS_URL is set but Redis storage was not initialized');
+  }
+  return storage;
 }

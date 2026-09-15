@@ -109,7 +109,7 @@ test("cross-tab invalidation clears memory and rejects stale work", () => {
   setAuthenticated({ accessToken: "access-token" });
   const staleGeneration = getGeneration();
 
-  handleCrossTabInvalidation({ type: "logout", source: "peer-tab" });
+  handleCrossTabInvalidation({ type: "logout", source: "peer-tab", authVersion: 1 });
 
   assert.equal(getSnapshot().state, "UNAUTHENTICATED");
   assert.equal(getSnapshot().accessToken, null);
@@ -144,8 +144,22 @@ test("genuine invalidation types (logout, session-invalidated, auth-generation-c
   ] as const) {
     setAuthenticated({ accessToken: "access-token" });
 
-    handleCrossTabInvalidation({ type, source: "peer-tab" });
+    handleCrossTabInvalidation({ type, source: "peer-tab", authVersion: 1 });
 
     assert.equal(getSnapshot().state, "UNAUTHENTICATED", `expected ${type} to clear peer auth`);
   }
+});
+
+test("stale cross-tab invalidation cannot clear a newer localStorage session", () => {
+  storage.set("kora.auth.version", "20");
+  setAuthenticated({ accessToken: "newer-token" });
+
+  handleCrossTabInvalidation({
+    type: "logout",
+    source: "old-tab",
+    authVersion: 19,
+  });
+
+  assert.equal(getSnapshot().accessToken, "newer-token");
+  assert.equal(getSnapshot().state, "AUTHENTICATED");
 });

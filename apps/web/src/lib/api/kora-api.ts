@@ -4,6 +4,7 @@ import {
   getKoraAccessToken,
   mirrorKoraSession,
   persistKoraSession,
+  getAuthVersion,
   type KoraSession,
 } from "../auth/session.ts";
 import {
@@ -98,17 +99,23 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 let refreshPromise: Promise<KoraSession> | null = null;
 
-async function refreshKoraSession(): Promise<KoraSession> {
+async function refreshKoraSession(
+  expectedGeneration: number,
+  expectedAuthVersion: number | null,
+): Promise<KoraSession> {
   if (refreshPromise) {
     return refreshPromise;
   }
 
   refreshPromise = (async () => {
-    const refreshGeneration = getGeneration();
+    const refreshGeneration = expectedGeneration;
+    if (!isCurrentGeneration(refreshGeneration) || getAuthVersion() !== expectedAuthVersion) {
+      throw new KoraApiError(0, "The Kora session changed while it was being refreshed.", null);
+    }
     const currentSession = getKoraSession();
 
     if (!currentSession?.refreshToken) {
-      if (!isCurrentGeneration(refreshGeneration)) {
+      if (!isCurrentGeneration(refreshGeneration) || getAuthVersion() !== expectedAuthVersion) {
         throw new KoraApiError(
           0,
           "The Kora session changed while it was being refreshed.",
@@ -152,7 +159,7 @@ async function refreshKoraSession(): Promise<KoraSession> {
 
     if (!response.ok) {
       if (response.status === 401) {
-        if (!isCurrentGeneration(refreshGeneration)) {
+        if (!isCurrentGeneration(refreshGeneration) || getAuthVersion() !== expectedAuthVersion) {
           throw new KoraApiError(
             0,
             "The Kora session changed while it was being refreshed.",
@@ -180,7 +187,7 @@ async function refreshKoraSession(): Promise<KoraSession> {
       !nextSession?.refreshToken ||
       !nextSession?.session?.id
     ) {
-      if (!isCurrentGeneration(refreshGeneration)) {
+      if (!isCurrentGeneration(refreshGeneration) || getAuthVersion() !== expectedAuthVersion) {
         throw new KoraApiError(
           0,
           "The Kora session changed while it was being refreshed.",
@@ -197,7 +204,7 @@ async function refreshKoraSession(): Promise<KoraSession> {
       );
     }
 
-    if (!isCurrentGeneration(refreshGeneration)) {
+    if (!isCurrentGeneration(refreshGeneration) || getAuthVersion() !== expectedAuthVersion) {
       throw new KoraApiError(
         0,
         "The Kora session changed while it was being refreshed.",
@@ -243,6 +250,8 @@ export async function koraApi<T>(
   init: RequestInit = {},
 ): Promise<T> {
   const accessToken = getKoraAccessToken();
+  const requestGeneration = getGeneration();
+  const requestAuthVersion = getAuthVersion();
 
   if (!accessToken) {
     throw new KoraApiError(
@@ -262,8 +271,15 @@ export async function koraApi<T>(
     return parseResponse<T>(response);
   }
 
-  const refreshedSession = await refreshKoraSession();
-  const generationAfterRefresh = getGeneration();
+  if (!isCurrentGeneration(requestGeneration) || getAuthVersion() !== requestAuthVersion) {
+    throw new KoraApiError(0, "The Kora session changed while this request was in flight.", null);
+  }
+
+  const refreshedSession = await refreshKoraSession(requestGeneration, requestAuthVersion);
+  const generationAfterRefresh = requestGeneration;
+  if (!isCurrentGeneration(generationAfterRefresh) || getAuthVersion() !== requestAuthVersion) {
+    throw new KoraApiError(0, "The Kora session changed while this request was in flight.", null);
+  }
 
   response = await authenticatedFetch(
     path,
@@ -272,7 +288,7 @@ export async function koraApi<T>(
   );
 
   if (response.status === 401) {
-    if (!isCurrentGeneration(generationAfterRefresh)) {
+    if (!isCurrentGeneration(generationAfterRefresh) || getAuthVersion() !== requestAuthVersion) {
       throw new KoraApiError(
         0,
         "The Kora session changed while it was being refreshed.",
@@ -311,6 +327,8 @@ export async function koraEnvelope<T>(
 
 export async function logoutKoraSession(): Promise<void> {
   const accessToken = getKoraAccessToken();
+  const logoutGeneration = getGeneration();
+  const logoutAuthVersion = getAuthVersion();
 
   try {
     if (accessToken) {
@@ -321,6 +339,8 @@ export async function logoutKoraSession(): Promise<void> {
       );
     }
   } finally {
-    clearKoraSession();
+    if (isCurrentGeneration(logoutGeneration) && getAuthVersion() === logoutAuthVersion) {
+      clearKoraSession();
+    }
   }
 }

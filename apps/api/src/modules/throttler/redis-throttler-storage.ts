@@ -29,6 +29,16 @@ export interface RedisEvalClient {
   ): Promise<unknown>;
 }
 
+export class RedisThrottlerUnavailableError extends Error {
+  readonly code = 'THROTTLER_REDIS_UNAVAILABLE';
+
+  constructor(cause: unknown) {
+    super('Distributed throttling is temporarily unavailable');
+    this.name = 'RedisThrottlerUnavailableError';
+    this.cause = cause;
+  }
+}
+
 // A fixed-window counter with a block period, evaluated atomically in a
 // single round trip so concurrent requests from different API replicas
 // never race on read-modify-write. This mirrors @nestjs/throttler's
@@ -92,16 +102,9 @@ function deriveRedisKey(key: string): string {
  * importing it, so this file has no compile-time dependency on the
  * throttler package's internal (non-exported) types.
  *
- * Outage policy (explicit, not silent): if the Redis command itself fails
- * (network error, connection drop, timeout), the request is allowed
- * through — this fails OPEN rather than taking down login/OTP/refresh for
- * every user during a transient Redis blip — and the failure is logged at
- * warn level so an operator can alert on it. This is a deliberate
- * availability/security tradeoff for a rate limiter: the counter itself
- * still requires Redis to be reachable at boot (see
- * config/environment.ts's production-required THROTTLER_REDIS_URL check),
- * so a fully-down Redis in production is already a loud, known condition,
- * not a silently-downgraded one.
+ * Outage policy is explicit: storage errors are surfaced to the throttler
+ * guard. Security-sensitive authentication routes fail closed with 503;
+ * ordinary routes may use the guard's documented availability fallback.
  */
 export class RedisThrottlerStorage implements ThrottlerStorage {
   private readonly logger = new Logger(RedisThrottlerStorage.name);
@@ -139,17 +142,11 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
       };
     } catch (error) {
       this.logger.warn(
-        `Distributed throttler storage unavailable for throttler="${throttlerName}"; failing open for this request. ${
+        `Distributed throttler storage unavailable for throttler="${throttlerName}"; applying route outage policy. ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-
-      return {
-        totalHits: 0,
-        timeToExpire: Math.ceil(ttl / 1000),
-        isBlocked: false,
-        timeToBlockExpire: 0,
-      };
+      throw new RedisThrottlerUnavailableError(error);
     }
   }
 }

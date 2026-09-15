@@ -4,7 +4,8 @@ function createHealthService(databaseReachable: boolean): HealthService {
   const prismaStub = {
     isDatabaseReachable: vi.fn().mockResolvedValue(databaseReachable),
   };
-  return new HealthService(prismaStub as never);
+  const redisStub = { isReachable: vi.fn().mockResolvedValue(true) };
+  return new HealthService(prismaStub as never, redisStub as never);
 }
 
 describe('HealthService', () => {
@@ -26,6 +27,7 @@ describe('HealthService', () => {
       checks: [
         { name: 'api', status: 'up' },
         { name: 'database', status: 'up' },
+        { name: 'redis', status: 'up' },
       ],
     });
   });
@@ -39,6 +41,7 @@ describe('HealthService', () => {
       checks: [
         { name: 'api', status: 'up' },
         { name: 'database', status: 'down' },
+        { name: 'redis', status: 'up' },
       ],
     });
   });

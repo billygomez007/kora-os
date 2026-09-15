@@ -37,6 +37,7 @@ describe('Readiness when a required dependency is unavailable (e2e)', () => {
       checks: [
         { name: 'api', status: 'up' },
         { name: 'database', status: 'down' },
+        { name: 'redis', status: 'up' },
       ],
     });
     expect(response.body.meta).toEqual({

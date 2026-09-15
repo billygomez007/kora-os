@@ -60,6 +60,7 @@ describe('Kora API foundation (e2e)', () => {
       checks: [
         { name: 'api', status: 'up' },
         { name: 'database', status: 'up' },
+        { name: 'redis', status: 'up' },
       ],
     });
     expect(readinessResponse.body.meta.requestId).toEqual(expect.any(String));

@@ -19,6 +19,7 @@ export interface AuthInvalidationMessage {
   source: string;
   generation?: number;
   version?: number;
+  authVersion?: number;
   status?: AuthRefreshSignalStatus;
 }
 
@@ -70,7 +71,13 @@ function isMessage(value: unknown): value is AuthInvalidationMessage {
     message.status === "completed" ||
     message.status === "failed";
 
-  return typeIsValid && generationIsValid && versionIsValid && statusIsValid;
+  const authVersionIsValid =
+    message.authVersion === undefined ||
+    (typeof message.authVersion === "number" &&
+      Number.isSafeInteger(message.authVersion) &&
+      message.authVersion >= 0);
+
+  return typeIsValid && generationIsValid && versionIsValid && statusIsValid && authVersionIsValid;
 }
 
 /**
@@ -147,7 +154,7 @@ export function broadcastAuthSignal(
   type: AuthInvalidationMessageType,
   metadata: Pick<
     AuthInvalidationMessage,
-    "generation" | "version" | "status"
+    "generation" | "version" | "authVersion" | "status"
   > = {},
 ): void {
   if (typeof window === "undefined") return;
@@ -195,6 +202,7 @@ function sanitizeMessage(
     source: value.source,
     ...(value.generation === undefined ? {} : { generation: value.generation }),
     ...(value.version === undefined ? {} : { version: value.version }),
+    ...(value.authVersion === undefined ? {} : { authVersion: value.authVersion }),
     ...(value.status === undefined ? {} : { status: value.status }),
   };
 }

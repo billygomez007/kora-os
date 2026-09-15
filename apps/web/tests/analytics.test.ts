@@ -45,6 +45,12 @@ test("removes query strings before a page location is sent", () => {
   assert.equal(safeAnalyticsPath("/en"), "/en");
 });
 
+test("redacts opaque credential segments from analytics paths", () => {
+  assert.equal(safeAnalyticsPath("/en/invite/invitation-secret"), "/en/invite/[token]");
+  assert.equal(safeAnalyticsPath("/fr/recovery/reset-secret/confirm"), "/fr/recovery/[token]/confirm");
+  assert.equal(safeAnalyticsPath("/en/reset/opaque-token"), "/en/reset/[token]");
+});
+
 test("uses a first-party consent cookie and denies analytics by default", () => {
   assert.equal(ANALYTICS_CONSENT_COOKIE, "KORA_ANALYTICS_CONSENT");
   assert.deepEqual(ANALYTICS_CONSENT_DEFAULT, {

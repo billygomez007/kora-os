@@ -284,5 +284,10 @@ export function isAnalyticsRuntimePath(pathname: string): boolean {
 }
 
 export function safeAnalyticsPath(pathname: string): string {
-  return pathname.split("?", 1)[0] || "/";
+  const path = pathname.split("?", 1)[0] || "/";
+  // Opaque invitation/recovery/reset values are credentials. Keep the route
+  // shape useful for aggregate analytics while replacing the secret segment.
+  return path
+    .replace(/(\/invite\/)[^/]+(?=\/|$)/i, "$1[token]")
+    .replace(/(\/(?:recovery|reset)\/)[^/]+(?=\/|$)/i, "$1[token]");
 }

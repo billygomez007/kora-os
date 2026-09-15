@@ -151,26 +151,14 @@ describe('RedisThrottlerStorage', () => {
     expect(fromB.isBlocked).toBe(false);
   });
 
-  // Test item: "limiter outage follows explicit safe policy".
-  it('fails OPEN (does not throw, does not block) when the Redis command itself fails', async () => {
+  it('surfaces Redis outages so the route guard can fail closed for auth endpoints', async () => {
     const storage = new RedisThrottlerStorage(
       failingClient('connect ECONNREFUSED'),
     );
 
-    const result = await storage.increment(
-      'route-key',
-      60_000,
-      10,
-      30_000,
-      'default',
-    );
-
-    expect(result).toEqual({
-      totalHits: 0,
-      timeToExpire: 60,
-      isBlocked: false,
-      timeToBlockExpire: 0,
-    });
+    await expect(
+      storage.increment('route-key', 60_000, 10, 30_000, 'default'),
+    ).rejects.toMatchObject({ code: 'THROTTLER_REDIS_UNAVAILABLE' });
   });
 
   // Test item: "proxy/IP key behavior" (key derivation, not raw tracker

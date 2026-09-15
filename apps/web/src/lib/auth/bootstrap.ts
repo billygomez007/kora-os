@@ -15,6 +15,7 @@ import {
   mirrorKoraSession,
   readLegacyKoraSession,
   removeLegacyKoraSession,
+  getAuthVersion,
 } from "./session.ts";
 
 let bootstrapPromise: Promise<void> | null = null;
@@ -33,8 +34,17 @@ export function handleCrossTabInvalidation(
 ): void {
   if (!isAuthInvalidationSignal(message)) return;
 
+  // Destructive cross-tab events must identify the auth version they refer
+  // to. Metadata-free legacy messages are ambiguous and are ignored so an
+  // old tab cannot clear a newer login.
+  if (message.authVersion === undefined) return;
+  const currentAuthVersion = getAuthVersion();
+  if (currentAuthVersion !== null && message.authVersion < currentAuthVersion) return;
+
   clearAuthenticated();
-  removeLegacyKoraSession();
+  if (currentAuthVersion === null || message.authVersion === currentAuthVersion) {
+    removeLegacyKoraSession();
+  }
 }
 
 function ensureAuthChannel(): void {

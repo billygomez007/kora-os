@@ -1,6 +1,4 @@
-import {
-  broadcastAuthInvalidation,
-} from "./channel.ts";
+import { broadcastAuthSignal } from "./channel.ts";
 import {
   commitAuthenticated,
   clearAuthenticated,
@@ -28,6 +26,23 @@ export interface KoraSession {
 }
 
 const SESSION_KEY = "kora.auth.session";
+const AUTH_VERSION_KEY = "kora.auth.version";
+
+function nextAuthVersion(): number {
+  const storage = getLegacyStorage();
+  let previous = 0;
+  try { previous = Number(storage?.getItem(AUTH_VERSION_KEY) ?? 0); } catch { /* best effort */ }
+  const next = Math.max(Number.isSafeInteger(previous) ? previous + 1 : 0, Date.now());
+  try { storage?.setItem(AUTH_VERSION_KEY, String(next)); } catch { /* best effort */ }
+  return next;
+}
+
+export function getAuthVersion(): number | null {
+  try {
+    const value = Number(getLegacyStorage()?.getItem(AUTH_VERSION_KEY));
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch { return null; }
+}
 
 function getLegacyStorage(): Storage | null {
   try {
@@ -147,6 +162,7 @@ export function saveKoraSession(
 
   if (!committed) return false;
 
+  nextAuthVersion();
   persistKoraSession(session);
   return true;
 }
@@ -194,7 +210,11 @@ export function removeLegacyKoraSession(): void {
 }
 
 export function clearKoraSession(): void {
+  const authVersion = getAuthVersion();
   clearAuthenticated();
   removeLegacyKoraSession();
-  broadcastAuthInvalidation("logout");
+  broadcastAuthSignal("logout", {
+    generation: getSnapshot().generation,
+    authVersion: authVersion ?? undefined,
+  });
 }

@@ -3,8 +3,11 @@ import { fileURLToPath } from 'node:url';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { createThrottlerStorage } from './modules/throttler/throttler-storage.factory.js';
+import { KoraThrottlerGuard } from './modules/throttler/kora-throttler.guard.js';
+import { ThrottlerRedisModule } from './modules/throttler/throttler-redis.module.js';
+import { ThrottlerRedisService } from './modules/throttler/throttler-redis.service.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { ApiExceptionFilter } from './common/http/api-exception.filter.js';
@@ -60,6 +63,7 @@ import { ProviderWorkdayModule } from './modules/provider-workday/provider-workd
 @Module({
   imports: [
     ProviderWorkdayModule,
+    ThrottlerRedisModule,
     ConfigModule.forRoot({
       cache: true,
       isGlobal: true,
@@ -75,11 +79,11 @@ import { ProviderWorkdayModule } from './modules/provider-workday/provider-workd
     // docs/HTTPONLY_AUTH_MIGRATION.md).
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
+      inject: [ConfigService, ThrottlerRedisService],
+      useFactory: (config: ConfigService, redis: ThrottlerRedisService) => ({
         throttlers: [{ name: 'default', ttl: 60_000, limit: 100 }],
         storage: createThrottlerStorage(
-          config.get<string>('THROTTLER_REDIS_URL'),
+          config.get<string>('THROTTLER_REDIS_URL'), redis,
         ),
       }),
     }),
@@ -126,7 +130,7 @@ import { ProviderWorkdayModule } from './modules/provider-workday/provider-workd
     },
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: KoraThrottlerGuard,
     },
     // Global: every route requires authentication unless explicitly
     // marked @Public() (see modules/auth/decorators/public.decorator.ts).

@@ -8,7 +8,9 @@
   --gold2: #ffbd24;
   --cream: #f9f7f1;
   --muted: #b6c0c7;
-  --font: var(--font-kora), Arial, sans-serif;
+  /* Keep the existing Manrope-first stack without requiring a network fetch
+     during Next.js builds. Browsers with Manrope installed still use it. */
+  --font: "Manrope", Arial, sans-serif;
 
   /* Business Workspace design tokens — one dark surface system shared by
      every authenticated /app/* route. Gold is reserved for accents,

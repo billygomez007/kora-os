@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
+import { ThrottlerRedisService } from '../throttler/throttler-redis.service.js';
 
 export type DependencyCheckStatus = 'up' | 'down';
 
@@ -18,7 +19,10 @@ export interface ReadinessReport {
 
 @Injectable()
 export class HealthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redis?: ThrottlerRedisService,
+  ) {}
 
   /**
    * Liveness must never fail merely because a downstream dependency (such
@@ -35,11 +39,14 @@ export class HealthService {
 
   async getReadiness(): Promise<ReadinessReport> {
     const databaseReachable = await this.prisma.isDatabaseReachable();
-
     const checks: DependencyCheck[] = [
       { name: 'api', status: 'up' },
       { name: 'database', status: databaseReachable ? 'up' : 'down' },
     ];
+    if (this.redis) {
+      const redisReachable = await this.redis.isReachable();
+      checks.push({ name: 'redis', status: redisReachable ? 'up' : 'down' });
+    }
     const ready = checks.every((check) => check.status === 'up');
 
     return {

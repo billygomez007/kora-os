@@ -49,7 +49,7 @@ export class StaffInvitationEmailService {
     this.webBaseUrl = (
       config.get<string>('KORA_WEB_URL') ??
       (config.get<string>('NODE_ENV') === 'production'
-        ? 'https://koraafric.com'
+        ? 'https://www.koraafric.com'
         : 'http://localhost:3001')
     ).replace(/\/+$/, '');
 
